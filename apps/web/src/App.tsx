@@ -1,26 +1,42 @@
 import React from 'react';
 import { AppShell } from './components/AppShell';
 import { Overview } from './pages/Overview';
-import { Tenants } from './pages/Tenants';
-import { Users } from './pages/Users';
-import { Accounts } from './pages/Accounts';
-import { Connections } from './pages/Connections';
-import { System } from './pages/System';
-import { Audit } from './pages/Audit';
-import { Profile } from './pages/Profile';
 import { Login } from './pages/Login';
-import StrengthMatrix from './pages/StrengthMatrix';
+import { WorkflowEngine } from './pages/WorkflowEngine';
+import { MarketScanner } from './pages/MarketScanner';
+import { MarketStructure } from './pages/MarketStructure';
+import { ChannelIntelligence } from './pages/ChannelIntelligence';
+import { TradingOpportunities } from './pages/TradingOpportunities';
+import { RiskPortfolio } from './pages/RiskPortfolio';
+import { ExecutionPositions } from './pages/ExecutionPositions';
+import { PerformanceLearning } from './pages/PerformanceLearning';
+import { Administration } from './pages/hubs/Administration';
+import { SystemControl } from './pages/hubs/SystemControl';
+import { StrengthIntelligence } from './pages/hubs/StrengthIntelligence';
 import { get, post } from './lib/api';
-import type { AuthUser, Health, Page, Summary, Tenant } from './types';
+import type { AuthUser, Health, Summary, Tenant, AppRouteState } from './types';
+import type { Page } from './lib/routes';
+import { LEGACY_ROUTE, parseHashRoute, writeHashRoute } from './lib/routes';
 
 export function App() {
   const [authed, setAuthed] = React.useState(!!localStorage.getItem('ct_token'));
-  const [page, setPage] = React.useState<Page>('overview');
+  const [route, setRoute] = React.useState<AppRouteState>(() => parseHashRoute());
   const [user, setUser] = React.useState<AuthUser | null>(null);
   const [health, setHealth] = React.useState<Health | null>(null);
   const [summary, setSummary] = React.useState<Summary | null>(null);
   const [tenants, setTenants] = React.useState<Tenant[]>([]);
   const [tenantId, setTenantId] = React.useState<string>('');
+
+  const navigate = React.useCallback((page: Page, tab?: string) => {
+    setRoute({ page, tab });
+    writeHashRoute(page, tab);
+  }, []);
+
+  React.useEffect(() => {
+    const onHash = () => setRoute(parseHashRoute());
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
 
   const refresh = React.useCallback(async () => {
     const [h, s, t, me] = await Promise.all([
@@ -70,47 +86,85 @@ export function App() {
   }
 
   const activeTenant = tenants.find((t) => t.id === tenantId) ?? tenants[0];
+  const tab = route.tab;
 
   let body: React.ReactNode;
-  switch (page) {
-    case 'tenants':
-      body = <Tenants tenants={tenants} onCreated={refresh} isPlatformAdmin={!!user?.is_platform_admin} />;
+  switch (route.page) {
+    case 'workflow-engine':
+      body = <WorkflowEngine />;
       break;
-    case 'users':
-      body = <Users tenantId={activeTenant?.id ?? ''} onChanged={refresh} />;
+    case 'strength-intelligence':
+      body = <StrengthIntelligence initialTab={tab} />;
       break;
-    case 'accounts':
-      body = <Accounts tenantId={activeTenant?.id ?? ''} onChanged={refresh} />;
+    case 'market-scanner':
+      body = <MarketScanner />;
       break;
-    case 'connections':
-      body = <Connections tenantId={activeTenant?.id ?? ''} />;
+    case 'market-structure':
+      body = <MarketStructure />;
       break;
-    case 'strength-matrix':
-      body = <StrengthMatrix />;
+    case 'channel-intelligence':
+      body = <ChannelIntelligence />;
       break;
-    case 'system':
-      body = <System mode={summary?.mode ?? 'ANALYSIS_ONLY'} onChanged={refresh} isPlatformAdmin={!!user?.is_platform_admin} />;
+    case 'trading-opportunities':
+      body = <TradingOpportunities />;
       break;
-    case 'audit':
-      body = <Audit tenantId={activeTenant?.id ?? ''} />;
+    case 'risk-portfolio':
+      body = <RiskPortfolio />;
       break;
-    case 'profile':
-      body = <Profile user={user} onChanged={refresh} onLogout={logout} />;
+    case 'execution-positions':
+      body = <ExecutionPositions />;
+      break;
+    case 'performance-learning':
+      body = <PerformanceLearning />;
+      break;
+    case 'administration':
+      body = (
+        <Administration
+          initialTab={tab}
+          tenants={tenants}
+          tenantId={activeTenant?.id ?? ''}
+          user={user}
+          onRefresh={refresh}
+          onLogout={logout}
+          isPlatformAdmin={!!user.is_platform_admin}
+        />
+      );
+      break;
+    case 'system-control':
+      body = (
+        <SystemControl
+          initialTab={tab}
+          tenantId={activeTenant?.id ?? ''}
+          health={health}
+          summary={summary}
+          onChanged={refresh}
+          isPlatformAdmin={!!user.is_platform_admin}
+        />
+      );
       break;
     default:
-      body = <Overview health={health} summary={summary} instrumentCount={29} />;
+      body = (
+        <Overview
+          health={health}
+          summary={summary}
+          tenant={activeTenant}
+          user={user}
+          instrumentCount={29}
+        />
+      );
   }
 
   return (
     <AppShell
-      page={page}
-      setPage={setPage}
+      page={route.page}
+      navigate={navigate}
       user={user}
       tenants={tenants}
       tenantId={activeTenant?.id ?? ''}
       onTenantChange={setTenantId}
       mode={summary?.mode ?? 'ANALYSIS_ONLY'}
       onLogout={logout}
+      onOpenProfile={() => navigate('administration', 'profile')}
     >
       {body}
     </AppShell>
@@ -118,3 +172,6 @@ export function App() {
 }
 
 export default App;
+
+// Re-export legacy route map for tests/documentation
+export { LEGACY_ROUTE };

@@ -1,4 +1,5 @@
-export type Page='overview'|'tenants'|'users'|'accounts'|'connections'|'strength-matrix'|'system'|'audit'|'profile';
+export type { Page } from './lib/routes';
+import type { Page } from './lib/routes';
 export type Health={application:string;api:string;database:string;mt5:{status:string;adapter:string;message:string}};
 export type Summary={tenants:number;users:number;accounts:number;connections:number;mode:string};
 export type Tenant={id:string;name:string;slug:string;status:string;reporting_currency:string;timezone:string};
@@ -22,3 +23,5 @@ export type ConnectionsPayload={
  gateway:{status:string;adapter:string;message:string};
  connections:{id:string;account_name:string;environment:string;adapter_type:string;status:string;terminal_path?:string;server_name?:string}[];
 };
+
+export type AppRouteState = { page: Page; tab?: string };

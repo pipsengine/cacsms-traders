@@ -1,3 +1,144 @@
-import React from'react';import{Building2,Database,Server,ShieldCheck,Users,WalletCards}from'lucide-react';import{Card,Notice,PageHeader,Status}from'../components/Ui';import type{Health,Summary}from'../types';
-export function Overview({health,summary,instrumentCount}:{health:Health|null;summary:Summary|null;instrumentCount?:number}){return <><PageHeader title="Platform Foundation" subtitle="Secure multi-tenant base for the Cacsms-Traders rebuild."/><Notice title="Foundation boundary" text="Market intelligence, AI analysis, opportunities and order execution are intentionally not installed yet."/><div className="metric-grid"><Metric icon={<Building2/>} label="Tenants" value={String(summary?.tenants??1)} detail="Server-isolated workspaces"/><Metric icon={<Users/>} label="Users" value={String(summary?.users??1)} detail="RBAC identity foundation"/><Metric icon={<WalletCards/>} label="Trading Accounts" value={String(summary?.accounts??0)} detail="Demo · Live · Prop Firm"/><Metric icon={<Database/>} label="Database" value={health?.database||'CHECKING'} detail="SQLite · WAL enabled"/></div><div className="two-col"><Card><div className="card-title"><div><h2>Foundation readiness</h2><p>Core platform capabilities available before intelligence is added.</p></div><Status value="READY"/></div><div className="readiness">{[['Multi-tenant core','Tenant-scoped identity, data and administration.'],['Authentication & RBAC','Hashed passwords, revocable sessions and permissions.'],['Trading account registry','DEMO, LIVE and PROP_FIRM with explicit currencies.'],['Auditability','Before/after changes, actor and correlation IDs.'],['Gateway boundary','Local MT5 adapter contract ready for future remote adapters.'],['Light design system','Reusable professional white UI foundation.'],['Reference universe',`${instrumentCount??29} FX/metal instruments with USD & NGN reporting support.`]].map(x=><div className="ready" key={x[0]}><ShieldCheck/><div><b>{x[0]}</b><p>{x[1]}</p></div></div>)}</div></Card><Card><div className="card-title"><div><h2>Runtime health</h2><p>Foundation service status.</p></div></div><HealthRow label="API" value={health?.api||'OFFLINE'}/><HealthRow label="SQLite" value={health?.database||'OFFLINE'}/><HealthRow label="MT5 Adapter" value={health?.mt5.status||'DISCONNECTED'}/><HealthRow label="Operating Mode" value={summary?.mode||'ANALYSIS_ONLY'}/><div className="health-note"><Server/><span>MT5 execution is intentionally disabled in this foundation.</span></div></Card></div><Card><div className="card-title"><div><h2>Build roadmap</h2><p>Approved layers are added on top of this foundation without rebuilding identity or infrastructure.</p></div></div><div className="roadmap"><Road n="01" t="Foundation" d="Identity, tenant, database, accounts, gateway and audit" done/><Road n="02" t="Market Intelligence" d="Strength Matrix, relationship intelligence and market state"/><Road n="03" t="AI Intelligence" d="Reasoning, hypotheses and confirmation intelligence"/><Road n="04" t="Trading Core" d="Risk, campaign, execution and position management"/></div></Card></>}
-function Metric({icon,label,value,detail}:{icon:React.ReactNode;label:string;value:string;detail:string}){return <Card className="metric"><div className="metric-icon">{icon}</div><div><span>{label}</span><strong>{value}</strong><small>{detail}</small></div></Card>};function HealthRow({label,value}:{label:string;value:string}){return <div className="health-row"><span>{label}</span><Status value={value}/></div>};function Road({n,t,d,done}:{n:string;t:string;d:string;done?:boolean}){return <div className={done?'road done':'road'}><span>{n}</span><div><b>{t}</b><p>{d}</p></div></div>}
+import React from 'react';
+import {
+  Activity,
+  Building2,
+  Database,
+  Radio,
+  Server,
+  ShieldCheck,
+  TrendingUp,
+  Users,
+  WalletCards,
+  Workflow,
+} from 'lucide-react';
+import { Card, PageHeader, Status } from '../components/Ui';
+import type { AuthUser, Health, Summary, Tenant } from '../types';
+import { marketIntelligenceApi } from '../features/market-intelligence/api';
+
+export function Overview({
+  health,
+  summary,
+  tenant,
+  user,
+  instrumentCount = 29,
+}: {
+  health: Health | null;
+  summary: Summary | null;
+  tenant?: Tenant;
+  user?: AuthUser | null;
+  instrumentCount?: number;
+}) {
+  const [miStatus, setMiStatus] = React.useState<string>('CHECKING');
+  const [escalations, setEscalations] = React.useState(0);
+
+  React.useEffect(() => {
+    marketIntelligenceApi
+      .health()
+      .then((h) => setMiStatus(h.status === 'ready' ? 'READY' : 'PAUSED'))
+      .catch(() => setMiStatus('OFFLINE'));
+    marketIntelligenceApi
+      .relationships()
+      .then((rows) =>
+        setEscalations(rows.filter((r) => r.inspection_priority === 'HIGH' || r.inspection_priority === 'CRITICAL').length),
+      )
+      .catch(() => setEscalations(0));
+  }, []);
+
+  return (
+    <>
+      <PageHeader
+        title="Overview"
+        subtitle="Operational dashboard — tenant context, platform health, intelligence status and activity."
+      />
+      <div className="metric-grid">
+        <Metric icon={<Building2 />} label="Active tenant" value={tenant?.name ?? '—'} detail={tenant?.reporting_currency ?? 'USD'} />
+        <Metric icon={<Users />} label="Platform users" value={String(summary?.users ?? '—')} detail="RBAC enforced" />
+        <Metric icon={<WalletCards />} label="Trading accounts" value={String(summary?.accounts ?? 0)} detail="Registry" />
+        <Metric icon={<Database />} label="Database" value={health?.database ?? 'CHECKING'} detail="SQLite · WAL" />
+      </div>
+      <div className="metric-grid">
+        <Metric icon={<Server />} label="API" value={health?.api ?? 'OFFLINE'} detail="FastAPI" />
+        <Metric icon={<Radio />} label="MT5 gateway" value={health?.mt5?.status ?? 'DISCONNECTED'} detail={health?.mt5?.adapter ?? 'LOCAL_MT5'} />
+        <Metric icon={<Activity />} label="Operating mode" value={(summary?.mode ?? 'ANALYSIS_ONLY').replaceAll('_', ' ')} detail="System-wide" />
+        <Metric icon={<TrendingUp />} label="Market intelligence" value={miStatus} detail={`${escalations} escalations`} />
+      </div>
+      <div className="two-col">
+        <Card>
+          <div className="card-title">
+            <div>
+              <h2>Autonomous engines</h2>
+              <p>Backend processing status (browser is observability only).</p>
+            </div>
+          </div>
+          <div className="readiness">
+            <Row icon={<TrendingUp />} title="Strength intelligence" text="API layer active; worker supplies snapshots." />
+            <Row icon={<Workflow />} title="Workflow orchestrator" text="Awaiting orchestration API integration." />
+            <Row icon={<ShieldCheck />} title="Risk & execution" text="Analysis-only — no live order path." />
+          </div>
+        </Card>
+        <Card>
+          <div className="card-title">
+            <div>
+              <h2>Trading posture</h2>
+              <p>Foundation-safe defaults.</p>
+            </div>
+          </div>
+          <div className="health-row">
+            <span>Open positions</span>
+            <b>0</b>
+          </div>
+          <div className="health-row">
+            <span>Active opportunities</span>
+            <b>0</b>
+          </div>
+          <div className="health-row">
+            <span>Portfolio risk utilization</span>
+            <b>—</b>
+          </div>
+          <div className="health-row">
+            <span>Reference universe</span>
+            <b>{instrumentCount} instruments</b>
+          </div>
+          <div className="health-row">
+            <span>Signed in as</span>
+            <b>{user?.display_name ?? user?.username ?? '—'}</b>
+          </div>
+        </Card>
+      </div>
+      <Card>
+        <div className="card-title">
+          <div>
+            <h2>Recent system activity</h2>
+            <p>Use System Control → Audit Trail for full administrative history.</p>
+          </div>
+        </div>
+        <p className="muted">Audit events are tenant-scoped and available under System Control. Autonomous decision logs will append here when workflow engines are connected.</p>
+      </Card>
+    </>
+  );
+}
+
+function Metric({ icon, label, value, detail }: { icon: React.ReactNode; label: string; value: string; detail: string }) {
+  return (
+    <Card className="metric">
+      <div className="metric-icon">{icon}</div>
+      <div>
+        <span>{label}</span>
+        <strong>{value}</strong>
+        <small>{detail}</small>
+      </div>
+    </Card>
+  );
+}
+
+function Row({ icon, title, text }: { icon: React.ReactNode; title: string; text: string }) {
+  return (
+    <div className="ready">
+      {icon}
+      <div>
+        <b>{title}</b>
+        <p>{text}</p>
+      </div>
+    </div>
+  );
+}

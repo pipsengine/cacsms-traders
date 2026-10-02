@@ -1,52 +1,74 @@
 import React from 'react';
 import {
   Activity,
+  BarChart3,
   Building2,
   ChevronDown,
   CircleUserRound,
+  GitBranch,
   LayoutDashboard,
+  LineChart,
   Menu,
   MonitorCog,
-  PlugZap,
-  ShieldCheck,
+  ScanSearch,
+  Settings2,
+  Shield,
+  Target,
   TrendingUp,
-  Users,
-  WalletCards,
+  Workflow,
+  Zap,
 } from 'lucide-react';
-import type { AuthUser, Page, Tenant } from '../types';
+import type { AuthUser, Tenant } from '../types';
+import type { Page } from '../lib/routes';
+import { PAGE_CRUMB } from '../lib/routes';
 
 const nav: [string, { page: Page; label: string; icon: React.ReactNode }[]][] = [
   [
-    'PLATFORM',
+    'AUTONOMOUS TRADER',
     [
       { page: 'overview', label: 'Overview', icon: <LayoutDashboard /> },
-      { page: 'tenants', label: 'Tenants', icon: <Building2 /> },
-      { page: 'users', label: 'Users & Access', icon: <Users /> },
-    ],
-  ],
-  [
-    'TRADING FOUNDATION',
-    [
-      { page: 'accounts', label: 'Trading Accounts', icon: <WalletCards /> },
-      { page: 'connections', label: 'MT5 Connections', icon: <PlugZap /> },
+      { page: 'workflow-engine', label: 'Workflow Engine', icon: <Workflow /> },
     ],
   ],
   [
     'MARKET INTELLIGENCE',
-    [{ page: 'strength-matrix', label: 'Strength Matrix', icon: <TrendingUp /> }],
+    [
+      { page: 'strength-intelligence', label: 'Strength Intelligence', icon: <TrendingUp /> },
+      { page: 'market-scanner', label: 'Market Scanner', icon: <ScanSearch /> },
+    ],
+  ],
+  [
+    'MARKET VISION',
+    [
+      { page: 'market-structure', label: 'Market Structure', icon: <LineChart /> },
+      { page: 'channel-intelligence', label: 'Channel Intelligence', icon: <GitBranch /> },
+    ],
+  ],
+  [
+    'TRADING',
+    [
+      { page: 'trading-opportunities', label: 'Trading Opportunities', icon: <Target /> },
+      { page: 'risk-portfolio', label: 'Risk & Portfolio', icon: <Shield /> },
+      { page: 'execution-positions', label: 'Execution & Positions', icon: <Zap /> },
+    ],
+  ],
+  [
+    'ANALYTICS',
+    [{ page: 'performance-learning', label: 'Performance & Learning', icon: <BarChart3 /> }],
+  ],
+  [
+    'ADMINISTRATION',
+    [{ page: 'administration', label: 'Administration', icon: <Settings2 /> }],
   ],
   [
     'SYSTEM',
-    [
-      { page: 'system', label: 'System Control', icon: <MonitorCog /> },
-      { page: 'audit', label: 'Audit Trail', icon: <ShieldCheck /> },
-    ],
+    [{ page: 'system-control', label: 'System Control', icon: <MonitorCog /> }],
   ],
 ];
 
 export function AppShell({
   page,
-  setPage,
+  navigate,
   children,
   user,
   tenants,
@@ -54,9 +76,10 @@ export function AppShell({
   onTenantChange,
   mode,
   onLogout,
+  onOpenProfile,
 }: {
   page: Page;
-  setPage: (p: Page) => void;
+  navigate: (page: Page, tab?: string) => void;
   children: React.ReactNode;
   user: AuthUser | null;
   tenants: Tenant[];
@@ -64,6 +87,7 @@ export function AppShell({
   onTenantChange: (id: string) => void;
   mode: string;
   onLogout: () => void;
+  onOpenProfile: () => void;
 }) {
   const [collapsed, setCollapsed] = React.useState(false);
   const active = tenants.find((t) => t.id === tenantId);
@@ -76,7 +100,7 @@ export function AppShell({
           {!collapsed && (
             <div>
               <b>Cacsms-Traders</b>
-              <span>Autonomous Trading Platform</span>
+              <span>Autonomous Trader</span>
             </div>
           )}
           <button type="button" onClick={() => setCollapsed(!collapsed)}>
@@ -92,7 +116,7 @@ export function AppShell({
                   type="button"
                   key={n.page}
                   className={page === n.page ? 'nav active' : 'nav'}
-                  onClick={() => setPage(n.page)}
+                  onClick={() => navigate(n.page)}
                 >
                   {n.icon}
                   {!collapsed && <span>{n.label}</span>}
@@ -105,8 +129,8 @@ export function AppShell({
           <div className="live-dot" />
           {!collapsed && (
             <div>
-              <b>Foundation Mode</b>
-              <span>{mode.replaceAll('_', ' ')}</span>
+              <b>{mode.replaceAll('_', ' ')}</b>
+              <span>Operations interface</span>
             </div>
           )}
         </div>
@@ -115,7 +139,7 @@ export function AppShell({
         <header className="top">
           <div className="crumb">
             <Activity size={17} />
-            <span>Platform Foundation</span>
+            <span>{PAGE_CRUMB[page] ?? 'Overview'}</span>
           </div>
           <div className="top-right">
             <div className="tenant-switch">
@@ -129,7 +153,7 @@ export function AppShell({
               </select>
               <ChevronDown />
             </div>
-            <button type="button" className="profile" onClick={() => setPage('profile')}>
+            <button type="button" className="profile" onClick={onOpenProfile}>
               <CircleUserRound />
               <span>{user?.display_name ?? active?.name ?? 'User'}</span>
             </button>
