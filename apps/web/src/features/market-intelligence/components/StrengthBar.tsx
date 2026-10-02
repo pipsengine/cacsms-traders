@@ -1,0 +1,1 @@
+export function StrengthBar({value}:{value:number}){const pct=Math.min(100,Math.abs(value));return <div className="mi-strengthbar"><i style={{width:`${pct}%`}}/><b>{value.toFixed(2)}</b></div>}

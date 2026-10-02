@@ -1,0 +1,1 @@
+export function LoadingSkeleton(){return <div className="mi-skeleton">{Array.from({length:8}).map((_,i)=><i key={i}/>)}</div>}

@@ -1,0 +1,1 @@
+export function ErrorState({message,onRetry}:{message:string;onRetry:()=>void}){return <div className="mi-error"><b>Market intelligence unavailable</b><span>{message}</span><button onClick={onRetry}>Retry</button></div>}

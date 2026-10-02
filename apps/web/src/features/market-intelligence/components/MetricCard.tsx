@@ -1,0 +1,1 @@
+import React from'react';export function MetricCard({label,value,detail}:{label:string;value:React.ReactNode;detail?:string}){return <div className="mi-metric"><span>{label}</span><strong>{value}</strong>{detail&&<small>{detail}</small>}</div>}

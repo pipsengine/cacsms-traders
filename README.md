@@ -34,5 +34,13 @@ npm install
 npm run dev
 ```
 
+## Market Intelligence layer
+Integrated from the detailed Market Intelligence package (see `docs/MARKET_INTELLIGENCE_INTEGRATION.md`):
+- Backend: `apps/api/app/market/`, `/api/market-intelligence/*` routes, migration `003_market_intelligence_foundation.sql`
+- UI: **Strength Matrix** in the shell (Market Intelligence nav), `apps/web/src/features/market-intelligence/`
+- Worker: `apps/api/app/workers/market_intelligence_worker.py` (run as a separate backend process when MT5 data is wired)
+
+Apply migrations after pull: `python scripts/init_db.py`
+
 ## Safety boundary
-This foundation is ANALYSIS_ONLY. It cannot place real trades. Market intelligence, AI reasoning, opportunity contracts, risk authorization and execution will be added as separate approved layers.
+Platform mode remains ANALYSIS_ONLY for trading. Market intelligence provides strength and relationship inspection only—no BUY/SELL signals or order execution. AI reasoning, opportunity contracts, risk authorization and execution are later layers.

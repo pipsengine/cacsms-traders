@@ -1,0 +1,2 @@
+# Cacsms-Traders Market Intelligence Integration — Detailed
+Production-oriented integration layer for Market Data + Currency Strength + Historical Dynamics + Pair Relationship Intelligence. Built for the existing Cacsms-Traders foundation. It scans all 28 FX relationships, explicitly retains equilibrium pairs, persists historical state in SQLite, exposes APIs, and provides a professional light Strength Matrix UI. No trading signals or execution are included.

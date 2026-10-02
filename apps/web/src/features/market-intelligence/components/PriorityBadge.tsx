@@ -1,0 +1,1 @@
+export function PriorityBadge({value}:{value:string}){return <span className={`mi-priority p-${value.toLowerCase()}`}>{value}</span>}

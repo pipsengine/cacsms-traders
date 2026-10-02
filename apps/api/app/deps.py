@@ -1,6 +1,17 @@
 from fastapi import Header,HTTPException
-from .core.database import db
+from .core.database import connect, db
 from .core.security import token_hash,iso
+
+def get_db():
+ c=connect()
+ try:
+  yield c
+  c.commit()
+ except Exception:
+  c.rollback()
+  raise
+ finally:
+  c.close()
 
 def current_user(authorization:str|None=Header(default=None)):
  if not authorization or not authorization.startswith('Bearer '): raise HTTPException(401,'Authentication required')

@@ -9,6 +9,7 @@ import { System } from './pages/System';
 import { Audit } from './pages/Audit';
 import { Profile } from './pages/Profile';
 import { Login } from './pages/Login';
+import StrengthMatrix from './pages/StrengthMatrix';
 import { get, post } from './lib/api';
 import type { AuthUser, Health, Page, Summary, Tenant } from './types';
 
@@ -84,6 +85,9 @@ export function App() {
     case 'connections':
       body = <Connections tenantId={activeTenant?.id ?? ''} />;
       break;
+    case 'strength-matrix':
+      body = <StrengthMatrix />;
+      break;
     case 'system':
       body = <System mode={summary?.mode ?? 'ANALYSIS_ONLY'} onChanged={refresh} isPlatformAdmin={!!user?.is_platform_admin} />;
       break;
@@ -112,3 +116,5 @@ export function App() {
     </AppShell>
   );
 }
+
+export default App;

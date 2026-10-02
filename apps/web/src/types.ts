@@ -1,4 +1,4 @@
-export type Page='overview'|'tenants'|'users'|'accounts'|'connections'|'system'|'audit'|'profile';
+export type Page='overview'|'tenants'|'users'|'accounts'|'connections'|'strength-matrix'|'system'|'audit'|'profile';
 export type Health={application:string;api:string;database:string;mt5:{status:string;adapter:string;message:string}};
 export type Summary={tenants:number;users:number;accounts:number;connections:number;mode:string};
 export type Tenant={id:string;name:string;slug:string;status:string;reporting_currency:string;timezone:string};

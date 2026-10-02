@@ -1,0 +1,2 @@
+# Data contract
+All timestamps are UTC ISO-8601. Candle identity is symbol + timeframe + open_time. Only is_closed=1 candles enter strength calculations. OHLC invariants are validated. Strength snapshots identify currency/timeframe/as_of and retain confidence/sample count/quality. Relationship snapshots retain both source strengths, gap dynamics, state, priority and reason codes. Consumers must not infer missing values as zero.

@@ -1,0 +1,1 @@
+export function StateBadge({state}:{state:string}){return <span className={`mi-badge s-${state.toLowerCase()}`}>{state.replaceAll('_',' ')}</span>}

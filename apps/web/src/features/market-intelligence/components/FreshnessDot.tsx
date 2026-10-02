@@ -1,0 +1,1 @@
+export function FreshnessDot({state}:{state:string}){return <span className={`mi-fresh f-${state.toLowerCase()}`}><i/>{state}</span>}

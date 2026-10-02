@@ -9,6 +9,7 @@ import {
   MonitorCog,
   PlugZap,
   ShieldCheck,
+  TrendingUp,
   Users,
   WalletCards,
 } from 'lucide-react';
@@ -29,6 +30,10 @@ const nav: [string, { page: Page; label: string; icon: React.ReactNode }[]][] = 
       { page: 'accounts', label: 'Trading Accounts', icon: <WalletCards /> },
       { page: 'connections', label: 'MT5 Connections', icon: <PlugZap /> },
     ],
+  ],
+  [
+    'MARKET INTELLIGENCE',
+    [{ page: 'strength-matrix', label: 'Strength Matrix', icon: <TrendingUp /> }],
   ],
   [
     'SYSTEM',
