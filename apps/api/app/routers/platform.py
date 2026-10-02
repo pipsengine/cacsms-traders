@@ -1,0 +1,49 @@
+from fastapi import APIRouter,Depends,HTTPException
+import uuid,json
+from ..deps import current_user
+from ..core.database import db
+from ..core.security import iso
+from ..core.audit import write_audit
+from ..schemas.admin import TenantCreate,SystemModeUpdate
+from ..domain.gateway import LocalMT5Gateway
+router=APIRouter(tags=['Platform'])
+@router.get('/health')
+def health():
+ with db() as c: c.execute('SELECT 1').fetchone()
+ return {'application':'Cacsms-Traders','api':'HEALTHY','database':'HEALTHY','mt5':LocalMT5Gateway().health()}
+@router.get('/dashboard/summary')
+def summary(user=Depends(current_user)):
+ with db() as c:
+  if user['is_platform_admin']:
+   return {'tenants':c.execute('SELECT count(*) n FROM tenants').fetchone()['n'],'users':c.execute('SELECT count(*) n FROM users').fetchone()['n'],'accounts':c.execute('SELECT count(*) n FROM trading_accounts').fetchone()['n'],'connections':c.execute("SELECT count(*) n FROM trading_connections WHERE status='CONNECTED'").fetchone()['n'],'mode':json.loads(c.execute("SELECT value_json FROM system_settings WHERE key='system.mode'").fetchone()['value_json'])}
+  return {'tenants':0,'users':0,'accounts':0,'connections':0,'mode':'ANALYSIS_ONLY'}
+@router.get('/tenants')
+def tenants(user=Depends(current_user)):
+ with db() as c:
+  rows=c.execute('SELECT * FROM tenants ORDER BY name').fetchall() if user['is_platform_admin'] else c.execute('SELECT t.* FROM tenants t JOIN tenant_memberships m ON m.tenant_id=t.id WHERE m.user_id=?',(user['id'],)).fetchall()
+  return [dict(r) for r in rows]
+@router.post('/tenants')
+def create_tenant(x:TenantCreate,user=Depends(current_user)):
+ if not user['is_platform_admin']: raise HTTPException(403,'Platform administrator required')
+ tid=str(uuid.uuid4()); now=iso()
+ with db() as c: c.execute('INSERT INTO tenants(id,name,slug,status,reporting_currency,created_at,updated_at) VALUES(?,?,?,?,?,?,?)',(tid,x.name,x.slug,'ACTIVE',x.reporting_currency,now,now)); write_audit(c,tid,user['id'],'TENANT_CREATED','Tenant',tid,after=x.model_dump())
+ return {'id':tid}
+@router.get('/system/mode')
+def get_mode(user=Depends(current_user)):
+ with db() as c:return {'mode':json.loads(c.execute("SELECT value_json FROM system_settings WHERE key='system.mode'").fetchone()['value_json'])}
+@router.get('/reference/currencies')
+def reference_currencies(user=Depends(current_user)):
+ with db() as c:
+  return [dict(r) for r in c.execute('SELECT code,name,kind FROM reference_currencies ORDER BY code')]
+@router.get('/reference/instruments')
+def reference_instruments(user=Depends(current_user)):
+ with db() as c:
+  return [dict(r) for r in c.execute('SELECT symbol,base_code,quote_code,enabled FROM reference_instruments ORDER BY symbol')]
+@router.put('/system/mode')
+def set_mode(x:SystemModeUpdate,user=Depends(current_user)):
+ if not user['is_platform_admin']: raise HTTPException(403,'Platform administrator required')
+ allowed={'ANALYSIS_ONLY','SHADOW','DEMO_AUTONOMOUS','LIVE_AUTONOMOUS','PAUSED','EMERGENCY_STOP'}
+ if x.mode not in allowed: raise HTTPException(400,'Invalid mode')
+ with db() as c:
+  old=json.loads(c.execute("SELECT value_json FROM system_settings WHERE key='system.mode'").fetchone()['value_json']); c.execute("UPDATE system_settings SET value_json=?,updated_at=? WHERE key='system.mode'",(json.dumps(x.mode),iso())); write_audit(c,None,user['id'],'SYSTEM_MODE_CHANGED','System','system',before={'mode':old},after={'mode':x.mode},reason=x.reason)
+ return {'mode':x.mode}
