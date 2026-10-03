@@ -18,3 +18,33 @@
 .engine-placeholder h2{margin:6px 0 8px;font-size:17px}
 .engine-placeholder p{margin:0;color:var(--muted);font-size:12px;line-height:1.55;max-width:720px}
 .engine-placeholder code{font-size:11px;background:var(--surface2);padding:2px 6px;border-radius:4px}
+.sub-tabs{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0 16px}
+.sub-tab{border:1px solid var(--line);background:#fff;border-radius:999px;padding:6px 11px;font-size:11px;font-weight:650;color:var(--muted)}
+.sub-tab:hover{border-color:#c7d7fe;color:var(--text)}
+.sub-tab.active{border-color:#9bbcff;background:var(--primary2);color:var(--primary)}
+.overview-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:16px}
+.section-card-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px}
+.section-card-head h3{margin:0 0 4px;font-size:14px}
+.section-card-head p,.section-hint{margin:0;color:var(--muted);font-size:11px;line-height:1.45}
+.section-card-body{font-size:12px}
+.kv-list{display:flex;flex-direction:column;gap:8px}
+.kv-row{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding:8px 0}
+.kv-row span{color:var(--muted);font-size:11px}
+.kv-row b{display:block;font-size:12px}
+.kv-row small{display:block;color:var(--subtle);font-size:10px;margin-top:2px}
+.overview-stat{font-size:22px;display:block;margin:4px 0}
+.activity-list{list-style:none;margin:0;padding:0}
+.activity-list li{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);font-size:12px}
+.pipeline-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.pipeline-card span,.pipeline-card small{display:block}
+.pipeline-card span{font-size:11px;color:var(--muted);margin-bottom:6px}
+.pipeline-card small{color:var(--subtle);font-size:10px;margin-top:6px}
+.side-foot-status{align-items:flex-start}
+.side-foot-lines{display:flex;flex-direction:column;gap:8px;flex:1}
+.side-foot-lines div span{display:block;font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--subtle)}
+.side-foot-lines div b{display:block;font-size:11px;margin-top:2px}
+.symbol-cloud{font-size:11px;line-height:1.6;color:var(--muted);margin:0}
+.mini-table-wrap{overflow:auto}
+.embedded-toolbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+@media(max-width:1100px){.overview-grid{grid-template-columns:1fr 1fr}.pipeline-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:760px){.overview-grid,.pipeline-grid{grid-template-columns:1fr}}

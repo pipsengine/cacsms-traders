@@ -13,15 +13,11 @@ export function ChannelIntelligence() {
   const [tab, setTab] = useState('channels');
   return (
     <>
-      <PageHeader title="Channel Intelligence" subtitle="Channel, breakout/retest and trend-in-trend views — UI ready for backend engines." />
+      <PageHeader title="Channel Intelligence" subtitle="Channel, breakout/retest and trend-in-trend — UI ready for backend engines." />
       <PageTabs tabs={TABS} active={tab} onChange={setTab} />
       {TABS.map((t) => (
         <TabPanel key={t.id} active={tab} id={t.id}>
-          <EnginePlaceholder
-            title={t.label}
-            body="No market results are shown until the channel intelligence engine publishes verified snapshots."
-            engine="channel_intelligence"
-          />
+          <EnginePlaceholder title={t.label} body="No channel geometry or breakout states are fabricated. Results appear when the channel engine publishes snapshots." engine="channel_intelligence" />
         </TabPanel>
       ))}
     </>

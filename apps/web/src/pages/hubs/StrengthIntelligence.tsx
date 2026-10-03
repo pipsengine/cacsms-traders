@@ -1,21 +1,29 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { PageHeader } from '../../components/Ui';
 import { PageTabs, TabPanel } from '../../components/PageTabs';
 import { marketIntelligenceApi } from '../../features/market-intelligence/api';
 import { useAsync } from '../../features/market-intelligence/hooks/useMarketIntelligence';
 import { MetricCard } from '../../features/market-intelligence/components/MetricCard';
 import { StrengthMatrixTable } from '../../features/market-intelligence/components/StrengthMatrixTable';
+import { AvgStrengthRanking } from '../../features/market-intelligence/components/AvgStrengthRanking';
+import { MatrixStatusBar } from '../../features/market-intelligence/components/MatrixStatusBar';
 import { RelationshipTable } from '../../features/market-intelligence/components/RelationshipTable';
 import { RelationshipLegend } from '../../features/market-intelligence/components/RelationshipLegend';
 import { LoadingSkeleton } from '../../features/market-intelligence/components/LoadingSkeleton';
 import { ErrorState } from '../../features/market-intelligence/components/ErrorState';
 import { EmptyState } from '../../features/market-intelligence/components/EmptyState';
 import { StrengthHistoryPanel } from '../../features/market-intelligence/components/StrengthHistoryPanel';
-import { RelationshipDetail } from '../../features/market-intelligence/components/RelationshipDetail';
+import { RelationshipAnalysisPanel } from '../hub-panels/RelationshipAnalysisPanel';
 import { writeHashRoute } from '../../lib/routes';
+import type { CalculationMode } from '../../features/market-intelligence/types';
 
-const TFS = ['ALL', 'YTD', 'Q', 'MN', 'W1', 'D1', 'H8', 'H1', 'M15', 'M5'];
-const CURRENCIES = ['USD', 'EUR', 'GBP', 'JPY', 'CHF', 'AUD', 'CAD', 'NZD'];
+const TFS = ['ALL', 'YTD', 'Q', 'MN', 'W1', 'D1', 'H8', 'H1', 'M15', 'M5', 'M1'];
+const CURRENCIES = ['EUR', 'GBP', 'USD', 'JPY', 'AUD', 'NZD', 'CAD', 'CHF'];
+const CALC_MODES: { id: CalculationMode; label: string; disabled?: boolean }[] = [
+  { id: 'CLOSE_CLOSE', label: 'Close-to-close' },
+  { id: 'MA', label: 'MA difference', disabled: true },
+  { id: 'RSI', label: 'RSI difference', disabled: true },
+];
 const TABS = [
   { id: 'matrix', label: 'Strength Matrix' },
   { id: 'historical', label: 'Historical Strength' },
@@ -30,11 +38,19 @@ export function StrengthIntelligence({ initialTab = 'matrix' }: { initialTab?: s
     writeHashRoute('strength-intelligence', id);
   };
   const [tf, setTf] = useState('ALL');
-  const [histCurrency, setHistCurrency] = useState('USD');
+  const [sortBy, setSortBy] = useState('AVG');
+  const [calcMode, setCalcMode] = useState<CalculationMode>('CLOSE_CLOSE');
+  const [histCurrency, setHistCurrency] = useState('EUR');
   const [histTf, setHistTf] = useState('H1');
   const [focusPair, setFocusPair] = useState('EURUSD');
+  const [computing, setComputing] = useState(false);
 
-  const matrix = useAsync(() => marketIntelligenceApi.matrix(), []);
+  const matrixLoader = useCallback(
+    () => marketIntelligenceApi.matrix(sortBy, calcMode),
+    [sortBy, calcMode],
+  );
+  const matrix = useAsync(matrixLoader, [matrixLoader]);
+
   const rel = useAsync(() => marketIntelligenceApi.relationships(tf === 'ALL' ? undefined : tf), [tf]);
   const hist = useAsync(
     () => marketIntelligenceApi.strengthHistory(histCurrency, histTf),
@@ -42,8 +58,30 @@ export function StrengthIntelligence({ initialTab = 'matrix' }: { initialTab?: s
   );
   const pairHist = useAsync(() => marketIntelligenceApi.relationshipHistory(focusPair, histTf), [focusPair, histTf]);
 
-  const high = rel.data?.filter((x) => x.inspection_priority === 'HIGH' || x.inspection_priority === 'CRITICAL').length ?? 0;
+  const high =
+    rel.data?.filter((x) => x.inspection_priority === 'HIGH' || x.inspection_priority === 'CRITICAL').length ?? 0;
   const eq = rel.data?.filter((x) => x.state === 'EQUILIBRIUM').length ?? 0;
+
+  const runCompute = async (fullCycle = false) => {
+    setComputing(true);
+    try {
+      if (fullCycle) {
+        await marketIntelligenceApi.runCycle(true);
+      } else {
+        await marketIntelligenceApi.computeMatrix(sortBy, calcMode);
+      }
+      matrix.refresh();
+      rel.refresh();
+    } catch (e) {
+      matrix.refresh();
+      throw e;
+    } finally {
+      setComputing(false);
+    }
+  };
+
+  const hasMatrix = (matrix.data?.matrix?.length ?? 0) > 0;
+  const missingHistory = matrix.data?.meta && !matrix.data.meta.historical_ok;
 
   return (
     <div className="mi-page mi-page-embedded">
@@ -75,18 +113,70 @@ export function StrengthIntelligence({ initialTab = 'matrix' }: { initialTab?: s
               <span className="mi-eyebrow">Cross-sectional intelligence</span>
               <h2>Multi-timeframe currency strength</h2>
             </div>
-            <span className="mi-note">Closed bars · normalized · historical dynamics</span>
+            <span className="mi-note">Closed bars · EarnForex CSM · historical dynamics</span>
           </header>
-          {matrix.loading ? (
+          <div className="mi-matrix-controls">
+            <label>
+              Calculation
+              <select
+                value={calcMode}
+                onChange={(e) => setCalcMode(e.target.value as CalculationMode)}
+                aria-label="Calculation mode"
+              >
+                {CALC_MODES.map((m) => (
+                  <option key={m.id} value={m.id} disabled={m.disabled}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Sort by
+              <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} aria-label="Sort strength by">
+                {['AVG', 'YTD', 'Q', 'MN', 'W1', 'D1', 'H8', 'H1', 'M15', 'M5', 'M1'].map((x) => (
+                  <option key={x}>{x}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <MatrixStatusBar
+            meta={matrix.data?.meta ?? null}
+            loading={matrix.loading || computing}
+            onRefresh={() => void runCompute(true).catch(() => undefined)}
+          />
+          {matrix.loading && !matrix.data ? (
             <LoadingSkeleton />
           ) : matrix.error ? (
             <ErrorState message={matrix.error} onRetry={matrix.refresh} />
-          ) : matrix.data?.length ? (
-            <StrengthMatrixTable rows={matrix.data} />
+          ) : hasMatrix && matrix.data ? (
+            <>
+              <StrengthMatrixTable
+                matrix={matrix.data.matrix}
+                meta={matrix.data.meta}
+                sortBy={sortBy}
+                onSortBy={setSortBy}
+              />
+              <AvgStrengthRanking rows={matrix.data.avg_ranking} />
+            </>
+          ) : missingHistory ? (
+            <div className="mi-error mi-missing-history">
+              <span>
+                Historical data needed for one or more pairs/timeframes. Ingest closed candles from MT5, then
+                recalculate.
+              </span>
+              <button type="button" onClick={() => void runCompute(true)}>
+                Retry
+              </button>
+            </div>
           ) : (
             <EmptyState
               title="Waiting for strength snapshots"
-              body="Connect market data and run the intelligence worker. Missing data is never fabricated."
+              body="Connect market data, ingest closed candles for all 28 pairs, then run Recalculate. Missing data is never fabricated."
+              action={
+                <button type="button" className="mi-primary-btn" onClick={() => void runCompute(true)}>
+                  Ingest & calculate
+                </button>
+              }
             />
           )}
         </section>
@@ -154,13 +244,13 @@ export function StrengthIntelligence({ initialTab = 'matrix' }: { initialTab?: s
             </select>
           </label>
         </div>
-        {pairHist.loading ? (
-          <LoadingSkeleton />
-        ) : pairHist.error ? (
-          <ErrorState message={pairHist.error} onRetry={pairHist.refresh} />
-        ) : (
-          <RelationshipDetail pair={focusPair} rows={pairHist.data ?? []} />
-        )}
+        <RelationshipAnalysisPanel
+          pair={focusPair}
+          rows={pairHist.data}
+          loading={pairHist.loading}
+          error={pairHist.error}
+          onRetry={pairHist.refresh}
+        />
       </TabPanel>
     </div>
   );

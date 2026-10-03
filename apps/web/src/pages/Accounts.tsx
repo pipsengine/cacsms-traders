@@ -4,13 +4,25 @@ import { Card, Empty, PageHeader, Status } from '../components/Ui';
 import { get, post } from '../lib/api';
 import type { TradingAccount } from '../types';
 
-export function Accounts({ tenantId, onChanged }: { tenantId: string; onChanged: () => void }) {
+export function Accounts({
+  tenantId,
+  onChanged,
+  embedded,
+  environment = 'ALL',
+}: {
+  tenantId: string;
+  onChanged: () => void;
+  embedded?: boolean;
+  environment?: 'ALL' | 'DEMO' | 'LIVE' | 'PROP_FIRM';
+}) {
   const [rows, setRows] = React.useState<TradingAccount[]>([]);
 
   React.useEffect(() => {
     if (!tenantId) return;
     get<TradingAccount[]>(`/tenants/${tenantId}/accounts`).then(setRows).catch(() => setRows([]));
   }, [tenantId]);
+
+  const visible = environment === 'ALL' ? rows : rows.filter((a) => a.environment === environment);
 
   async function addAccount() {
     const account_name = window.prompt('Account name');
@@ -22,24 +34,35 @@ export function Accounts({ tenantId, onChanged }: { tenantId: string; onChanged:
     setRows(await get<TradingAccount[]>(`/tenants/${tenantId}/accounts`));
   }
 
-  const connected = rows.filter((a) => a.connection_status === 'CONNECTED').length;
+  const connected = visible.filter((a) => a.connection_status === 'CONNECTED').length;
 
   return (
     <>
-      <PageHeader
-        title="Trading Accounts"
-        subtitle="Register Demo, Live and Prop Firm accounts without enabling execution by default."
-        action={
+      {!embedded && (
+        <PageHeader
+          title="Trading Accounts"
+          subtitle="Register Demo, Live and Prop Firm accounts without enabling execution by default."
+          action={
+            <button type="button" className="primary" onClick={addAccount}>
+              <Plus />
+              Add Trading Account
+            </button>
+          }
+        />
+      )}
+      {embedded && (
+        <div className="toolbar embedded-toolbar">
+          <p className="muted">Environment filter: {environment === 'ALL' ? 'All' : environment.replace('_', ' ')}</p>
           <button type="button" className="primary" onClick={addAccount}>
             <Plus />
-            Add Trading Account
+            Add Account
           </button>
-        }
-      />
+        </div>
+      )}
       <div className="metric-grid three">
         <Card className="mini">
           <span>Total Accounts</span>
-          <strong>{rows.length}</strong>
+          <strong>{visible.length}</strong>
           <small>Across active tenant</small>
         </Card>
         <Card className="mini">
@@ -49,7 +72,7 @@ export function Accounts({ tenantId, onChanged }: { tenantId: string; onChanged:
         </Card>
         <Card className="mini">
           <span>Autonomous Enabled</span>
-          <strong>{rows.filter((a) => a.autonomous_trading_enabled).length}</strong>
+          <strong>{visible.filter((a) => a.autonomous_trading_enabled).length}</strong>
           <small>Hard control remains off</small>
         </Card>
       </div>
@@ -60,7 +83,7 @@ export function Accounts({ tenantId, onChanged }: { tenantId: string; onChanged:
             <p>Each account has its own environment, denomination, connection and risk profile.</p>
           </div>
         </div>
-        {rows.length === 0 ? (
+        {visible.length === 0 ? (
           <Empty
             title="No trading accounts registered"
             text="Add a Demo account first. Live and Prop Firm accounts use the same registry but retain independent safety controls."
@@ -78,7 +101,7 @@ export function Accounts({ tenantId, onChanged }: { tenantId: string; onChanged:
                 </tr>
               </thead>
               <tbody>
-                {rows.map((a) => (
+                {visible.map((a) => (
                   <tr key={a.id}>
                     <td>
                       <b>{a.account_name}</b>

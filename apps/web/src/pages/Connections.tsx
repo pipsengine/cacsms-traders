@@ -4,7 +4,7 @@ import { Card, Notice, PageHeader, Status } from '../components/Ui';
 import { get } from '../lib/api';
 import type { ConnectionsPayload } from '../types';
 
-export function Connections({ tenantId }: { tenantId: string }) {
+export function Connections({ tenantId, embedded }: { tenantId: string; embedded?: boolean }) {
   const [data, setData] = React.useState<ConnectionsPayload | null>(null);
 
   React.useEffect(() => {
@@ -16,10 +16,12 @@ export function Connections({ tenantId }: { tenantId: string }) {
 
   return (
     <>
-      <PageHeader
-        title="MT5 Connections"
-        subtitle="Trading gateway foundation for local terminals now and remote adapters later."
-      />
+      {!embedded && (
+        <PageHeader
+          title="MT5 Connections"
+          subtitle="Trading gateway foundation for local terminals now and remote adapters later."
+        />
+      )}
       <Notice
         title="Safe foundation state"
         text="The local MT5 gateway contract is installed, but terminal binding and order submission are not enabled."

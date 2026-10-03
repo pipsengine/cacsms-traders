@@ -9,10 +9,12 @@ export function System({
   mode,
   onChanged,
   isPlatformAdmin,
+  embedded,
 }: {
   mode: string;
   onChanged: () => void;
   isPlatformAdmin: boolean;
+  embedded?: boolean;
 }) {
   const [current, setCurrent] = React.useState(mode);
 
@@ -33,7 +35,7 @@ export function System({
 
   return (
     <>
-      <PageHeader title="System Control" subtitle="Global operating state and hard platform safety controls." />
+      {!embedded && <PageHeader title="System Control" subtitle="Global operating state and hard platform safety controls." />}
       <Notice title="Current foundation mode" text={`${current.replaceAll('_', ' ')} — trading engines are not installed in this build.`} />
       <div className="two-col">
         <Card>

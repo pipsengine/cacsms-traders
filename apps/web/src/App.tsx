@@ -17,6 +17,7 @@ import { get, post } from './lib/api';
 import type { AuthUser, Health, Summary, Tenant, AppRouteState } from './types';
 import type { Page } from './lib/routes';
 import { LEGACY_ROUTE, parseHashRoute, writeHashRoute } from './lib/routes';
+import { marketIntelligenceApi } from './features/market-intelligence/api';
 
 export function App() {
   const [authed, setAuthed] = React.useState(!!localStorage.getItem('ct_token'));
@@ -26,6 +27,7 @@ export function App() {
   const [summary, setSummary] = React.useState<Summary | null>(null);
   const [tenants, setTenants] = React.useState<Tenant[]>([]);
   const [tenantId, setTenantId] = React.useState<string>('');
+  const [autonomousStatus, setAutonomousStatus] = React.useState('Checking…');
 
   const navigate = React.useCallback((page: Page, tab?: string) => {
     setRoute({ page, tab });
@@ -50,6 +52,10 @@ export function App() {
     setTenants(t);
     setUser(me);
     setTenantId((prev) => prev || me.memberships?.[0]?.tenant_id || t[0]?.id || '');
+    marketIntelligenceApi
+      .health()
+      .then((mi) => setAutonomousStatus(mi.status === 'ready' ? 'Intelligence ready' : 'Awaiting worker'))
+      .catch(() => setAutonomousStatus(h.api === 'HEALTHY' ? 'Foundation online' : 'Degraded'));
   }, []);
 
   React.useEffect(() => {
@@ -149,6 +155,7 @@ export function App() {
           summary={summary}
           tenant={activeTenant}
           user={user}
+          tenantId={activeTenant?.id ?? ''}
           instrumentCount={29}
         />
       );
@@ -163,6 +170,8 @@ export function App() {
       tenantId={activeTenant?.id ?? ''}
       onTenantChange={setTenantId}
       mode={summary?.mode ?? 'ANALYSIS_ONLY'}
+      health={health}
+      autonomousStatus={autonomousStatus}
       onLogout={logout}
       onOpenProfile={() => navigate('administration', 'profile')}
     >

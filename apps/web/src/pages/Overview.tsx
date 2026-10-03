@@ -1,143 +1,178 @@
 import React from 'react';
-import {
-  Activity,
-  Building2,
-  Database,
-  Radio,
-  Server,
-  ShieldCheck,
-  TrendingUp,
-  Users,
-  WalletCards,
-  Workflow,
-} from 'lucide-react';
+import { Bell, Building2, LineChart, Radio, Server } from 'lucide-react';
 import { Card, PageHeader, Status } from '../components/Ui';
-import type { AuthUser, Health, Summary, Tenant } from '../types';
+import { SectionCard } from '../components/SectionCard';
+import type { AuthUser, Health, Summary, Tenant, TradingAccount, AuditEvent } from '../types';
 import { marketIntelligenceApi } from '../features/market-intelligence/api';
+import { get } from '../lib/api';
 
 export function Overview({
   health,
   summary,
   tenant,
   user,
+  tenantId,
   instrumentCount = 29,
 }: {
   health: Health | null;
   summary: Summary | null;
   tenant?: Tenant;
   user?: AuthUser | null;
+  tenantId: string;
   instrumentCount?: number;
 }) {
-  const [miStatus, setMiStatus] = React.useState<string>('CHECKING');
-  const [escalations, setEscalations] = React.useState(0);
+  const [miReady, setMiReady] = React.useState(false);
+  const [accounts, setAccounts] = React.useState<TradingAccount[]>([]);
+  const [recentAudit, setRecentAudit] = React.useState<AuditEvent[]>([]);
 
   React.useEffect(() => {
-    marketIntelligenceApi
-      .health()
-      .then((h) => setMiStatus(h.status === 'ready' ? 'READY' : 'PAUSED'))
-      .catch(() => setMiStatus('OFFLINE'));
-    marketIntelligenceApi
-      .relationships()
-      .then((rows) =>
-        setEscalations(rows.filter((r) => r.inspection_priority === 'HIGH' || r.inspection_priority === 'CRITICAL').length),
-      )
-      .catch(() => setEscalations(0));
+    marketIntelligenceApi.health().then((h) => setMiReady(h.status === 'ready')).catch(() => setMiReady(false));
   }, []);
+
+  React.useEffect(() => {
+    if (!tenantId) return;
+    get<TradingAccount[]>(`/tenants/${tenantId}/accounts`).then(setAccounts).catch(() => setAccounts([]));
+    get<AuditEvent[]>(`/tenants/${tenantId}/audit?limit=8`).then(setRecentAudit).catch(() => setRecentAudit([]));
+  }, [tenantId]);
+
+  const balance = accounts.reduce((s, a) => s + (a.balance ?? 0), 0);
+  const equity = accounts.reduce((s, a) => s + (a.equity ?? 0), 0);
+  const primary = accounts[0];
 
   return (
     <>
       <PageHeader
         title="Overview"
-        subtitle="Operational dashboard — tenant context, platform health, intelligence status and activity."
+        subtitle="Operational command surface — live platform context, health and autonomous posture."
       />
+      <div className="overview-grid">
+        <SectionCard title="Tenant & trading account context" description="Active workspace and registry.">
+          <div className="kv-list">
+            <Kv k="Tenant" v={tenant?.name ?? '—'} />
+            <Kv k="Reporting currency" v={tenant?.reporting_currency ?? 'USD'} />
+            <Kv k="Registered accounts" v={String(summary?.accounts ?? accounts.length)} />
+            <Kv k="Operator" v={user?.display_name ?? user?.username ?? '—'} />
+          </div>
+        </SectionCard>
+
+        <SectionCard title="Account balance / equity / margin" description="Aggregated from trading account registry.">
+          <div className="kv-list">
+            <Kv k="Total balance" v={accounts.length ? balance.toFixed(2) : '—'} />
+            <Kv k="Total equity" v={accounts.length ? equity.toFixed(2) : '—'} />
+            <Kv k="Primary account" v={primary?.account_name ?? 'None registered'} />
+            <Kv k="Free margin" v="—" hint="Requires MT5 sync" />
+          </div>
+        </SectionCard>
+
+        <SectionCard title="MT5 connection status">
+          <Status value={health?.mt5?.status ?? 'DISCONNECTED'} />
+          <p className="muted section-hint">{health?.mt5?.message ?? health?.mt5?.adapter ?? 'LOCAL_MT5'}</p>
+        </SectionCard>
+
+        <SectionCard title="Market data status">
+          <Status value={miReady ? 'READY' : 'DISCONNECTED'} />
+          <p className="muted section-hint">Strength intelligence API · closed-bar policy</p>
+        </SectionCard>
+
+        <SectionCard title="Operating mode">
+          <Status value={summary?.mode ?? 'ANALYSIS_ONLY'} />
+        </SectionCard>
+
+        <SectionCard title="Autonomous engine health">
+          <div className="kv-list">
+            <Kv k="Market intelligence" v={miReady ? 'API ready' : 'Awaiting worker'} />
+            <Kv k="Workflow orchestrator" v="Awaiting integration" />
+            <Kv k="Execution path" v="Disabled (analysis-only)" />
+          </div>
+        </SectionCard>
+
+        <SectionCard title="Instruments monitored">
+          <strong className="overview-stat">{instrumentCount}</strong>
+          <p className="muted section-hint">Reference universe (FX + XAUUSD)</p>
+        </SectionCard>
+
+        <SectionCard title="Active opportunities">
+          <strong className="overview-stat">0</strong>
+          <p className="muted section-hint">Opportunity engine not connected</p>
+        </SectionCard>
+
+        <SectionCard title="Open positions">
+          <strong className="overview-stat">0</strong>
+          <p className="muted section-hint">Execution layer disabled</p>
+        </SectionCard>
+
+        <SectionCard title="Portfolio risk">
+          <strong className="overview-stat">—</strong>
+          <p className="muted section-hint">Risk authorization engine pending</p>
+        </SectionCard>
+
+        <SectionCard title="Recent activity / alerts" description="Latest tenant audit events.">
+          {recentAudit.length === 0 ? (
+            <p className="muted">No recent audit events. Administrative actions appear here automatically.</p>
+          ) : (
+            <ul className="activity-list">
+              {recentAudit.slice(0, 5).map((e) => (
+                <li key={e.id}>
+                  <Bell size={14} />
+                  <span>
+                    <b>{e.action}</b> · {e.created_at}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </SectionCard>
+      </div>
+
       <div className="metric-grid">
-        <Metric icon={<Building2 />} label="Active tenant" value={tenant?.name ?? '—'} detail={tenant?.reporting_currency ?? 'USD'} />
-        <Metric icon={<Users />} label="Platform users" value={String(summary?.users ?? '—')} detail="RBAC enforced" />
-        <Metric icon={<WalletCards />} label="Trading accounts" value={String(summary?.accounts ?? 0)} detail="Registry" />
-        <Metric icon={<Database />} label="Database" value={health?.database ?? 'CHECKING'} detail="SQLite · WAL" />
-      </div>
-      <div className="metric-grid">
-        <Metric icon={<Server />} label="API" value={health?.api ?? 'OFFLINE'} detail="FastAPI" />
-        <Metric icon={<Radio />} label="MT5 gateway" value={health?.mt5?.status ?? 'DISCONNECTED'} detail={health?.mt5?.adapter ?? 'LOCAL_MT5'} />
-        <Metric icon={<Activity />} label="Operating mode" value={(summary?.mode ?? 'ANALYSIS_ONLY').replaceAll('_', ' ')} detail="System-wide" />
-        <Metric icon={<TrendingUp />} label="Market intelligence" value={miStatus} detail={`${escalations} escalations`} />
-      </div>
-      <div className="two-col">
-        <Card>
-          <div className="card-title">
-            <div>
-              <h2>Autonomous engines</h2>
-              <p>Backend processing status (browser is observability only).</p>
-            </div>
+        <Card className="metric">
+          <div className="metric-icon">
+            <Server />
           </div>
-          <div className="readiness">
-            <Row icon={<TrendingUp />} title="Strength intelligence" text="API layer active; worker supplies snapshots." />
-            <Row icon={<Workflow />} title="Workflow orchestrator" text="Awaiting orchestration API integration." />
-            <Row icon={<ShieldCheck />} title="Risk & execution" text="Analysis-only — no live order path." />
-          </div>
-        </Card>
-        <Card>
-          <div className="card-title">
-            <div>
-              <h2>Trading posture</h2>
-              <p>Foundation-safe defaults.</p>
-            </div>
-          </div>
-          <div className="health-row">
-            <span>Open positions</span>
-            <b>0</b>
-          </div>
-          <div className="health-row">
-            <span>Active opportunities</span>
-            <b>0</b>
-          </div>
-          <div className="health-row">
-            <span>Portfolio risk utilization</span>
-            <b>—</b>
-          </div>
-          <div className="health-row">
-            <span>Reference universe</span>
-            <b>{instrumentCount} instruments</b>
-          </div>
-          <div className="health-row">
-            <span>Signed in as</span>
-            <b>{user?.display_name ?? user?.username ?? '—'}</b>
-          </div>
-        </Card>
-      </div>
-      <Card>
-        <div className="card-title">
           <div>
-            <h2>Recent system activity</h2>
-            <p>Use System Control → Audit Trail for full administrative history.</p>
+            <span>API</span>
+            <strong>{health?.api ?? 'OFFLINE'}</strong>
           </div>
-        </div>
-        <p className="muted">Audit events are tenant-scoped and available under System Control. Autonomous decision logs will append here when workflow engines are connected.</p>
-      </Card>
+        </Card>
+        <Card className="metric">
+          <div className="metric-icon">
+            <Building2 />
+          </div>
+          <div>
+            <span>SQLite</span>
+            <strong>{health?.database ?? '—'}</strong>
+          </div>
+        </Card>
+        <Card className="metric">
+          <div className="metric-icon">
+            <Radio />
+          </div>
+          <div>
+            <span>MT5</span>
+            <strong>{health?.mt5?.status ?? 'DISCONNECTED'}</strong>
+          </div>
+        </Card>
+        <Card className="metric">
+          <div className="metric-icon">
+            <LineChart />
+          </div>
+          <div>
+            <span>Connections</span>
+            <strong>{summary?.connections ?? 0}</strong>
+          </div>
+        </Card>
+      </div>
     </>
   );
 }
 
-function Metric({ icon, label, value, detail }: { icon: React.ReactNode; label: string; value: string; detail: string }) {
+function Kv({ k, v, hint }: { k: string; v: string; hint?: string }) {
   return (
-    <Card className="metric">
-      <div className="metric-icon">{icon}</div>
+    <div className="kv-row">
+      <span>{k}</span>
       <div>
-        <span>{label}</span>
-        <strong>{value}</strong>
-        <small>{detail}</small>
-      </div>
-    </Card>
-  );
-}
-
-function Row({ icon, title, text }: { icon: React.ReactNode; title: string; text: string }) {
-  return (
-    <div className="ready">
-      {icon}
-      <div>
-        <b>{title}</b>
-        <p>{text}</p>
+        <b>{v}</b>
+        {hint && <small>{hint}</small>}
       </div>
     </div>
   );

@@ -23,6 +23,8 @@ export const LEGACY_ROUTE: Record<
   profile: { page: 'administration', tab: 'profile' },
   connections: { page: 'system-control', tab: 'mt5' },
   system: { page: 'system-control', tab: 'mode' },
+  engines: { page: 'system-control', tab: 'engines' },
+  config: { page: 'system-control', tab: 'config' },
   audit: { page: 'system-control', tab: 'audit' },
   'strength-matrix': { page: 'strength-intelligence', tab: 'matrix' },
 };

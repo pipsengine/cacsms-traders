@@ -4,7 +4,7 @@ import { PageTabs, TabPanel } from '../../components/PageTabs';
 import { Tenants } from '../Tenants';
 import { Users } from '../Users';
 import { Roles } from '../Roles';
-import { Accounts } from '../Accounts';
+import { AccountsPanel } from '../hub-panels/AccountsPanel';
 import { Profile } from '../Profile';
 import type { AuthUser, Tenant } from '../../types';
 import { writeHashRoute } from '../../lib/routes';
@@ -54,7 +54,7 @@ export function Administration({
         <Roles tenantId={tenantId} />
       </TabPanel>
       <TabPanel active={tab} id="accounts">
-        <Accounts tenantId={tenantId} onChanged={onRefresh} />
+        <AccountsPanel tenantId={tenantId} tenant={tenants.find((t) => t.id === tenantId)} onChanged={onRefresh} />
       </TabPanel>
       <TabPanel active={tab} id="profile">
         <Profile user={user} onChanged={onRefresh} onLogout={onLogout} />

@@ -4,7 +4,15 @@ import { Card, Empty, PageHeader } from '../components/Ui';
 import { get } from '../lib/api';
 import type { AuditEvent } from '../types';
 
-export function Audit({ tenantId }: { tenantId: string }) {
+export function Audit({
+  tenantId,
+  embedded,
+  category = 'all',
+}: {
+  tenantId: string;
+  embedded?: boolean;
+  category?: string;
+}) {
   const [rows, setRows] = React.useState<AuditEvent[]>([]);
   const [q, setQ] = React.useState('');
 
@@ -13,7 +21,16 @@ export function Audit({ tenantId }: { tenantId: string }) {
     get<AuditEvent[]>(`/tenants/${tenantId}/audit?limit=200`).then(setRows).catch(() => setRows([]));
   }, [tenantId]);
 
-  const filtered = rows.filter(
+  const categoryFiltered = rows.filter((e) => {
+    if (category === 'all') return true;
+    if (category === 'user') return e.action.includes('USER') || e.action.includes('TENANT');
+    if (category === 'system') return e.action.includes('SYSTEM');
+    if (category === 'security') return e.action.includes('AUTH') || e.action.includes('SECURITY');
+    if (category === 'config') return e.action.includes('SETTINGS') || e.action.includes('MODE');
+    return false;
+  });
+
+  const filtered = categoryFiltered.filter(
     (e) =>
       !q ||
       e.action.toLowerCase().includes(q.toLowerCase()) ||
@@ -23,7 +40,7 @@ export function Audit({ tenantId }: { tenantId: string }) {
 
   return (
     <>
-      <PageHeader title="Audit Trail" subtitle="Reconstruct administrative and future autonomous decisions with correlation IDs." />
+      {!embedded && <PageHeader title="Audit Trail" subtitle="Reconstruct administrative and future autonomous decisions with correlation IDs." />}
       <Card>
         <div className="toolbar">
           <div className="search">

@@ -18,7 +18,7 @@ import {
   Workflow,
   Zap,
 } from 'lucide-react';
-import type { AuthUser, Tenant } from '../types';
+import type { AuthUser, Health, Tenant } from '../types';
 import type { Page } from '../lib/routes';
 import { PAGE_CRUMB } from '../lib/routes';
 
@@ -75,6 +75,8 @@ export function AppShell({
   tenantId,
   onTenantChange,
   mode,
+  health,
+  autonomousStatus,
   onLogout,
   onOpenProfile,
 }: {
@@ -86,6 +88,8 @@ export function AppShell({
   tenantId: string;
   onTenantChange: (id: string) => void;
   mode: string;
+  health: Health | null;
+  autonomousStatus: string;
   onLogout: () => void;
   onOpenProfile: () => void;
 }) {
@@ -100,7 +104,7 @@ export function AppShell({
           {!collapsed && (
             <div>
               <b>Cacsms-Traders</b>
-              <span>Autonomous Trader</span>
+              <span>Autonomous Trading Platform</span>
             </div>
           )}
           <button type="button" onClick={() => setCollapsed(!collapsed)}>
@@ -125,12 +129,22 @@ export function AppShell({
             </div>
           ))}
         </nav>
-        <div className="side-foot">
+        <div className="side-foot side-foot-status">
           <div className="live-dot" />
           {!collapsed && (
-            <div>
-              <b>{mode.replaceAll('_', ' ')}</b>
-              <span>Operations interface</span>
+            <div className="side-foot-lines">
+              <div>
+                <span>Operating mode</span>
+                <b>{mode.replaceAll('_', ' ')}</b>
+              </div>
+              <div>
+                <span>MT5 connection</span>
+                <b>{health?.mt5?.status ?? 'DISCONNECTED'}</b>
+              </div>
+              <div>
+                <span>Autonomous system</span>
+                <b>{autonomousStatus}</b>
+              </div>
             </div>
           )}
         </div>
