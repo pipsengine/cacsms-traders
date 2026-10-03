@@ -4,8 +4,8 @@
   "version": "1.0.0",
   "description": "Cacsms-Traders platform — run API and web together with npm run dev",
   "scripts": {
-    "dev": "concurrently -k -n api,web -c blue,magenta \"py scripts/run_api.py\" \"npm run dev --prefix apps/web\"",
-    "dev:api": "py scripts/run_api.py",
+    "dev": "node scripts/pre-dev.mjs && concurrently -k -n api,web -c blue,magenta \"py -3.14 scripts/run_api.py\" \"npm run dev --prefix apps/web -- --port 5173 --strictPort\"",
+    "dev:api": "py -3.14 scripts/run_api.py",
     "dev:web": "npm run dev --prefix apps/web"
   },
   "devDependencies": {

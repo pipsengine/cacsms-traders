@@ -11,17 +11,43 @@ _TF_MAP = {
     "M1": "M1",
     "M5": "M5",
     "M15": "M15",
+    "M30": "M30",
     "H1": "H1",
+    "H4": "H4",
     "D1": "D1",
     "W1": "W1",
     "MN": "MN1",
 }
 
+_LIVE_TF_MAP = {**_TF_MAP, "H8": "H8", "W": "W1", "MN1": "MN1"}
+
 
 def _broker_symbol(pair: str) -> str:
     prefix = os.getenv("MT5_SYMBOL_PREFIX", "")
     suffix = os.getenv("MT5_SYMBOL_SUFFIX", "")
-    return f"{prefix}{pair.upper()}{suffix}"
+    return f"{prefix}{pair.upper().replace('/', '')}{suffix}"
+
+
+def symbol_candidates(pair: str) -> list[str]:
+    """Try broker decoration and common IC Markets / MT5 suffix variants."""
+    p = pair.upper().replace("/", "")
+    prefix = os.getenv("MT5_SYMBOL_PREFIX", "")
+    suffix = os.getenv("MT5_SYMBOL_SUFFIX", "")
+    out: list[str] = []
+    for s in (suffix, "", ".a", ".A", ".m", "m", ".raw", ".pro"):
+        cand = f"{prefix}{p}{s}"
+        if cand not in out:
+            out.append(cand)
+    if p not in out:
+        out.append(p)
+    return out
+
+
+def _select_symbol(mt5, pair: str) -> str:
+    for sym in symbol_candidates(pair):
+        if mt5.symbol_select(sym, True):
+            return sym
+    return symbol_candidates(pair)[0]
 
 
 class NullMarketDataGateway:
@@ -48,7 +74,10 @@ class Mt5MarketDataGateway:
         except ImportError as e:
             raise MarketDataUnavailable("MetaTrader5 Python package is not installed") from e
         self._mt5 = mt5
-        if not mt5.initialize():
+        self._resolved: dict[str, str] = {}
+        from .mt5_session import is_initialized, initialize
+
+        if not is_initialized() and not initialize():
             err = mt5.last_error()
             raise MarketDataUnavailable(f"MT5 initialize failed: {err}")
 
@@ -74,12 +103,18 @@ class Mt5MarketDataGateway:
 
     def closed_candles(self, symbol: str, timeframe: str, count: int) -> list[Candle]:
         mt5 = self._mt5
-        sym = symbol if len(symbol) > 6 else _broker_symbol(symbol)
+        sym = symbol if len(symbol) > 6 else _select_symbol(mt5, symbol)
         if not mt5.symbol_select(sym, True):
             raise MarketDataUnavailable(f"Symbol not available in MT5: {sym}")
         tf = self._tf_const(timeframe)
         # Bar 0 is the forming candle — fetch from shift 1 onward.
         rates = mt5.copy_rates_from_pos(sym, tf, 1, count)
+        # Brokers with short monthly/weekly history reject oversized requests outright.
+        for smaller in (120, 36, 12):
+            if rates is not None and len(rates) > 0:
+                break
+            if smaller < count:
+                rates = mt5.copy_rates_from_pos(sym, tf, 1, smaller)
         if rates is None or len(rates) == 0:
             raise MarketDataUnavailable(f"No rates for {sym} {timeframe}")
         out: list[Candle] = []
@@ -105,6 +140,36 @@ class Mt5MarketDataGateway:
             )
         return out
 
+    def latest_closed_open_time(self, symbol: str, timeframe: str) -> int | None:
+        """Open time (epoch s) of the most recent closed bar — cheap change probe."""
+        mt5 = self._mt5
+        sym = symbol if len(symbol) > 6 else _select_symbol(mt5, symbol)
+        rates = mt5.copy_rates_from_pos(sym, self._tf_const(timeframe), 1, 1)
+        if rates is None or len(rates) == 0:
+            return None
+        return int(rates[0]["time"])
+
+    def current_closes(self, symbol: str, timeframe: str, count: int) -> list[tuple[datetime, float]]:
+        """(open_time, close) oldest → newest starting at bar 0, i.e. iClose(symbol, tf, 0..count-1)."""
+        mt5 = self._mt5
+        sym = self._resolved.get(symbol)
+        if sym is None:
+            sym = symbol if len(symbol) > 6 else _select_symbol(mt5, symbol)
+            self._resolved[symbol] = sym
+        name = _LIVE_TF_MAP.get(timeframe.upper())
+        const = getattr(mt5, f"TIMEFRAME_{name}", None) if name else None
+        if const is None:
+            raise MarketDataUnavailable(f"Unsupported timeframe for MT5: {timeframe}")
+        rates = mt5.copy_rates_from_pos(sym, const, 0, count)
+        for smaller in (100, 36, 12):
+            if rates is not None and len(rates) > 0:
+                break
+            if smaller < count:
+                rates = mt5.copy_rates_from_pos(sym, const, 0, smaller)
+        if rates is None or len(rates) == 0:
+            raise MarketDataUnavailable(f"No rates for {sym} {timeframe}")
+        return [(datetime.fromtimestamp(int(r["time"]), tz=timezone.utc), float(r["close"])) for r in rates]
+
     def latest_tick(self, symbol: str) -> dict:
         sym = symbol if len(symbol) > 6 else _broker_symbol(symbol)
         tick = self._mt5.symbol_info_tick(sym)
@@ -124,5 +189,6 @@ def create_market_data_gateway():
 
 
 def mt5_is_connected() -> bool:
-    gw = create_market_data_gateway()
-    return bool(gw.connection_state().get("connected"))
+    from .mt5_session import connection_state
+
+    return bool(connection_state().get("connected"))

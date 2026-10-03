@@ -1,0 +1,438 @@
+/**
+ * Compact density for laptop / short viewports — more content visible without scrolling.
+ */
+@media (max-width: 1600px), (max-height: 920px) {
+  :root {
+    --sidebar-w: 212px;
+    --sidebar-w-collapsed: 68px;
+    --r: 11px;
+  }
+
+  body {
+    font-size: 13px;
+  }
+
+  /* Sidebar */
+  .brand {
+    height: 56px;
+    padding: 0 12px;
+    gap: 8px;
+  }
+
+  .mark {
+    width: 30px;
+    height: 30px;
+    font-size: 15px;
+    border-radius: 8px;
+  }
+
+  .brand b {
+    font-size: 13px;
+  }
+
+  .brand span {
+    font-size: 10px;
+    margin-top: 1px;
+  }
+
+  .side nav {
+    padding: 8px 8px;
+  }
+
+  .nav-section {
+    padding: 8px 8px 4px;
+    font-size: 9px;
+  }
+
+  .nav {
+    padding: 7px 9px;
+    gap: 8px;
+    margin: 1px 0;
+    border-radius: 7px;
+  }
+
+  .nav svg,
+  .brand svg {
+    width: 15px;
+    height: 15px;
+  }
+
+  .side-foot-figma {
+    margin: 6px 8px 8px !important;
+    padding: 8px 10px !important;
+    border-radius: 10px;
+  }
+
+  .side-foot-lines {
+    gap: 6px;
+  }
+
+  .side-dot {
+    width: 7px;
+    height: 7px;
+    margin-top: 3px;
+  }
+
+  .side-foot-lines div span {
+    font-size: 8px;
+  }
+
+  .side-foot-lines div b {
+    font-size: 10px;
+    margin-top: 1px;
+  }
+
+  /* Top bar */
+  .top {
+    min-height: 52px;
+    padding: 6px 14px !important;
+    row-gap: 6px;
+  }
+
+  .top svg,
+  .top-bell svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .top-search {
+    height: 34px;
+    max-width: 320px;
+    padding: 0 10px;
+  }
+
+  .top-search input {
+    font-size: 12px;
+  }
+
+  .tenant-switch,
+  .profile {
+    padding: 6px 9px;
+  }
+
+  .tenant-switch select {
+    font-size: 12px;
+    max-width: 120px;
+  }
+
+  .primary,
+  .secondary {
+    padding: 7px 11px;
+    font-size: 11px;
+  }
+
+  .crumb {
+    font-size: 13px;
+  }
+
+  /* Main pages */
+  .page {
+    padding: 12px 16px !important;
+  }
+
+  .page-head {
+    margin-bottom: 12px;
+  }
+
+  .page-head h1 {
+    font-size: 19px !important;
+    margin-bottom: 3px;
+  }
+
+  .page-head p {
+    font-size: 11px;
+    line-height: 1.4;
+  }
+
+  .card {
+    padding: 12px 14px;
+    border-radius: 11px;
+  }
+
+  .overview-grid,
+  .metric-grid,
+  .pipeline-grid {
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .section-card-head {
+    margin-bottom: 8px;
+  }
+
+  .section-card-head h3 {
+    font-size: 12px;
+    margin-bottom: 2px;
+  }
+
+  .section-card-head p,
+  .section-hint,
+  .muted {
+    font-size: 10px;
+    line-height: 1.35;
+  }
+
+  .section-card-body {
+    font-size: 11px;
+  }
+
+  .kv-list {
+    gap: 4px;
+  }
+
+  .kv-row {
+    padding: 5px 0;
+  }
+
+  .kv-row span {
+    font-size: 10px;
+  }
+
+  .kv-row b {
+    font-size: 11px;
+  }
+
+  .overview-stat {
+    font-size: 17px;
+    margin: 2px 0;
+  }
+
+  .metric {
+    gap: 10px;
+  }
+
+  .metric-icon {
+    width: 34px;
+    height: 34px;
+    border-radius: 9px;
+  }
+
+  .metric-icon svg {
+    width: 17px;
+  }
+
+  .metric span {
+    font-size: 11px;
+  }
+
+  .metric strong {
+    font-size: 17px;
+    margin: 2px 0;
+  }
+
+  .status {
+    padding: 3px 7px;
+    font-size: 9px;
+  }
+
+  .card-title h2,
+  .table-head h2 {
+    font-size: 14px;
+  }
+
+  .page-tabs {
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+  }
+
+  .page-tab {
+    padding: 6px 10px;
+    font-size: 11px;
+  }
+
+  .notice {
+    padding: 10px 12px;
+    margin-bottom: 12px;
+  }
+
+  .engine-placeholder h2 {
+    font-size: 15px;
+  }
+
+  .engine-placeholder p {
+    font-size: 11px;
+  }
+
+  .engine-placeholder-icon {
+    width: 40px;
+    height: 40px;
+  }
+
+  /* Market intelligence */
+  .mi-page {
+    padding: 10px 14px 20px !important;
+  }
+
+  .mi-pagehead {
+    margin-bottom: 14px;
+  }
+
+  .mi-pagehead h1 {
+    font-size: 21px !important;
+    margin: 3px 0 5px;
+  }
+
+  .mi-pagehead p {
+    font-size: 11px;
+  }
+
+  .mi-metrics {
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+
+  .mi-metric {
+    padding: 12px 13px;
+    border-radius: 11px;
+  }
+
+  .mi-metric > span {
+    font-size: 11px;
+  }
+
+  .mi-metric strong {
+    font-size: 20px;
+    margin: 4px 0 2px;
+  }
+
+  .mi-card > header {
+    padding: 12px 14px;
+  }
+
+  .mi-card h2,
+  .mi-card h3 {
+    font-size: 14px;
+  }
+
+  .mi-table th,
+  .mi-table td {
+    padding: 8px 10px;
+    font-size: 11px;
+  }
+
+  /* System control */
+  .sc-hub .sc-hero h1 {
+    font-size: 21px !important;
+  }
+
+  .sc-hub .sc-heroIcon {
+    width: 52px;
+    height: 52px;
+  }
+
+  .sc-hub .sc-heroIcon svg {
+    width: 26px;
+    height: 26px;
+  }
+
+  .sc-hub .sc-card {
+    padding: 11px 14px;
+    border-radius: 11px;
+  }
+
+  .sc-hub .sc-titleIcon {
+    width: 40px;
+    height: 40px;
+  }
+
+  .sc-hub .sc-cardTitle h3 {
+    font-size: 14px;
+  }
+
+  .sc-hub .sc-tabsFigma button {
+    padding: 10px 14px;
+    font-size: 12px;
+  }
+
+  .sc-hub .sc-btnPrimary,
+  .sc-hub .sc-btnSecondary {
+    padding: 8px 14px;
+    font-size: 11px;
+  }
+
+  .sc-hub .sc-action {
+    height: 56px;
+    padding: 10px;
+  }
+
+  .page.sc-hub-page {
+    padding: 8px 12px !important;
+  }
+
+  .sc-hub .sc-subtabs {
+    margin: 10px 0 8px;
+  }
+
+  .sc-hub .sc-steps {
+    padding: 8px 12px;
+  }
+
+  .sc-hub .sc-steps ol {
+    gap: 4px;
+  }
+
+  .sc-hub .sc-card.sc-lower {
+    padding: 10px 12px;
+  }
+
+  .sc-hub .sc-grid.sc-grid-compact {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .sc-hub .sc-steps {
+    font-size: 10px;
+    margin-bottom: 8px;
+  }
+
+  .sc-hub .sc-hero h1 {
+    font-size: 18px !important;
+  }
+
+  .sc-hub .sc-summaryStrip {
+    display: none;
+  }
+
+  .page.overview-page {
+    padding: 10px 14px 14px !important;
+  }
+
+  .ov-hero-title h1 {
+    font-size: 18px !important;
+  }
+
+  .ov-kpi-row {
+    gap: 8px;
+  }
+
+  .ov-kpi-value {
+    font-size: 14px;
+  }
+
+  .ov-triple-row {
+    gap: 8px;
+  }
+}
+
+/* Extra-tight on small laptop heights (768px class displays) */
+@media (max-height: 800px) {
+  .page-head h1 {
+    font-size: 17px !important;
+  }
+
+  .overview-grid {
+    gap: 8px;
+  }
+
+  .card {
+    padding: 10px 12px;
+  }
+
+  .brand {
+    height: 50px;
+  }
+
+  .top {
+    min-height: 48px;
+  }
+}

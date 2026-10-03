@@ -1,4 +1,7 @@
 from fastapi import Header,HTTPException
+import sqlite3
+import time
+
 from .core.database import connect, db
 from .core.security import token_hash,iso
 
@@ -6,7 +9,14 @@ def get_db():
  c=connect()
  try:
   yield c
-  c.commit()
+  for attempt in range(8):
+   try:
+    c.commit()
+    break
+   except sqlite3.OperationalError as exc:
+    if "locked" not in str(exc).lower() or attempt >= 7:
+     raise
+    time.sleep(0.05 * (attempt + 1))
  except Exception:
   c.rollback()
   raise

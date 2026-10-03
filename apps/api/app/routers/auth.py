@@ -1,7 +1,7 @@
 from fastapi import APIRouter,Depends,HTTPException,Header
 import uuid
 from ..schemas.auth import LoginRequest,ChangePasswordRequest,ProfilePatch
-from ..core.database import db
+from ..core.database import db, execute_retry
 from ..core.security import verify_password,new_token,token_hash,expires,iso,hash_password
 from ..deps import current_user
 from ..core.audit import write_audit
@@ -20,7 +20,9 @@ def login(x:LoginRequest):
  with db() as c:
   u=c.execute("SELECT * FROM users WHERE username=? AND status='ACTIVE'",(x.username,)).fetchone()
   if not u or not verify_password(x.password,u['password_hash']): raise HTTPException(401,'Invalid credentials')
-  token=new_token(); sid=str(uuid.uuid4()); c.execute('INSERT INTO auth_sessions(id,user_id,token_hash,expires_at,created_at) VALUES(?,?,?,?,?)',(sid,u['id'],token_hash(token),expires(),iso())); c.execute('UPDATE users SET last_login_at=? WHERE id=?',(iso(),u['id']))
+  token=new_token(); sid=str(uuid.uuid4())
+  execute_retry(c,'INSERT INTO auth_sessions(id,user_id,token_hash,expires_at,created_at) VALUES(?,?,?,?,?)',(sid,u['id'],token_hash(token),expires(),iso()))
+  execute_retry(c,'UPDATE users SET last_login_at=? WHERE id=?',(iso(),u['id']))
   return {'access_token':token,'token_type':'bearer','user':user_payload(c,u)}
 @router.post('/logout')
 def logout(user=Depends(current_user),authorization:str|None=Header(default=None)):

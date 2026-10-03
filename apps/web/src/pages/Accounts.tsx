@@ -86,7 +86,7 @@ export function Accounts({
         {visible.length === 0 ? (
           <Empty
             title="No trading accounts registered"
-            text="Add a Demo account first. Live and Prop Firm accounts use the same registry but retain independent safety controls."
+            text="Register a trading account here, then link it under System Control → MT5 Connections."
           />
         ) : (
           <div className="table-wrap">

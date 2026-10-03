@@ -1,0 +1,467 @@
+/**
+ * Site-wide layout: fixed sidebar + grid column spacer; only main content scrolls.
+ * Imported last so it overrides page-specific grids and fixed widths.
+ */
+
+html,
+body {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+#root {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+/* --- App shell: fixed sidebar; first grid column reserves width (no horizontal overflow) --- */
+.shell {
+  display: grid !important;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr) !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+.shell.shell--collapsed {
+  grid-template-columns: var(--sidebar-w-collapsed) minmax(0, 1fr) !important;
+}
+
+.side {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  bottom: 0 !important;
+  width: var(--sidebar-w) !important;
+  height: 100dvh !important;
+  max-height: 100dvh;
+  overflow: hidden !important;
+  min-width: 0;
+  z-index: 10;
+}
+
+.side nav {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+}
+
+.nav {
+  min-width: 0;
+}
+
+.nav span {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.35;
+  white-space: normal;
+  overflow: visible;
+}
+
+.side.collapsed {
+  width: var(--sidebar-w-collapsed) !important;
+}
+
+.brand {
+  min-width: 0;
+  flex-shrink: 0;
+}
+
+.brand > div:nth-child(2) {
+  min-width: 0 !important;
+  flex: 1;
+  overflow: hidden;
+}
+
+.brand b,
+.brand span {
+  white-space: normal;
+  line-height: 1.25;
+}
+
+.side .brand,
+.side-foot-status {
+  flex-shrink: 0;
+}
+
+.side-foot-figma {
+  flex-shrink: 0;
+  margin-left: 8px !important;
+  margin-right: 8px !important;
+}
+
+.workspace {
+  grid-column: 2 !important;
+  margin-left: 0 !important;
+  width: auto !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  overflow-x: hidden !important;
+  display: block;
+  min-height: 100dvh;
+}
+
+.side.collapsed ~ .workspace {
+  grid-column: 2 !important;
+  margin-left: 0 !important;
+  width: auto !important;
+  max-width: 100% !important;
+}
+
+.workspace > .top {
+  min-width: 0;
+  max-width: 100%;
+  flex-shrink: 0;
+}
+
+.workspace > .page {
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: visible;
+}
+
+.page-inner {
+  min-width: 0;
+  max-width: 100%;
+  width: 100%;
+  container-type: inline-size;
+  container-name: page;
+}
+
+/* Main-area width drives columns (not full viewport — accounts for sidebar) */
+@container page (min-width: 1050px) {
+  .overview-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+}
+
+@container page (max-width: 520px) {
+  .overview-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@container page (max-width: 720px) {
+  .two-col,
+  .profile-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .metric-grid,
+  .metric-grid.three,
+  .pipeline-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@container page (max-width: 900px) {
+  .sc-hub .sc-grid,
+  .sc-hub .sc-actionGrid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .mi-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}
+
+@container page (min-width: 901px) {
+  .mi-metrics {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr)) !important;
+  }
+}
+
+.page {
+  padding: clamp(16px, 2.5vw, 28px);
+  box-sizing: border-box;
+}
+
+.card,
+.section-card,
+.notice,
+.engine-placeholder {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.page-head {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.page-head h1 {
+  font-size: clamp(20px, 3.5vw, 25px);
+}
+
+.two-col {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+}
+
+.profile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  gap: 16px;
+}
+
+.metric-grid,
+.metric-grid.three {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
+}
+
+.roadmap {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
+}
+
+.readiness {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+}
+
+.form-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+}
+
+.mode-list {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr));
+}
+
+.pipeline-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+}
+
+.toolbar,
+.embedded-toolbar,
+.hub-toolbar,
+.card-title,
+.table-head {
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.search {
+  min-width: 0;
+  flex: 1 1 180px;
+  max-width: 100%;
+}
+
+.table-wrap,
+.mini-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.detail-list > div,
+.health-row {
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+
+.gateway-item {
+  min-width: 0;
+}
+
+.engine-placeholder-inner {
+  flex-wrap: wrap;
+}
+
+.page-tabs {
+  overflow-x: auto;
+  flex-wrap: nowrap;
+  max-width: 100%;
+  -webkit-overflow-scrolling: touch;
+}
+
+.sub-tabs {
+  max-width: 100%;
+}
+
+/* Market intelligence (embedded in AppShell .page) */
+.mi-page {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  width: 100%;
+  padding: clamp(12px, 2vw, 28px) clamp(12px, 2vw, 32px) 40px;
+}
+
+.mi-page-embedded {
+  max-width: 100%;
+}
+
+.mi-pagehead {
+  flex-wrap: wrap;
+}
+
+.mi-pagehead h1 {
+  font-size: clamp(22px, 3.5vw, 30px);
+}
+
+.mi-metrics {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));
+}
+
+.mi-legend,
+.mi-history-stats,
+.mi-detail-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 130px), 1fr));
+}
+
+.mi-toolbar {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.mi-card > header {
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.mi-table-wrap {
+  max-width: 100%;
+}
+
+.mi-tabs {
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
+.mi-matrix-controls {
+  max-width: 100%;
+}
+
+.mi-status-bar .mi-refresh-btn,
+.mi-status-bar .mi-primary-btn {
+  margin-left: 0;
+}
+
+/* System Control hub */
+.sc-hub {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: clip;
+}
+
+.sc-hub .sc-hero h1 {
+  font-size: clamp(22px, 3.5vw, 27px);
+}
+
+.sc-hub .sc-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+}
+
+.sc-hub .sc-actionGrid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+}
+
+.sc-hub .sc-summaryStrip {
+  height: auto;
+  min-height: 68px;
+  max-width: 100%;
+  flex: 1 1 280px;
+}
+
+.sc-hub .sc-summaryStrip > div {
+  min-width: 0;
+  flex: 1 1 100px;
+}
+
+.sc-hub .sc-card.registry,
+.sc-hub .sc-card:has(.sc-tableHead) {
+  overflow-x: auto;
+  min-width: 0;
+}
+
+.sc-hub .sc-tableHead,
+.sc-hub .sc-tableRow {
+  min-width: 640px;
+}
+
+.sc-hub .sc-settingsGrid {
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 720px) {
+  .sc-hub .sc-settingsGrid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.sc-hub .sc-kv > div {
+  flex-wrap: wrap;
+}
+
+.sc-hub .sc-kv b {
+  word-break: break-word;
+}
+
+.sc-hub .sc-cardTitle {
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.sc-hub .sc-cardTitle .sc-pill,
+.sc-hub .sc-cardTitle .sc-btnSecondary {
+  margin-left: 0;
+}
+
+.sc-hub .sc-muted {
+  margin-left: 0;
+}
+
+@media (max-width: 1280px) {
+  :root {
+    --sidebar-w: 220px;
+  }
+
+  .top-left-cluster {
+    gap: 12px;
+  }
+
+  .crumb span {
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+@media (max-width: 1200px) {
+  .top-search {
+    display: none;
+  }
+
+  .top-right .profile span {
+    display: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .top-right .secondary {
+    font-size: 11px;
+    padding: 8px 10px;
+  }
+
+  .tenant-switch select {
+    max-width: 100px;
+  }
+}
+
+/* Undo legacy global.css rules that fight the grid shell */
+@media (max-width: 760px) {
+  .side {
+    width: auto !important;
+  }
+
+  .workspace,
+  .side.collapsed ~ .workspace {
+    margin-left: 0 !important;
+    width: auto !important;
+    max-width: 100% !important;
+  }
+}

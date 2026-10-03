@@ -31,11 +31,6 @@ export const marketIntelligenceApi = {
     get<StrengthMatrixPayload>(
       `/matrix?${new URLSearchParams({ sort_by: sortBy, calculation_mode: calculationMode })}`,
     ),
-  computeMatrix: (sortBy = 'AVG', calculationMode: CalculationMode = 'CLOSE_CLOSE') =>
-    request<StrengthMatrixPayload>(
-      `/matrix/compute?${new URLSearchParams({ sort_by: sortBy, calculation_mode: calculationMode })}`,
-      { method: 'POST' },
-    ),
   runCycle: (ingest = true) =>
     request<Record<string, unknown>>(`/cycle?ingest=${ingest ? 'true' : 'false'}`, { method: 'POST' }),
   ingest: () => request<Record<string, unknown>>('/ingest', { method: 'POST' }),
@@ -46,6 +41,10 @@ export const marketIntelligenceApi = {
     ),
   strengthHistory: (c: string, tf: string) =>
     get<StrengthRow[]>(`/strength/${c}/history?timeframe=${tf}`),
+  strengthSparklines: (timeframe = 'AVG', limit = 32) =>
+    get<Record<string, { as_of: string; score: number }[]>>(
+      `/strength/sparklines?timeframe=${timeframe}&limit=${limit}`,
+    ),
   relationshipHistory: (p: string, tf: string) =>
     get<RelationshipRow[]>(`/relationships/${p}/history?timeframe=${tf}`),
   quality: () => get<QualityRow[]>('/data-quality'),

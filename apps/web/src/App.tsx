@@ -26,7 +26,12 @@ export function App() {
   const [health, setHealth] = React.useState<Health | null>(null);
   const [summary, setSummary] = React.useState<Summary | null>(null);
   const [tenants, setTenants] = React.useState<Tenant[]>([]);
-  const [tenantId, setTenantId] = React.useState<string>('');
+  const [tenantId, setTenantId] = React.useState<string>(() => localStorage.getItem('ct_tenant_id') || '');
+
+  const selectTenant = React.useCallback((id: string) => {
+    setTenantId(id);
+    if (id) localStorage.setItem('ct_tenant_id', id);
+  }, []);
   const [autonomousStatus, setAutonomousStatus] = React.useState('Checking…');
 
   const navigate = React.useCallback((page: Page, tab?: string) => {
@@ -51,7 +56,11 @@ export function App() {
     setSummary(s);
     setTenants(t);
     setUser(me);
-    setTenantId((prev) => prev || me.memberships?.[0]?.tenant_id || t[0]?.id || '');
+    setTenantId((prev) => {
+      const next = prev || me.memberships?.[0]?.tenant_id || t[0]?.id || '';
+      if (next) localStorage.setItem('ct_tenant_id', next);
+      return next;
+    });
     marketIntelligenceApi
       .health()
       .then((mi) => setAutonomousStatus(mi.status === 'ready' ? 'Intelligence ready' : 'Awaiting worker'))
@@ -91,7 +100,8 @@ export function App() {
     );
   }
 
-  const activeTenant = tenants.find((t) => t.id === tenantId) ?? tenants[0];
+  const activeTenantId = tenantId || tenants[0]?.id || '';
+  const activeTenant = tenants.find((t) => t.id === activeTenantId) ?? tenants[0];
   const tab = route.tab;
 
   let body: React.ReactNode;
@@ -100,7 +110,7 @@ export function App() {
       body = <WorkflowEngine />;
       break;
     case 'strength-intelligence':
-      body = <StrengthIntelligence initialTab={tab} />;
+      body = <StrengthIntelligence initialTab={tab} health={health} />;
       break;
     case 'market-scanner':
       body = <MarketScanner />;
@@ -128,7 +138,7 @@ export function App() {
         <Administration
           initialTab={tab}
           tenants={tenants}
-          tenantId={activeTenant?.id ?? ''}
+          tenantId={activeTenantId}
           user={user}
           onRefresh={refresh}
           onLogout={logout}
@@ -140,7 +150,7 @@ export function App() {
       body = (
         <SystemControl
           initialTab={tab}
-          tenantId={activeTenant?.id ?? ''}
+          tenantId={activeTenantId}
           health={health}
           summary={summary}
           onChanged={refresh}
@@ -155,8 +165,7 @@ export function App() {
           health={health}
           summary={summary}
           tenant={activeTenant}
-          user={user}
-          tenantId={activeTenant?.id ?? ''}
+          tenantId={activeTenantId}
           instrumentCount={29}
         />
       );
@@ -168,8 +177,8 @@ export function App() {
       navigate={navigate}
       user={user}
       tenants={tenants}
-      tenantId={activeTenant?.id ?? ''}
-      onTenantChange={setTenantId}
+      tenantId={activeTenantId}
+      onTenantChange={selectTenant}
       mode={summary?.mode ?? 'ANALYSIS_ONLY'}
       health={health}
       autonomousStatus={autonomousStatus}

@@ -1,0 +1,81 @@
+import { BarChart3, CalendarDays } from 'lucide-react';
+import type { MatrixMeta } from '../types';
+
+export function utcParts(iso: string) {
+  const d = new Date(iso);
+  const date = new Intl.DateTimeFormat('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'UTC',
+  }).format(d);
+  const time = new Intl.DateTimeFormat('en-GB', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+    timeZone: 'UTC',
+  }).format(d);
+  return { date, time: `${time} (UTC+0)` };
+}
+
+type LiveStatus = { tone: 'live' | 'warn' | 'off'; title: string; sub: string };
+
+function liveStatus(meta: MatrixMeta | null, apiError: boolean): LiveStatus {
+  if (apiError) return { tone: 'off', title: 'API UNAVAILABLE', sub: 'Showing last received calculation' };
+  if (!meta) return { tone: 'warn', title: 'CONNECTING', sub: 'Waiting for strength engine' };
+  if (!meta.mt5_connected || meta.stale_reason === 'MT5_DISCONNECTED') {
+    return { tone: 'off', title: 'MT5 DISCONNECTED', sub: 'Last valid calculation shown as stale' };
+  }
+  if (meta.stale_reason === 'ENGINE_STALLED') {
+    return { tone: 'warn', title: 'STALE DATA', sub: 'Strength engine not refreshing' };
+  }
+  if (meta.live_data) {
+    const basis = meta.closed_bar_only ? 'Closed bars only' : 'Live price (EarnForex)';
+    return { tone: 'live', title: 'LIVE DATA', sub: `MT5 Connected • ${basis}` };
+  }
+  return { tone: 'warn', title: 'SYNCING', sub: 'MT5 Connected • Completing basket history' };
+}
+
+export function StrengthPageHeader({ meta, apiError = false }: { meta: MatrixMeta | null; apiError?: boolean }) {
+  const calc = meta?.last_calculated_at ? utcParts(meta.last_calculated_at) : null;
+  const status = liveStatus(meta, apiError);
+
+  return (
+    <header className="si-page-head">
+      <nav className="si-breadcrumb" aria-label="Breadcrumb">
+        Market Intelligence <span aria-hidden>›</span> <span>Strength Intelligence</span>
+      </nav>
+      <div className="si-title-row">
+        <div className="si-title-block">
+          <div className="si-title-icon" aria-hidden>
+            <BarChart3 size={22} />
+          </div>
+          <div>
+            <h1>Strength Intelligence</h1>
+            <p>
+              Relative currency strength, historical dynamics and pair relationships — analysis only, no trade
+              signals.
+            </p>
+          </div>
+        </div>
+        <div className="si-head-status">
+          <div className="si-head-box si-head-box--time" title="Last calculation time">
+            <CalendarDays size={18} aria-hidden />
+            <div>
+              <strong>{calc?.date ?? 'Awaiting calculation'}</strong>
+              <span>{calc?.time ?? '—'}</span>
+            </div>
+          </div>
+          <div className={`si-head-box si-head-box--live is-${status.tone}`} role="status">
+            <i className="si-live-dot" aria-hidden />
+            <div>
+              <strong>{status.title}</strong>
+              <span>{status.sub}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+  );
+}

@@ -6,11 +6,15 @@ from ..core.security import iso
 from ..core.audit import write_audit
 from ..schemas.admin import TenantCreate,SystemModeUpdate
 from ..domain.gateway import LocalMT5Gateway
+from ..domain.mt5_connection import _active_tenant_id
 router=APIRouter(tags=['Platform'])
 @router.get('/health')
 def health():
- with db() as c: c.execute('SELECT 1').fetchone()
- return {'application':'Cacsms-Traders','api':'HEALTHY','database':'HEALTHY','mt5':LocalMT5Gateway().health()}
+ with db() as c:
+  c.execute('SELECT 1').fetchone()
+  active=_active_tenant_id(c)
+  mt5=LocalMT5Gateway(active).health(conn=c) if active else LocalMT5Gateway().health(conn=c)
+ return {'application':'Cacsms-Traders','api':'HEALTHY','database':'HEALTHY','mt5':mt5}
 @router.get('/dashboard/summary')
 def summary(user=Depends(current_user)):
  with db() as c:

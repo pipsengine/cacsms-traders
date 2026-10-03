@@ -1,7 +1,7 @@
 """Currency Strength Matrix — EarnForex close-to-close methodology (ported from MQL5 CSM)."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Mapping, Sequence
@@ -32,6 +32,8 @@ class CsmMatrixResult:
     missing: list[MissingHistory]
     historical_ok: bool
     as_of: datetime
+    pairs_loaded: int = 0
+    missing_pairs: list[str] = field(default_factory=list)
 
 
 def split_pair(pair: str) -> tuple[str, str]:
@@ -47,8 +49,9 @@ def is_base_currency(currency: str, pair: str) -> bool:
 
 
 def pct_change(start: float, end: float) -> float | None:
-    if start == 0 or end == 0:
-        return None
+    """EarnForex: (end - start) * 100 / start, or the plain difference when start is 0."""
+    if start == 0:
+        return end - start
     return (end - start) * 100.0 / start
 
 
@@ -75,13 +78,16 @@ def pair_contribution(
         return None
     if not is_base_currency(currency, pair):
         diff = -diff
-    return round(diff, 4)
+    # EarnForex sums unrounded contributions and only NormalizeDouble(Total, 4)s the cell.
+    return round(diff, 10)
 
 
 def populate_matrix_cell(
     currency: str,
     pair_closes: Mapping[str, Sequence[float]],
     bars_difference: int = 1,
+    *,
+    timeframe: str = "UNKNOWN",
 ) -> tuple[float, int, list[MissingHistory]]:
     total = 0.0
     used = 0
@@ -91,15 +97,15 @@ def populate_matrix_cell(
             continue
         closes = pair_closes.get(pair)
         if not closes:
-            missing.append(MissingHistory(pair, "UNKNOWN"))
+            missing.append(MissingHistory(pair, timeframe))
             continue
         start, end = _closed_endpoints(closes, bars_difference)
         if start is None or end is None:
-            missing.append(MissingHistory(pair, "UNKNOWN"))
+            missing.append(MissingHistory(pair, timeframe))
             continue
         contrib = pair_contribution(currency, pair, start, end)
         if contrib is None:
-            missing.append(MissingHistory(pair, "UNKNOWN"))
+            missing.append(MissingHistory(pair, timeframe))
             continue
         total += contrib
         used += 1
@@ -128,9 +134,34 @@ def populate_matrix_row_consensus(values: Mapping[str, float], timeframes: Seque
     return 0
 
 
-def compute_avg(values: Mapping[str, float], timeframes: Sequence[str]) -> float:
-    nums = [values[tf] for tf in timeframes if tf != "AVG" and tf in values]
+def compute_avg(
+    values: Mapping[str, float],
+    quality: Mapping[str, str],
+    timeframes: Sequence[str],
+) -> float:
+    nums: list[float] = []
+    for tf in timeframes:
+        if tf == "AVG":
+            continue
+        q = quality.get(tf, "MISSING")
+        if q not in ("FRESH", "PARTIAL"):
+            continue
+        if tf in values:
+            nums.append(float(values[tf]))
     return round(sum(nums) / len(nums), 4) if nums else 0.0
+
+
+def avg_quality(quality: Mapping[str, str], timeframes: Sequence[str]) -> str:
+    good = [quality.get(tf, "MISSING") for tf in timeframes if tf != "AVG"]
+    fresh = sum(1 for q in good if q == "FRESH")
+    partial = sum(1 for q in good if q == "PARTIAL")
+    if fresh >= 7:
+        return "FRESH"
+    if fresh + partial >= 5:
+        return "PARTIAL"
+    if fresh + partial > 0:
+        return "PARTIAL"
+    return "MISSING"
 
 
 def compute_matrix(
@@ -151,27 +182,86 @@ def compute_matrix(
     for tf in native_tfs:
         tf_pairs = pair_closes_by_tf.get(tf, {})
         for currency in CSM_CURRENCIES:
-            cell, used, missing = populate_matrix_cell(currency, tf_pairs, bars_difference)
+            cell, used, missing = populate_matrix_cell(currency, tf_pairs, bars_difference, timeframe=tf)
             values[currency][tf] = cell
             sample_counts[currency][tf] = used
-            if used < 7:
-                quality[currency][tf] = "MISSING"
+            if used >= 7:
+                quality[currency][tf] = "FRESH"
+            elif used > 0:
+                quality[currency][tf] = "PARTIAL"
                 historical_ok = False
                 all_missing.extend(missing)
             else:
-                quality[currency][tf] = "FRESH"
+                quality[currency][tf] = "MISSING"
+                historical_ok = False
+                all_missing.extend(missing)
 
     for currency in CSM_CURRENCIES:
-        avg = compute_avg(values[currency], native_tfs)
+        avg = compute_avg(values[currency], quality[currency], native_tfs)
         values[currency]["AVG"] = avg
-        qcells = [quality[currency].get(tf, "MISSING") for tf in native_tfs]
-        quality[currency]["AVG"] = "FRESH" if qcells and all(q == "FRESH" for q in qcells) else "MISSING"
+        quality[currency]["AVG"] = avg_quality(quality[currency], native_tfs)
 
     return CsmMatrixResult(values, quality, sample_counts, all_missing, historical_ok, as_of)
 
 
 def sort_currencies_by(values: dict[str, dict[str, float]], sort_by: str) -> list[str]:
-    key = sort_by if sort_by != "CURRENT" else "AVG"
+    from .constants import normalize_matrix_timeframe
+
+    key = normalize_matrix_timeframe(sort_by if sort_by != "CURRENT" else "AVG")
     scored = [(c, values.get(c, {}).get(key, float("-inf"))) for c in CSM_CURRENCIES]
     scored.sort(key=lambda x: x[1], reverse=True)
     return [c for c, _ in scored]
+
+
+def consensus_action(consensus: int) -> str:
+    if consensus == 1:
+        return "B"
+    if consensus == -1:
+        return "S"
+    return "W"
+
+
+def _pair_base_quote(pair: str) -> tuple[str, str]:
+    base, quote = split_pair(pair)
+    return base, quote
+
+
+def possible_setup(
+    values: dict[str, dict[str, float]],
+    sorted_currencies: Sequence[str],
+    matrix_timeframes: Sequence[str],
+) -> dict[str, str | None]:
+    """EarnForex PossibleSetup — ideal pair hint for the matrix footer."""
+    from .constants import FX_PAIRS_28
+
+    ideal_buy_ccy = ""
+    ideal_sell_ccy = ""
+    for c in sorted_currencies:
+        if populate_matrix_row_consensus(values[c], matrix_timeframes) == 1:
+            ideal_buy_ccy = c
+            break
+    for c in reversed(sorted_currencies):
+        if populate_matrix_row_consensus(values[c], matrix_timeframes) == -1:
+            ideal_sell_ccy = c
+            break
+    if not ideal_buy_ccy or not ideal_sell_ccy:
+        return {"ideal_action": "WAIT A BETTER SETUP", "ideal_pair": None, "direction": None}
+
+    pair = ""
+    for p in FX_PAIRS_28:
+        if ideal_buy_ccy in p and ideal_sell_ccy in p:
+            pair = p
+            break
+    if not pair:
+        return {"ideal_action": "WAIT A BETTER SETUP", "ideal_pair": None, "direction": None}
+
+    base, quote = _pair_base_quote(pair)
+    direction = None
+    label = "WAIT A BETTER SETUP"
+    if base == ideal_buy_ccy and quote == ideal_sell_ccy:
+        direction = "LONG"
+        label = f"POSSIBLE BUY {pair}"
+    elif base == ideal_sell_ccy and quote == ideal_buy_ccy:
+        direction = "SHORT"
+        label = f"POSSIBLE SELL {pair}"
+    return {"ideal_action": label, "ideal_pair": pair or None, "direction": direction}

@@ -1,14 +1,24 @@
 from fastapi import APIRouter,Depends,HTTPException
 import uuid
 from ..deps import current_user
-from ..core.database import db
+from ..core.database import db, db_path
 from ..core.security import iso,hash_password
 from ..core.audit import write_audit
 from ..services.access import require_permission
+from ..services.bootstrap import remove_demo_mock_accounts
 from ..schemas.admin import UserCreate,UserPatch,AccountCreate,AccountPatch,ConnectionCreate
 from ..schemas.mt5 import Mt5ConnectRequest, Mt5SettingsPatch
 from ..domain.gateway import LocalMT5Gateway
 from ..domain.mt5_diagnostics import mt5_python_package_status
+from ..market import mt5_session
+from ..domain.mt5_connection import (
+    ensure_autodetected_terminal_path,
+    ensure_gateway_session,
+    read_terminal_account_for_tenant,
+    sync_trading_registry_from_terminal,
+)
+from ..domain.mt5_terminal_account import environment_from_terminal, read_terminal_account
+from ..domain.mt5_terminal_discovery import filesystem_terminal_candidates, running_terminal64_processes
 router=APIRouter(prefix='/tenants/{tenant_id}',tags=['Tenant Administration'])
 @router.get('/users')
 def users(tenant_id:str,user=Depends(current_user)):
@@ -26,7 +36,10 @@ def roles(tenant_id:str,user=Depends(current_user)):
 @router.get('/accounts')
 def accounts(tenant_id:str,user=Depends(current_user)):
  with db() as c:
-  require_permission(c,user,tenant_id,'accounts.read'); return [dict(r) for r in c.execute('SELECT * FROM trading_accounts WHERE tenant_id=? ORDER BY created_at DESC',(tenant_id,))]
+  require_permission(c,user,tenant_id,'accounts.read')
+  if mt5_session.is_initialized():
+   sync_trading_registry_from_terminal(c, tenant_id, force_attach=False)
+  return [dict(r) for r in c.execute('SELECT * FROM trading_accounts WHERE tenant_id=? ORDER BY created_at DESC',(tenant_id,))]
 @router.post('/accounts')
 def add_account(tenant_id:str,x:AccountCreate,user=Depends(current_user)):
  if x.environment not in {'DEMO','LIVE','PROP_FIRM'}: raise HTTPException(400,'Invalid environment')
@@ -46,50 +59,115 @@ def patch_account(tenant_id:str,account_id:str,x:AccountPatch,user=Depends(curre
  return new
 @router.get('/connections')
 def connections(tenant_id:str,user=Depends(current_user)):
- gw_svc=LocalMT5Gateway()
+ gw_svc=LocalMT5Gateway(tenant_id)
  with db() as c:
   require_permission(c,user,tenant_id,'connections.read')
-  rows=c.execute("""SELECT c.*,a.account_name,a.account_number,a.environment,a.server AS account_server
+  settings=gw_svc.settings(conn=c)
+  session=settings.get('session_status')
+  auto_meta=ensure_autodetected_terminal_path(
+   c, tenant_id, allow_probe=False, persist=False,
+  )
+  rows=c.execute("""SELECT c.id,c.tenant_id,c.trading_account_id,c.adapter_type,c.terminal_path,c.server_name,c.status,
+   c.last_heartbeat_at,c.last_error,c.created_at,c.updated_at,
+   a.account_name,a.account_number,a.environment,a.server AS account_server,a.broker,a.account_currency
    FROM trading_connections c JOIN trading_accounts a ON a.id=c.trading_account_id
    WHERE c.tenant_id=? ORDER BY c.updated_at DESC""",(tenant_id,)).fetchall()
-  return {
-   'gateway':gw_svc.health(),
-   'settings':gw_svc.settings(),
-   'connections':[dict(r) for r in rows],
-   'diagnostics':mt5_python_package_status(),
-  }
+  connection_rows=[dict(r) for r in rows]
+ reconnect=None
+ diag_reconnect=None
+ if session == 'CONNECTED' and not mt5_session.is_initialized():
+  with db() as c:
+   reconnect=ensure_gateway_session(c, tenant_id)
+ live=mt5_session.is_initialized()
+ with db() as c:
+  terminal_account=read_terminal_account_for_tenant(
+   c, tenant_id, force_attach=False, persist_snapshot=live,
+  )
+  gateway=gw_svc.health(conn=c, allow_reconnect=(session == 'CONNECTED' and not live))
+ if reconnect and reconnect.get('restored'):
+  diag_reconnect=reconnect
+ diag=mt5_python_package_status()
+ diag['database_path']=str(db_path())
+ diag['terminal_candidates']=filesystem_terminal_candidates()[:8]
+ diag['terminal_running_processes']=running_terminal64_processes()
+ if auto_meta.get('path'):
+  diag['terminal_auto_detect_path']=auto_meta['path']
+  diag['terminal_auto_detect_source']=auto_meta.get('source')
+ diag['terminal_auto_saved']=auto_meta
+ diag['terminal_account']=terminal_account
+ if diag_reconnect:
+  diag['gateway_reconnect']=diag_reconnect
+ if not (terminal_account and terminal_account.get('available')):
+  diag['terminal_account_hint']='Open MetaTrader 5, log in, then use Connect or Sync from MT5.'
+ return {
+  'gateway':gateway,
+  'settings':settings,
+  'connections':connection_rows,
+  'diagnostics':diag,
+ }
 @router.patch('/connections/settings')
 def patch_connection_settings(tenant_id:str,x:Mt5SettingsPatch,user=Depends(current_user)):
  with db() as c:
   require_permission(c,user,tenant_id,'connections.manage')
-  gw=LocalMT5Gateway()
+  gw=LocalMT5Gateway(tenant_id)
   updated=gw.patch_settings(x.model_dump(exclude_none=True), conn=c)
-  write_audit(c,tenant_id,user['id'],'MT5_SETTINGS_UPDATED','System','mt5.local',after=updated)
+  write_audit(c,tenant_id,user['id'],'MT5_SETTINGS_UPDATED','TenantSettings',f'{tenant_id}/mt5.local',after=updated)
   return {'settings':updated,'gateway':gw.health(conn=c)}
 @router.post('/connections/gateway/connect')
 def gateway_connect(tenant_id:str,x:Mt5ConnectRequest,user=Depends(current_user)):
  with db() as c:
   require_permission(c,user,tenant_id,'connections.manage')
-  gw=LocalMT5Gateway()
+  gw=LocalMT5Gateway(tenant_id)
   result=gw.connect(x.terminal_path, conn=c)
-  write_audit(c,tenant_id,user['id'],'MT5_CONNECT','System','mt5.local',after={'ok':result.get('ok'),'error':result.get('error')})
+  if result.get('ok'):
+    sync_trading_registry_from_terminal(c, tenant_id)
+  write_audit(c,tenant_id,user['id'],'MT5_CONNECT','TenantSettings',f'{tenant_id}/mt5.local',after={'ok':result.get('ok'),'error':result.get('error')})
   return result
 @router.post('/connections/gateway/disconnect')
 def gateway_disconnect(tenant_id:str,user=Depends(current_user)):
  with db() as c:
   require_permission(c,user,tenant_id,'connections.manage')
-  gw=LocalMT5Gateway()
+  gw=LocalMT5Gateway(tenant_id)
   result=gw.disconnect(conn=c)
-  write_audit(c,tenant_id,user['id'],'MT5_DISCONNECT','System','mt5.local',after={'ok':True})
+  write_audit(c,tenant_id,user['id'],'MT5_DISCONNECT','TenantSettings',f'{tenant_id}/mt5.local',after={'ok':True})
   return result
 @router.post('/connections/gateway/restart')
 def gateway_restart(tenant_id:str,user=Depends(current_user)):
  with db() as c:
   require_permission(c,user,tenant_id,'connections.manage')
-  gw=LocalMT5Gateway()
+  gw=LocalMT5Gateway(tenant_id)
   result=gw.restart(conn=c)
-  write_audit(c,tenant_id,user['id'],'MT5_RESTART','System','mt5.local',after={'ok':result.get('ok'),'error':result.get('error')})
+  write_audit(c,tenant_id,user['id'],'MT5_RESTART','TenantSettings',f'{tenant_id}/mt5.local',after={'ok':result.get('ok'),'error':result.get('error')})
   return result
+@router.delete('/connections/{connection_id}')
+def delete_connection(tenant_id:str,connection_id:str,delete_account:bool=False,user=Depends(current_user)):
+ with db() as c:
+  require_permission(c,user,tenant_id,'connections.manage')
+  row=c.execute(
+   'SELECT c.id,c.trading_account_id FROM trading_connections c WHERE c.id=? AND c.tenant_id=?',
+   (connection_id,tenant_id),
+  ).fetchone()
+  if not row: raise HTTPException(404,'Connection not found')
+  aid=row['trading_account_id']
+  c.execute('DELETE FROM trading_connections WHERE id=?',(connection_id,))
+  if delete_account:
+   c.execute('DELETE FROM account_risk_profiles WHERE trading_account_id=?',(aid,))
+   c.execute('DELETE FROM trading_accounts WHERE id=? AND tenant_id=?',(aid,tenant_id))
+  else:
+   c.execute("UPDATE trading_accounts SET connection_status='DISCONNECTED',updated_at=? WHERE id=?",(iso(),aid))
+  write_audit(c,tenant_id,user['id'],'CONNECTION_REMOVED','TradingConnection',connection_id,after={'delete_account':delete_account})
+  return {'ok':True,'deleted_connection_id':connection_id}
+@router.post('/connections/cleanup-placeholders')
+def cleanup_placeholder_accounts(tenant_id:str,user=Depends(current_user)):
+ with db() as c:
+  require_permission(c,user,tenant_id,'connections.manage')
+  removed=remove_demo_mock_accounts(c)
+  rows=c.execute("""SELECT c.id,c.tenant_id,c.trading_account_id,c.adapter_type,c.terminal_path,c.server_name,c.status,c.created_at,c.updated_at,
+   a.account_name,a.account_number,a.environment,a.server AS account_server,a.broker,a.account_currency
+   FROM trading_connections c JOIN trading_accounts a ON a.id=c.trading_account_id
+   WHERE c.tenant_id=? ORDER BY c.updated_at DESC""",(tenant_id,)).fetchall()
+  write_audit(c,tenant_id,user['id'],'MT5_CLEANUP_PLACEHOLDERS','TenantSettings',tenant_id,after={'removed':removed})
+  return {'ok':True,'removed':removed,'connections':[dict(r) for r in rows]}
 @router.post('/connections')
 def add_connection(tenant_id:str,x:ConnectionCreate,user=Depends(current_user)):
  if x.adapter_type not in {'LOCAL_MT5','REMOTE_MT5','BROKER_GATEWAY'}: raise HTTPException(400,'Invalid adapter type')
@@ -98,10 +176,100 @@ def add_connection(tenant_id:str,x:ConnectionCreate,user=Depends(current_user)):
   require_permission(c,user,tenant_id,'connections.manage')
   ac=c.execute('SELECT id FROM trading_accounts WHERE id=? AND tenant_id=?',(x.trading_account_id,tenant_id)).fetchone()
   if not ac: raise HTTPException(404,'Trading account not found')
-  c.execute("""INSERT INTO trading_connections(id,tenant_id,trading_account_id,adapter_type,terminal_path,server_name,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)""",(cid,tenant_id,x.trading_account_id,x.adapter_type,x.terminal_path,x.server_name,'DISCONNECTED',now,now))
-  c.execute("UPDATE trading_accounts SET connection_type=?,connection_status=?,updated_at=? WHERE id=?",(x.adapter_type,'DISCONNECTED',now,x.trading_account_id))
+  dup=c.execute('SELECT id FROM trading_connections WHERE tenant_id=? AND trading_account_id=?',(tenant_id,x.trading_account_id)).fetchone()
+  if dup: raise HTTPException(409,'This trading account is already linked in the registry.')
+  gw=LocalMT5Gateway(tenant_id)
+  tenant_terminal=(gw.settings(conn=c).get('terminal_path') or '').strip() or None
+  terminal_path=x.terminal_path or tenant_terminal
+  gw_session=(gw.settings(conn=c).get('session_status') or 'DISCONNECTED')
+  terminal_account=read_terminal_account() if gw_session == 'CONNECTED' else None
+  server_name=(x.server_name or '').strip() or None
+  if not server_name and terminal_account and terminal_account.get('available'):
+    server_name=terminal_account.get('server') or None
+  link_status='CONNECTED' if gw_session == 'CONNECTED' and terminal_account and terminal_account.get('available') else 'DISCONNECTED'
+  c.execute("""INSERT INTO trading_connections(id,tenant_id,trading_account_id,adapter_type,terminal_path,server_name,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)""",(cid,tenant_id,x.trading_account_id,x.adapter_type,terminal_path,server_name,link_status,now,now))
+  c.execute("UPDATE trading_accounts SET connection_type=?,connection_status=?,updated_at=? WHERE id=?",(x.adapter_type,link_status,now,x.trading_account_id))
+  if terminal_account and terminal_account.get('available'):
+    login=(terminal_account.get('login') or '').strip()
+    env=environment_from_terminal(terminal_account.get('trade_mode') or 'DEMO')
+    c.execute(
+     """UPDATE trading_accounts SET account_number=?,server=?,environment=?,broker=COALESCE(NULLIF(broker,''),?),
+        balance=?,equity=?,margin=?,free_margin=?,last_synced_at=?,updated_at=? WHERE id=?""",
+     (
+      login,
+      server_name or terminal_account.get('server'),
+      env,
+      terminal_account.get('company') or 'MT5',
+      float(terminal_account.get('balance') or 0),
+      float(terminal_account.get('equity') or 0),
+      float(terminal_account.get('margin') or 0),
+      float(terminal_account.get('free_margin') or 0),
+      now,
+      now,
+      x.trading_account_id,
+     ),
+    )
   write_audit(c,tenant_id,user['id'],'CONNECTION_CONFIGURED','TradingConnection',cid,after=x.model_dump())
- return {'id':cid,'status':'DISCONNECTED'}
+ return {'id':cid,'status':link_status,'terminal_account':terminal_account}
+@router.post('/connections/auto-link-terminal')
+def auto_link_terminal_account(tenant_id:str,user=Depends(current_user)):
+ with db() as c:
+  require_permission(c,user,tenant_id,'connections.manage')
+  gw=LocalMT5Gateway(tenant_id)
+  ensure_gateway_session(c, tenant_id)
+  terminal_account=read_terminal_account_for_tenant(c, tenant_id, force_attach=True)
+  if not terminal_account or not terminal_account.get('available'):
+    detail=terminal_account.get('error') if terminal_account else 'No terminal account data.'
+    raise HTTPException(400,detail or 'Could not read MT5 account.')
+  login=(terminal_account.get('login') or '').strip()
+  server=(terminal_account.get('server') or '').strip()
+  env=environment_from_terminal(terminal_account.get('trade_mode') or 'DEMO')
+  now=iso()
+  tenant_terminal=(gw.settings(conn=c).get('terminal_path') or '').strip() or None
+  row=c.execute(
+   'SELECT id FROM trading_accounts WHERE tenant_id=? AND TRIM(COALESCE(account_number,""))=?',
+   (tenant_id,login),
+  ).fetchone()
+  trading_account_id=row['id'] if row else None
+  if not trading_account_id:
+    aid=str(uuid.uuid4())
+    name=(terminal_account.get('name') or f'MT5 {login}').strip()
+    c.execute(
+     """INSERT INTO trading_accounts(id,tenant_id,account_name,account_number,broker,server,environment,account_currency,balance,equity,free_margin,leverage,status,connection_type,connection_status,trading_enabled,autonomous_trading_enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+     (aid,tenant_id,name,login,terminal_account.get('company') or 'MT5',server,env,terminal_account.get('currency') or 'USD',float(terminal_account.get('balance') or 0),float(terminal_account.get('equity') or 0),float(terminal_account.get('free_margin') or 0),str(terminal_account.get('leverage') or ''),'ACTIVE','LOCAL_MT5','CONNECTED',0,0,now,now),
+    )
+    c.execute('INSERT INTO account_risk_profiles(id,tenant_id,trading_account_id,created_at,updated_at) VALUES(?,?,?,?,?)',(str(uuid.uuid4()),tenant_id,aid,now,now))
+    trading_account_id=aid
+  else:
+    c.execute('UPDATE trading_accounts SET account_number=?,server=?,environment=?,updated_at=? WHERE id=?',(login,server,env,now,trading_account_id))
+  existing=c.execute('SELECT id FROM trading_connections WHERE tenant_id=? AND trading_account_id=?',(tenant_id,trading_account_id)).fetchone()
+  if existing:
+    cid=existing['id']
+    c.execute('UPDATE trading_connections SET terminal_path=?,server_name=?,status=?,updated_at=? WHERE id=?',(tenant_terminal,server,'CONNECTED',now,cid))
+  else:
+    cid=str(uuid.uuid4())
+    c.execute("""INSERT INTO trading_connections(id,tenant_id,trading_account_id,adapter_type,terminal_path,server_name,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)""",(cid,tenant_id,trading_account_id,'LOCAL_MT5',tenant_terminal,server,'CONNECTED',now,now))
+  c.execute("UPDATE trading_accounts SET connection_type=?,connection_status=?,updated_at=? WHERE id=?",('LOCAL_MT5','CONNECTED',now,trading_account_id))
+  sync_trading_registry_from_terminal(c, tenant_id)
+  write_audit(c,tenant_id,user['id'],'MT5_AUTO_LINK','TradingConnection',cid,after={'login':login,'server':server})
+  rows=c.execute("""SELECT c.id,c.tenant_id,c.trading_account_id,c.adapter_type,c.terminal_path,c.server_name,c.status,c.created_at,c.updated_at,
+   a.account_name,a.account_number,a.environment,a.server AS account_server,a.broker,a.account_currency
+   FROM trading_connections c JOIN trading_accounts a ON a.id=c.trading_account_id WHERE c.id=?""",(cid,)).fetchone()
+  return {'ok':True,'connection':dict(rows) if rows else {'id':cid},'terminal_account':terminal_account}
+@router.post('/connections/sync-registry')
+def sync_connection_registry(tenant_id:str,user=Depends(current_user)):
+ with db() as c:
+  require_permission(c,user,tenant_id,'connections.manage')
+  ensure_gateway_session(c, tenant_id)
+  result=sync_trading_registry_from_terminal(c, tenant_id, force_attach=True)
+  if not result.get('synced'):
+    msg=result.get('error') or result.get('reason') or 'Registry sync failed.'
+    raise HTTPException(400, f'{msg} Open IC Markets MT5, log in, then retry Sync from MT5.')
+  rows=c.execute("""SELECT c.id,c.tenant_id,c.trading_account_id,c.adapter_type,c.terminal_path,c.server_name,c.status,c.created_at,c.updated_at,
+   a.account_name,a.account_number,a.environment,a.server AS account_server,a.broker,a.account_currency
+   FROM trading_connections c JOIN trading_accounts a ON a.id=c.trading_account_id
+   WHERE c.tenant_id=? ORDER BY c.updated_at DESC""",(tenant_id,)).fetchall()
+  return {'ok':True,'sync':result,'connections':[dict(r) for r in rows]}
 @router.get('/audit')
 def audit(tenant_id:str,limit:int=100,user=Depends(current_user)):
  with db() as c:

@@ -1,6 +1,6 @@
 import React from 'react';
 import { PlugZap, Server } from 'lucide-react';
-import { Card, Notice, PageHeader, Status } from '../components/Ui';
+import { Card, PageHeader, Status } from '../components/Ui';
 import { get } from '../lib/api';
 import type { ConnectionsPayload } from '../types';
 
@@ -22,10 +22,6 @@ export function Connections({ tenantId, embedded }: { tenantId: string; embedded
           subtitle="Trading gateway foundation for local terminals now and remote adapters later."
         />
       )}
-      <Notice
-        title="Safe foundation state"
-        text="The local MT5 gateway contract is installed, but terminal binding and order submission are not enabled."
-      />
       <div className="two-col">
         <Card>
           <div className="card-title">

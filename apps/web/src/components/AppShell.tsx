@@ -5,7 +5,6 @@ import {
   Building2,
   Bell,
   ChevronDown,
-  CircleUserRound,
   Search,
   GitBranch,
   LayoutDashboard,
@@ -95,12 +94,39 @@ export function AppShell({
   onLogout: () => void;
   onOpenProfile: () => void;
 }) {
-  const [collapsed, setCollapsed] = React.useState(false);
+  const narrowQuery = '(max-width: 1600px), (max-height: 920px)';
+  const [collapsed, setCollapsed] = React.useState(
+    () => typeof window !== 'undefined' && window.matchMedia(narrowQuery).matches,
+  );
   const active = tenants.find((t) => t.id === tenantId);
+  const initials = React.useMemo(() => {
+    const name = user?.display_name ?? user?.username ?? 'U';
+    const parts = name.trim().split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+    return name.slice(0, 2).toUpperCase();
+  }, [user?.display_name, user?.username]);
+  const roleLabel = user?.is_platform_admin ? 'Administrator' : user?.memberships?.[0]?.role_name ?? 'Operator';
+
+  React.useEffect(() => {
+    const mq = window.matchMedia(narrowQuery);
+    const onChange = () => {
+      if (mq.matches) setCollapsed(true);
+    };
+    onChange();
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
 
   return (
-    <div className="shell">
-      <aside className={collapsed ? 'side collapsed' : 'side'}>
+    <div
+      className={[
+        collapsed ? 'shell shell--collapsed' : 'shell',
+        page === 'overview' ? 'shell--overview' : '',
+      ]
+        .filter(Boolean)
+        .join(' ')}
+    >
+      <aside className={collapsed ? 'side collapsed' : 'side'} aria-label="Main navigation">
         <div className="brand">
           <div className="mark">C</div>
           {!collapsed && (
@@ -143,12 +169,20 @@ export function AppShell({
               </div>
               <div className="side-status-row">
                 <i
-                  className={`side-dot ${health?.mt5?.status === 'CONNECTED' ? 'green' : 'red'}`}
+                  className={`side-dot ${
+                    health?.mt5?.status === 'CONNECTED' || health?.mt5?.session_status === 'CONNECTED'
+                      ? 'green'
+                      : 'red'
+                  }`}
                   aria-hidden
                 />
                 <div>
                   <span>MT5 connection</span>
-                  <b>{health?.mt5?.status ?? 'DISCONNECTED'}</b>
+                  <b>
+                    {health?.mt5?.status === 'CONNECTED' || health?.mt5?.session_status === 'CONNECTED'
+                      ? 'CONNECTED'
+                      : 'DISCONNECTED'}
+                  </b>
                 </div>
               </div>
             </div>
@@ -158,12 +192,14 @@ export function AppShell({
         </div>
       </aside>
       <main className="workspace">
-        <header className="top">
+        <header className={page === 'overview' ? 'top top--overview' : 'top'}>
           <div className="top-left-cluster">
-            <div className="crumb">
-              <Activity size={17} />
-              <span>{PAGE_CRUMB[page] ?? 'Overview'}</span>
-            </div>
+            {page !== 'overview' && (
+              <div className="crumb">
+                <Activity size={17} />
+                <span>{PAGE_CRUMB[page] ?? 'Overview'}</span>
+              </div>
+            )}
             <label className="top-search" aria-label="Search">
               <Search size={16} />
               <input type="search" placeholder="Search anything…" disabled title="Global search (coming soon)" />
@@ -171,10 +207,6 @@ export function AppShell({
             </label>
           </div>
           <div className="top-right">
-            <button type="button" className="top-bell" aria-label="Notifications">
-              <Bell size={18} />
-              <i>3</i>
-            </button>
             <div className="tenant-switch">
               <Building2 />
               <select value={tenantId} onChange={(e) => onTenantChange(e.target.value)} aria-label="Active tenant">
@@ -186,16 +218,31 @@ export function AppShell({
               </select>
               <ChevronDown />
             </div>
-            <button type="button" className="profile" onClick={onOpenProfile}>
-              <CircleUserRound />
-              <span>{user?.display_name ?? active?.name ?? 'User'}</span>
+            <button type="button" className="top-bell" aria-label="Notifications">
+              <Bell size={18} />
+              <i>3</i>
             </button>
-            <button type="button" className="secondary" onClick={onLogout}>
+            <button type="button" className="profile-figma" onClick={onOpenProfile}>
+              <span className="profile-avatar" aria-hidden>
+                {initials}
+              </span>
+              <span className="profile-figma-text">
+                <b>{user?.display_name ?? active?.name ?? 'User'}</b>
+                <span>{roleLabel}</span>
+              </span>
+            </button>
+            <button type="button" className="secondary" onClick={onLogout} title="Sign out">
               Sign out
             </button>
           </div>
         </header>
-        <div className={page === 'system-control' ? 'page sc-hub-page' : 'page'}>{children}</div>
+        <div
+          className={
+            page === 'overview' ? 'page overview-page' : page === 'system-control' ? 'page sc-hub-page' : 'page'
+          }
+        >
+          <div className="page-inner">{children}</div>
+        </div>
       </main>
     </div>
   );
