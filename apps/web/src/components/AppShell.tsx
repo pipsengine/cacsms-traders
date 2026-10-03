@@ -3,8 +3,10 @@ import {
   Activity,
   BarChart3,
   Building2,
+  Bell,
   ChevronDown,
   CircleUserRound,
+  Search,
   GitBranch,
   LayoutDashboard,
   LineChart,
@@ -129,33 +131,50 @@ export function AppShell({
             </div>
           ))}
         </nav>
-        <div className="side-foot side-foot-status">
-          <div className="live-dot" />
-          {!collapsed && (
+        <div className={`side-foot side-foot-status ${collapsed ? '' : 'side-foot-figma'}`}>
+          {!collapsed ? (
             <div className="side-foot-lines">
-              <div>
-                <span>Operating mode</span>
-                <b>{mode.replaceAll('_', ' ')}</b>
+              <div className="side-status-row">
+                <i className="side-dot green" aria-hidden />
+                <div>
+                  <span>Operating mode</span>
+                  <b>{mode.replaceAll('_', ' ')}</b>
+                </div>
               </div>
-              <div>
-                <span>MT5 connection</span>
-                <b>{health?.mt5?.status ?? 'DISCONNECTED'}</b>
-              </div>
-              <div>
-                <span>Autonomous system</span>
-                <b>{autonomousStatus}</b>
+              <div className="side-status-row">
+                <i
+                  className={`side-dot ${health?.mt5?.status === 'CONNECTED' ? 'green' : 'red'}`}
+                  aria-hidden
+                />
+                <div>
+                  <span>MT5 connection</span>
+                  <b>{health?.mt5?.status ?? 'DISCONNECTED'}</b>
+                </div>
               </div>
             </div>
+          ) : (
+            <div className="live-dot" />
           )}
         </div>
       </aside>
       <main className="workspace">
         <header className="top">
-          <div className="crumb">
-            <Activity size={17} />
-            <span>{PAGE_CRUMB[page] ?? 'Overview'}</span>
+          <div className="top-left-cluster">
+            <div className="crumb">
+              <Activity size={17} />
+              <span>{PAGE_CRUMB[page] ?? 'Overview'}</span>
+            </div>
+            <label className="top-search" aria-label="Search">
+              <Search size={16} />
+              <input type="search" placeholder="Search anything…" disabled title="Global search (coming soon)" />
+              <kbd>Ctrl + K</kbd>
+            </label>
           </div>
           <div className="top-right">
+            <button type="button" className="top-bell" aria-label="Notifications">
+              <Bell size={18} />
+              <i>3</i>
+            </button>
             <div className="tenant-switch">
               <Building2 />
               <select value={tenantId} onChange={(e) => onTenantChange(e.target.value)} aria-label="Active tenant">
@@ -176,7 +195,7 @@ export function AppShell({
             </button>
           </div>
         </header>
-        <div className="page">{children}</div>
+        <div className={page === 'system-control' ? 'page sc-hub-page' : 'page'}>{children}</div>
       </main>
     </div>
   );

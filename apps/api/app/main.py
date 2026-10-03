@@ -32,6 +32,12 @@ async def _mi_cycle_async():
 @app.on_event("startup")
 async def startup():
     bootstrap()
+    from .domain.mt5_diagnostics import mt5_python_package_status
+
+    mt5_pkg = mt5_python_package_status()
+    log.info("MT5 Python package: %s", mt5_pkg.get("python_package"))
+    if mt5_pkg.get("hint"):
+        log.warning(mt5_pkg["hint"])
     global _mi_worker
     if os.getenv("MI_WORKER_ENABLED", "0").strip() in ("1", "true", "yes"):
         interval = int(os.getenv("MI_WORKER_INTERVAL", "300"))

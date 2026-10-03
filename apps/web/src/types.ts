@@ -1,11 +1,19 @@
 export type { Page } from './lib/routes';
 import type { Page } from './lib/routes';
-export type Health={application:string;api:string;database:string;mt5:{status:string;adapter:string;message:string}};
+export type Health={
+ application:string;api:string;database:string;
+ mt5:{
+  status:string;adapter:string;message:string;
+  terminal?:string;terminal_configured?:boolean;
+  heartbeat_at?:string|null;last_connected_at?:string|null;last_error?:string|null;
+  execution?:string;execution_enabled?:boolean;market_data_connected?:boolean;
+ };
+};
 export type Summary={tenants:number;users:number;accounts:number;connections:number;mode:string};
 export type Tenant={id:string;name:string;slug:string;status:string;reporting_currency:string;timezone:string};
 export type AuthUser={
  id:string;username:string;display_name:string;email?:string;first_name?:string;last_name?:string;
- timezone?:string;preferred_currency?:string;is_platform_admin?:number;
+ timezone?:string;preferred_currency?:string;is_platform_admin?:number;is_system_protected?:number;
  memberships:{tenant_id:string;tenant_name:string;role_name?:string}[];
 };
 export type TenantUser={
@@ -19,9 +27,17 @@ export type TradingAccount={
 export type AuditEvent={
  id:string;action:string;entity_type?:string;entity_id?:string;created_at:string;user_id?:string;
 };
+export type Mt5LocalSettings={
+ terminal_path?:string;login_type?:string;auto_reconnect?:boolean;heartbeat_interval_seconds?:number;
+};
 export type ConnectionsPayload={
- gateway:{status:string;adapter:string;message:string};
- connections:{id:string;account_name:string;environment:string;adapter_type:string;status:string;terminal_path?:string;server_name?:string}[];
+ gateway:Health['mt5'] & {status:string;adapter:string;message:string};
+ settings?:Mt5LocalSettings;
+ diagnostics?:{python_package:string;version?:string|null;hint?:string|null};
+ connections:{
+  id:string;account_name:string;account_number?:string;environment:string;adapter_type:string;status:string;
+  terminal_path?:string;server_name?:string;account_server?:string;
+ }[];
 };
 
 export type AppRouteState = { page: Page; tab?: string };

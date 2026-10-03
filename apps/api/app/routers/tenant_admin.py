@@ -6,7 +6,9 @@ from ..core.security import iso,hash_password
 from ..core.audit import write_audit
 from ..services.access import require_permission
 from ..schemas.admin import UserCreate,UserPatch,AccountCreate,AccountPatch,ConnectionCreate
+from ..schemas.mt5 import Mt5ConnectRequest, Mt5SettingsPatch
 from ..domain.gateway import LocalMT5Gateway
+from ..domain.mt5_diagnostics import mt5_python_package_status
 router=APIRouter(prefix='/tenants/{tenant_id}',tags=['Tenant Administration'])
 @router.get('/users')
 def users(tenant_id:str,user=Depends(current_user)):
@@ -44,11 +46,50 @@ def patch_account(tenant_id:str,account_id:str,x:AccountPatch,user=Depends(curre
  return new
 @router.get('/connections')
 def connections(tenant_id:str,user=Depends(current_user)):
+ gw_svc=LocalMT5Gateway()
  with db() as c:
   require_permission(c,user,tenant_id,'connections.read')
-  rows=c.execute("""SELECT c.*,a.account_name,a.environment FROM trading_connections c JOIN trading_accounts a ON a.id=c.trading_account_id WHERE c.tenant_id=? ORDER BY c.updated_at DESC""",(tenant_id,)).fetchall()
-  gw=LocalMT5Gateway().health()
-  return {'gateway':gw,'connections':[dict(r) for r in rows]}
+  rows=c.execute("""SELECT c.*,a.account_name,a.account_number,a.environment,a.server AS account_server
+   FROM trading_connections c JOIN trading_accounts a ON a.id=c.trading_account_id
+   WHERE c.tenant_id=? ORDER BY c.updated_at DESC""",(tenant_id,)).fetchall()
+  return {
+   'gateway':gw_svc.health(),
+   'settings':gw_svc.settings(),
+   'connections':[dict(r) for r in rows],
+   'diagnostics':mt5_python_package_status(),
+  }
+@router.patch('/connections/settings')
+def patch_connection_settings(tenant_id:str,x:Mt5SettingsPatch,user=Depends(current_user)):
+ with db() as c:
+  require_permission(c,user,tenant_id,'connections.manage')
+  gw=LocalMT5Gateway()
+  updated=gw.patch_settings(x.model_dump(exclude_none=True), conn=c)
+  write_audit(c,tenant_id,user['id'],'MT5_SETTINGS_UPDATED','System','mt5.local',after=updated)
+  return {'settings':updated,'gateway':gw.health(conn=c)}
+@router.post('/connections/gateway/connect')
+def gateway_connect(tenant_id:str,x:Mt5ConnectRequest,user=Depends(current_user)):
+ with db() as c:
+  require_permission(c,user,tenant_id,'connections.manage')
+  gw=LocalMT5Gateway()
+  result=gw.connect(x.terminal_path, conn=c)
+  write_audit(c,tenant_id,user['id'],'MT5_CONNECT','System','mt5.local',after={'ok':result.get('ok'),'error':result.get('error')})
+  return result
+@router.post('/connections/gateway/disconnect')
+def gateway_disconnect(tenant_id:str,user=Depends(current_user)):
+ with db() as c:
+  require_permission(c,user,tenant_id,'connections.manage')
+  gw=LocalMT5Gateway()
+  result=gw.disconnect(conn=c)
+  write_audit(c,tenant_id,user['id'],'MT5_DISCONNECT','System','mt5.local',after={'ok':True})
+  return result
+@router.post('/connections/gateway/restart')
+def gateway_restart(tenant_id:str,user=Depends(current_user)):
+ with db() as c:
+  require_permission(c,user,tenant_id,'connections.manage')
+  gw=LocalMT5Gateway()
+  result=gw.restart(conn=c)
+  write_audit(c,tenant_id,user['id'],'MT5_RESTART','System','mt5.local',after={'ok':result.get('ok'),'error':result.get('error')})
+  return result
 @router.post('/connections')
 def add_connection(tenant_id:str,x:ConnectionCreate,user=Depends(current_user)):
  if x.adapter_type not in {'LOCAL_MT5','REMOTE_MT5','BROKER_GATEWAY'}: raise HTTPException(400,'Invalid adapter type')

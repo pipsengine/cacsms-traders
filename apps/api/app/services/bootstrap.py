@@ -5,6 +5,7 @@ from ..core.database import db
 from ..core.config import ROOT,BOOTSTRAP_USERNAME,BOOTSTRAP_PASSWORD,BOOTSTRAP_EMAIL
 from ..core.security import hash_password,iso
 from ..core.permissions import PERMISSIONS
+from .super_admin import ensure_super_admin
 
 def apply_migrations():
  with db() as c:
@@ -24,4 +25,6 @@ def bootstrap():
    bootstrap_pw=os.getenv('BOOTSTRAP_PASSWORD',BOOTSTRAP_PASSWORD)
    c.execute("""INSERT INTO users(id,username,email,password_hash,first_name,last_name,display_name,timezone,preferred_currency,status,is_platform_admin,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",(uid,BOOTSTRAP_USERNAME,BOOTSTRAP_EMAIL,hash_password(bootstrap_pw),'Cacsms','Administrator','Cacsms Administrator','Africa/Lagos','USD','ACTIVE',1,now,now))
   c.execute('INSERT OR IGNORE INTO tenant_memberships(id,tenant_id,user_id,role_id,status,created_at) VALUES(?,?,?,?,?,?)',('membership-cacsms',tid,uid,rid,'ACTIVE',now))
+  ensure_super_admin(c, tid, now, list(PERMISSIONS.keys()))
   c.execute("INSERT OR IGNORE INTO system_settings(key,value_json,updated_at) VALUES('system.mode',?,?)",('\"ANALYSIS_ONLY\"',now))
+  c.execute("INSERT OR IGNORE INTO system_settings(key,value_json,updated_at) VALUES('mt5.local',?,?)",('{\"terminal_path\":\"\",\"login_type\":\"\",\"auto_reconnect\":true,\"heartbeat_interval_seconds\":30}',now))

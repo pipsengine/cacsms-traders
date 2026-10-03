@@ -145,6 +145,7 @@ export function App() {
           summary={summary}
           onChanged={refresh}
           isPlatformAdmin={!!user.is_platform_admin}
+          autonomousStatus={autonomousStatus}
         />
       );
       break;

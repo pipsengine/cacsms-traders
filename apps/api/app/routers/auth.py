@@ -11,6 +11,7 @@ def user_payload(c,user_row):
  memberships=[dict(r) for r in c.execute("""SELECT m.tenant_id,t.name tenant_name,r.name role_name FROM tenant_memberships m JOIN tenants t ON t.id=m.tenant_id LEFT JOIN roles r ON r.id=m.role_id WHERE m.user_id=? AND m.status='ACTIVE' """,(user_row['id'],))]
  body={k:v for k,v in dict(user_row).items() if k!='password_hash'}
  body['is_platform_admin']=bool(body.get('is_platform_admin'))
+ body['is_system_protected']=bool(body.get('is_system_protected'))
  body['memberships']=memberships
  return body
 
@@ -37,6 +38,8 @@ def patch_me(x:ProfilePatch,user=Depends(current_user)):
   with db() as c: return user_payload(c,user)
  if vals.get('preferred_currency') not in (None,'USD','NGN'): raise HTTPException(400,'preferred_currency must be USD or NGN')
  with db() as c:
+  if user.get('is_system_protected') and any(k in vals for k in ('first_name','last_name','middle_name','email')):
+   raise HTTPException(403,'Protected super administrator profile fields are managed by the system')
   parts=[]; args=[]
   for k,v in vals.items(): parts.append(f'{k}=?'); args.append(v)
   parts.append('updated_at=?'); args.append(iso()); args.append(user['id'])

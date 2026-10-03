@@ -58,7 +58,9 @@ export function Login({ onSuccess }: { onSuccess: (token: string) => void }) {
           <ShieldCheck />
           {busy ? 'Signing in…' : 'Sign in'}
         </button>
-        <p className="muted login-foot">Default dev user: cacsms · change credentials outside development.</p>
+        <p className="muted login-foot">
+          Super admin: Admin · Bootstrap user: cacsms · use API bootstrap / .env in development.
+        </p>
       </form>
     </div>
   );

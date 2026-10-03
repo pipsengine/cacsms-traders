@@ -1,0 +1,78 @@
+/* System Control hub — Figma MT5 layout (scoped) */
+.sc-hub .sc-breadcrumb{display:flex;align-items:center;gap:8px;font-size:12px;color:#657892;margin-bottom:12px}
+.sc-hub .sc-breadcrumb b{color:#0b1b3a}
+.sc-hub .sc-hero{display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap;margin-bottom:4px}
+.sc-hub .sc-heroLeft{display:flex;gap:20px;align-items:center}
+.sc-hub .sc-heroIcon{width:65px;height:65px;background:#eaf3ff;color:#0874f9;border-radius:14px;display:grid;place-items:center;flex:none}
+.sc-hub .sc-heroIcon svg{width:34px;height:34px}
+.sc-hub .sc-hero h1{font-size:27px;margin:0 0 4px;letter-spacing:-.02em;color:#0b1b3a}
+.sc-hub .sc-hero p{margin:0;color:#657892;font-size:12px}
+.sc-hub .sc-summaryStrip{height:68px;border:1px solid #d9e3ef;border-radius:10px;background:#fff;display:flex;align-items:center;padding:0 14px;flex-wrap:wrap}
+.sc-hub .sc-summaryStrip>div{min-width:140px;padding:0 18px;border-right:1px solid #e7edf4;display:flex;gap:12px;align-items:center}
+.sc-hub .sc-summaryStrip>div:last-child{border-right:0}
+.sc-hub .sc-summaryStrip svg{color:#0a71f6;width:20px;height:20px;flex:none}
+.sc-hub .sc-summaryStrip span{font-size:11px;color:#61738d;display:block}
+.sc-hub .sc-summaryStrip b{display:block;color:#0874f9;margin-top:4px;font-size:12px}
+.sc-hub .sc-ok{color:#09a958!important}
+.sc-hub .sc-bad{color:#ff2e2e!important}
+.sc-hub .sc-dot{width:9px;height:9px;border-radius:50%;display:inline-block;flex:none}
+.sc-hub .sc-dot.green{background:#10b968;box-shadow:0 0 0 7px #e6f8ef}
+.sc-hub .sc-dot.red{background:#ff3d3d;box-shadow:0 0 0 7px #fff0f0}
+.sc-hub .sc-tabsFigma{display:flex;border-bottom:1px solid #dce5ef;margin-top:17px;overflow:auto}
+.sc-hub .sc-tabsFigma button{border:0;background:transparent;padding:13px 18px;display:flex;gap:10px;align-items:center;color:#4d617b;font-weight:650;font-size:13px;white-space:nowrap}
+.sc-hub .sc-tabsFigma button.selected{color:#0868ed;background:#f2f7ff;border:1px solid #c9ddfb;border-bottom:2px solid #0874f9;border-radius:8px 8px 0 0;margin-bottom:-1px}
+.sc-hub .sc-tabsFigma button svg{width:18px;height:18px}
+.sc-hub .sc-subtabs{display:flex;gap:10px;margin:19px 0 14px}
+.sc-hub .sc-btnPrimary,.sc-hub .sc-btnSecondary{border-radius:8px;border:1px solid #d5dfeb;padding:11px 20px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;gap:8px;font-size:12px;cursor:pointer}
+.sc-hub .sc-btnPrimary{background:linear-gradient(180deg,#2582fb,#0869e8);color:#fff;border-color:#1474ed}
+.sc-hub .sc-btnSecondary{background:#fff;color:#10203d}
+.sc-hub .sc-btnSmall{padding:9px 20px}
+.sc-hub .sc-notice{min-height:68px;border:1px solid #9dccff;background:#f3f9ff;border-radius:11px;display:flex;align-items:center;gap:16px;padding:13px 20px;color:#1b6ee7;margin-bottom:12px}
+.sc-hub .sc-noticeBody{display:flex;flex-direction:column;gap:4px;color:#10203d;flex:1}
+.sc-hub .sc-noticeBody span{font-size:12px;color:#5f728e}
+.sc-hub .sc-noticeClose{border:0;background:transparent;color:#687b93;cursor:pointer;padding:4px}
+.sc-hub .sc-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
+.sc-hub .sc-card{background:#fff;border:1px solid #dce5ef;border-radius:14px;padding:14px 18px;box-shadow:0 6px 18px rgba(31,63,104,.035)}
+.sc-hub .sc-cardTitle{display:flex;align-items:center;gap:12px;margin-bottom:4px}
+.sc-hub .sc-titleIcon{width:48px;height:48px;background:#eaf3ff;color:#0874f9;border-radius:14px;display:grid;place-items:center;flex:none}
+.sc-hub .sc-titleIcon svg{width:22px;height:22px}
+.sc-hub .sc-cardTitle h3{font-size:16px;margin:0 0 3px;color:#0b1b3a}
+.sc-hub .sc-cardTitle p{margin:0;color:#657892;font-size:12px}
+.sc-hub .sc-cardTitle .sc-pill,.sc-hub .sc-cardTitle .sc-btnSecondary{margin-left:auto}
+.sc-hub .sc-pill{font-size:12px;border-radius:18px;padding:7px 12px;display:flex;align-items:center;gap:8px;white-space:nowrap}
+.sc-hub .sc-pill.danger{background:#fff0f0;color:#ff2e2e}
+.sc-hub .sc-pill.danger .sc-dot{box-shadow:none}
+.sc-hub .sc-pill.ok{background:#f5fff9;color:#09a958}
+.sc-hub .sc-kv{margin:10px 0}
+.sc-hub .sc-kv>div{display:flex;justify-content:space-between;border-top:1px solid #e7edf4;padding:9px 3px;font-size:12px;gap:12px}
+.sc-hub .sc-kv span{color:#506580}
+.sc-hub .sc-kv b{font-weight:700;color:#0b1b3a;text-align:right}
+.sc-hub .sc-kv b.sc-bad{color:#ff2e2e}
+.sc-hub .sc-kv b.sc-ok{color:#09a958}
+.sc-hub .sc-full{width:100%;margin-top:8px}
+.sc-hub .sc-muted{font-size:11px;color:#72839a;margin:9px 0 13px 60px;line-height:1.45}
+.sc-hub .sc-tableHead{display:grid;grid-template-columns:.35fr 1.2fr 1.1fr .7fr 1fr .8fr .8fr;background:#f8fafc;border:1px solid #dce5ef;border-radius:8px 8px 0 0;padding:12px;font-size:11px;font-weight:700;color:#506580}
+.sc-hub .sc-tableRow{display:grid;grid-template-columns:.35fr 1.2fr 1.1fr .7fr 1fr .8fr .8fr;border:1px solid #dce5ef;border-top:0;padding:12px;font-size:12px;align-items:center}
+.sc-hub .sc-empty{min-height:174px;border:1px solid #dce5ef;border-top:0;border-radius:0 0 8px 8px;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#7b8ca2;padding:20px}
+.sc-hub .sc-empty h4{margin:8px 0 3px;color:#3f5371}
+.sc-hub .sc-empty p{font-size:12px;margin:0 0 16px;text-align:center}
+.sc-hub .sc-lower{min-height:145px}
+.sc-hub .sc-settingsGrid{display:grid;grid-template-columns:1fr 1fr;margin-top:13px;border-top:1px solid #e7edf4}
+.sc-hub .sc-settingsGrid>div{display:flex;justify-content:space-between;padding:11px 8px;border-bottom:1px solid #e7edf4;font-size:12px;gap:10px}
+.sc-hub .sc-settingsGrid>div:nth-child(odd){border-right:1px solid #e7edf4}
+.sc-hub .sc-settingsGrid span{color:#506580}
+.sc-hub .sc-actionGrid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:16px}
+.sc-hub .sc-action{height:67px;border:1px solid #d9e4f0;border-radius:10px;background:#f9fbfd;display:flex;align-items:center;gap:12px;text-align:left;padding:12px;color:#253b5b;cursor:pointer;font:inherit}
+.sc-hub .sc-action:disabled{opacity:.55;cursor:not-allowed}
+.sc-hub .sc-action svg{width:25px;height:25px;color:#2b76e8;flex:none}
+.sc-hub .sc-action span{display:flex;flex-direction:column;gap:5px}
+.sc-hub .sc-action small{color:#71839b;font-size:11px}
+.sc-hub .sc-action.connect{background:#f2f8ff;border-color:#bcd9ff}
+.sc-hub .sc-action.disconnect{background:#fff5f5;border-color:#ffd2d2;color:#f02b2b}
+.sc-hub .sc-action.disconnect svg{color:#f02b2b}
+.sc-hub .sc-modalBackdrop{position:fixed;inset:0;background:rgba(15,23,42,.35);display:grid;place-items:center;z-index:50;padding:20px}
+.sc-hub .sc-modal{background:#fff;border-radius:14px;padding:22px;width:min(440px,100%);border:1px solid #dce5ef;box-shadow:0 20px 40px rgba(31,63,104,.12)}
+.sc-hub .sc-modal h3{margin:0 0 12px;font-size:17px}
+.sc-hub .sc-modalActions{display:flex;gap:10px;justify-content:flex-end;margin-top:16px}
+@media(max-width:1100px){.sc-hub .sc-summaryStrip{display:none}.sc-hub .sc-grid{grid-template-columns:1fr}}
+@media(max-width:800px){.sc-hub .sc-actionGrid{grid-template-columns:1fr}.sc-hub .sc-tableHead,.sc-hub .sc-tableRow{display:none}}

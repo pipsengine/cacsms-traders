@@ -95,3 +95,38 @@ def test_logout_revokes_session(client):
     assert client.get("/auth/me", headers=h).status_code == 200
     assert client.post("/auth/logout", headers=h).status_code == 200
     assert client.get("/auth/me", headers=h).status_code == 401
+
+
+def test_super_admin_login(client):
+    r = client.post("/auth/login", json={"username": "Admin", "password": "P@882w0rd"})
+    assert r.status_code == 200, r.text
+    user = r.json()["user"]
+    assert user["is_platform_admin"] is True
+    assert user["is_system_protected"] is True
+    assert user["username"] == "Admin"
+
+
+def test_mt5_settings_persist(client):
+    token, user = _login(client, username="Admin", password="P@882w0rd")
+    h = {"Authorization": f"Bearer {token}"}
+    tenant_id = user["memberships"][0]["tenant_id"]
+    path = r"C:\Program Files\MetaTrader 5\terminal64.exe"
+    r = client.patch(
+        f"/tenants/{tenant_id}/connections/settings",
+        headers=h,
+        json={"terminal_path": path, "auto_reconnect": True, "heartbeat_interval_seconds": 30},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["settings"]["terminal_path"] == path
+    assert body["gateway"]["terminal_configured"] is True
+    r2 = client.get(f"/tenants/{tenant_id}/connections", headers=h)
+    assert r2.json()["settings"]["terminal_path"] == path
+
+
+def test_super_admin_platform_access(client):
+    token = client.post("/auth/login", json={"username": "Admin", "password": "P@882w0rd"}).json()[
+        "access_token"
+    ]
+    h = {"Authorization": f"Bearer {token}"}
+    assert client.get("/tenants", headers=h).status_code == 200
