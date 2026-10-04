@@ -6,6 +6,7 @@ import { WorkflowEngine } from './pages/WorkflowEngine';
 import { MarketScanner } from './pages/MarketScanner';
 import { MarketStructure } from './pages/MarketStructure';
 import { ChannelIntelligence } from './pages/ChannelIntelligence';
+import { H8BosBtl } from './pages/H8BosBtl';
 import { TradingOpportunities } from './pages/TradingOpportunities';
 import { RiskPortfolio } from './pages/RiskPortfolio';
 import { ExecutionPositions } from './pages/ExecutionPositions';
@@ -117,6 +118,9 @@ export function App() {
       break;
     case 'market-structure':
       body = <MarketStructure />;
+      break;
+    case 'h8-bos-btl':
+      body = <H8BosBtl />;
       break;
     case 'channel-intelligence':
       body = <ChannelIntelligence />;

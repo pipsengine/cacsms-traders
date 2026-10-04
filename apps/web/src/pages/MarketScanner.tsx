@@ -1,109 +1,100 @@
-import React, { useState } from 'react';
-import { PageHeader, Card } from '../components/Ui';
-import { PageTabs, TabPanel } from '../components/PageTabs';
-import { marketIntelligenceApi } from '../features/market-intelligence/api';
-import { useAsync } from '../features/market-intelligence/hooks/useMarketIntelligence';
-import { RelationshipTable } from '../features/market-intelligence/components/RelationshipTable';
-import { LoadingSkeleton } from '../features/market-intelligence/components/LoadingSkeleton';
-import { ErrorState } from '../features/market-intelligence/components/ErrorState';
-import { EmptyState } from '../features/market-intelligence/components/EmptyState';
-import { get } from '../lib/api';
-import { EnginePlaceholder } from '../components/EnginePlaceholder';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { usePollingAsync } from '../features/market-intelligence/hooks/useMarketIntelligence';
+import { marketScannerApi } from '../features/market-scanner/api';
+import { ScannerHeader } from '../features/market-scanner/components/ScannerHeader';
+import { ScannerPipeline } from '../features/market-scanner/components/ScannerPipeline';
+import { ScannerKpis } from '../features/market-scanner/components/ScannerKpis';
+import { ScannerTable } from '../features/market-scanner/components/ScannerTable';
+import { InstrumentPanel } from '../features/market-scanner/components/InstrumentPanel';
 
-const TABS = [
-  { id: 'all', label: 'All Markets' },
-  { id: 'attention', label: 'Attention Queue' },
-  { id: 'episodes', label: 'Active Episodes' },
-  { id: 'xauusd', label: 'XAUUSD' },
-];
+const POLL_MS = 2000;
+const STAR_KEY = 'ms_starred';
+
+function loadStarred() {
+  try {
+    return new Set<string>(JSON.parse(localStorage.getItem(STAR_KEY) ?? '[]'));
+  } catch {
+    return new Set<string>();
+  }
+}
 
 export function MarketScanner() {
-  const [tab, setTab] = useState('all');
-  const [instrumentCount, setInstrumentCount] = useState(29);
-  const [symbols, setSymbols] = useState<string[]>([]);
-  const rel = useAsync(() => marketIntelligenceApi.relationships(), []);
-
-  React.useEffect(() => {
-    get<{ symbol: string }[]>('/reference/instruments')
-      .then((r) => {
-        setInstrumentCount(r.length);
-        setSymbols(r.map((x) => x.symbol));
-      })
-      .catch(() => {});
+  const [visible, setVisible] = useState(() => typeof document === 'undefined' || document.visibilityState === 'visible');
+  useEffect(() => {
+    const onVis = () => setVisible(document.visibilityState === 'visible');
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
   }, []);
 
-  const escalated =
-    rel.data?.filter((r) => r.inspection_priority === 'HIGH' || r.inspection_priority === 'CRITICAL') ?? [];
-  const xauRows = rel.data?.filter((r) => r.pair.includes('XAU')) ?? [];
+  const loader = useCallback(() => marketScannerApi.scanner(), []);
+  const scan = usePollingAsync(loader, [loader], { enabled: visible, intervalMs: POLL_MS });
+  const data = scan.data;
+  const meta = data?.meta ?? null;
+  const rows = data?.rows ?? [];
+
+  const [selected, setSelected] = useState<string | null>(null);
+  useEffect(() => {
+    if (!selected && rows.length) setSelected(rows[0].symbol);
+  }, [rows, selected]);
+  const selectedRow = useMemo(() => rows.find((r) => r.symbol === selected) ?? null, [rows, selected]);
+
+  const [starred, setStarred] = useState(loadStarred);
+  const toggleStar = (symbol: string) =>
+    setStarred((prev) => {
+      const next = new Set(prev);
+      if (next.has(symbol)) next.delete(symbol);
+      else next.add(symbol);
+      localStorage.setItem(STAR_KEY, JSON.stringify([...next]));
+      return next;
+    });
 
   return (
-    <>
-      <PageHeader title="Market Scanner" subtitle="Autonomous scanning across the reference universe — attention without fabricated signals." />
-      <PageTabs tabs={TABS} active={tab} onChange={setTab} />
+    <div className="ms-page">
+      <ScannerHeader meta={meta} apiError={!!scan.error} />
+      <ScannerPipeline meta={meta} counts={data?.counts ?? null} />
+      <ScannerKpis meta={meta} counts={data?.counts ?? null} />
 
-      <div className="metric-grid three">
-        <Card className="mini">
-          <span>Instruments</span>
-          <strong>{instrumentCount}</strong>
-          <small>Reference universe</small>
-        </Card>
-        <Card className="mini">
-          <span>Attention queue</span>
-          <strong>{escalated.length}</strong>
-          <small>Live relationship API</small>
-        </Card>
-        <Card className="mini">
-          <span>Active episodes</span>
-          <strong>0</strong>
-          <small>Scanner worker pending</small>
-        </Card>
-      </div>
-
-      <TabPanel active={tab} id="all">
-        <Card>
-          <div className="card-title">
-            <div>
-              <h2>Reference universe</h2>
-              <p>{symbols.length ? `${symbols.length} configured symbols` : 'Loading instrument registry…'}</p>
-            </div>
-          </div>
-          {symbols.length ? (
-            <p className="symbol-cloud">{symbols.join(' · ')}</p>
-          ) : (
-            <EmptyState title="Instrument list unavailable" body="Reference instruments are served from the platform API." />
-          )}
-        </Card>
-      </TabPanel>
-
-      <TabPanel active={tab} id="attention">
-        {rel.loading ? (
-          <LoadingSkeleton />
-        ) : rel.error ? (
-          <ErrorState message={rel.error} onRetry={rel.refresh} />
-        ) : escalated.length ? (
-          <RelationshipTable rows={escalated} />
-        ) : (
-          <EmptyState title="Attention queue empty" body="High-priority relationships appear when intelligence snapshots exist." />
-        )}
-      </TabPanel>
-
-      <TabPanel active={tab} id="episodes">
-        <EnginePlaceholder
-          title="Active episodes"
-          body="Continuous scan episodes, condition tags and escalation reasons will publish from the market scanner worker."
-          engine="market_scanner"
-        />
-      </TabPanel>
-
-      <TabPanel active={tab} id="xauusd">
-        {rel.loading ? (
-          <LoadingSkeleton />
-        ) : xauRows.length ? (
-          <RelationshipTable rows={xauRows} />
-        ) : (
-          <EmptyState title="No XAUUSD intelligence snapshot" body="XAUUSD relationship rows appear when XAUUSD is processed by the worker." />
-        )}
-      </TabPanel>
-    </>
+      {scan.loading && !data ? (
+        <section className="ms-card ms-blocking">
+          <span className="ms-spinner" aria-hidden />
+          Loading scanner cycle…
+        </section>
+      ) : scan.error && !data ? (
+        <section className="ms-card ms-blocking is-error">
+          <strong>Market Scanner unavailable</strong>
+          <span>{scan.error}</span>
+          <button className="ms-btn" onClick={scan.refresh}>
+            Retry
+          </button>
+        </section>
+      ) : !rows.length ? (
+        <section className="ms-card ms-blocking">
+          <strong>Waiting for the first scanner cycle</strong>
+          <span>Instruments appear once closed-bar analysis completes.</span>
+        </section>
+      ) : (
+        <div className="ms-main">
+          <ScannerTable
+            rows={rows}
+            counts={data?.counts ?? null}
+            selected={selected}
+            onSelect={setSelected}
+            starred={starred}
+            onToggleStar={toggleStar}
+            stale={!!meta?.stale}
+          />
+          {selectedRow ? (
+            <InstrumentPanel
+              key={selectedRow.symbol}
+              row={selectedRow}
+              meta={meta}
+              starred={starred.has(selectedRow.symbol)}
+              onToggleStar={() => toggleStar(selectedRow.symbol)}
+              enabled={visible}
+            />
+          ) : null}
+        </div>
+      )}
+    </div>
   );
 }

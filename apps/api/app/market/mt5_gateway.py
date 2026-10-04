@@ -1,11 +1,25 @@
 """MetaTrader 5 market data adapter (closed bars only)."""
 from __future__ import annotations
 
+import functools
 import os
+import threading
 from datetime import datetime, timezone
 
 from .models import Candle
 from .mt5_contract import MarketDataUnavailable
+
+# One MetaTrader5 IPC session is shared by the strength engine and the market scanner threads.
+MT5_LOCK = threading.RLock()
+
+
+def _locked(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with MT5_LOCK:
+            return fn(*args, **kwargs)
+
+    return wrapper
 
 _TF_MAP = {
     "M1": "M1",
@@ -101,6 +115,7 @@ class Mt5MarketDataGateway:
             raise MarketDataUnavailable(f"MT5 timeframe constant missing: {name}")
         return const
 
+    @_locked
     def closed_candles(self, symbol: str, timeframe: str, count: int) -> list[Candle]:
         mt5 = self._mt5
         sym = symbol if len(symbol) > 6 else _select_symbol(mt5, symbol)
@@ -140,6 +155,7 @@ class Mt5MarketDataGateway:
             )
         return out
 
+    @_locked
     def latest_closed_open_time(self, symbol: str, timeframe: str) -> int | None:
         """Open time (epoch s) of the most recent closed bar — cheap change probe."""
         mt5 = self._mt5
@@ -149,6 +165,7 @@ class Mt5MarketDataGateway:
             return None
         return int(rates[0]["time"])
 
+    @_locked
     def current_closes(self, symbol: str, timeframe: str, count: int) -> list[tuple[datetime, float]]:
         """(open_time, close) oldest → newest starting at bar 0, i.e. iClose(symbol, tf, 0..count-1)."""
         mt5 = self._mt5
@@ -170,12 +187,44 @@ class Mt5MarketDataGateway:
             raise MarketDataUnavailable(f"No rates for {sym} {timeframe}")
         return [(datetime.fromtimestamp(int(r["time"]), tz=timezone.utc), float(r["close"])) for r in rates]
 
+    @_locked
     def latest_tick(self, symbol: str) -> dict:
         sym = symbol if len(symbol) > 6 else _broker_symbol(symbol)
         tick = self._mt5.symbol_info_tick(sym)
         if tick is None:
             raise MarketDataUnavailable(f"No tick for {sym}")
         return {"symbol": sym, "bid": tick.bid, "ask": tick.ask, "time": tick.time}
+
+    @_locked
+    def symbol_snapshot(self, symbol: str) -> dict:
+        """Current quote, spread and forming D1 bar for one symbol (bar 0 — display only, never stored)."""
+        mt5 = self._mt5
+        sym = self._resolved.get(symbol)
+        if sym is None:
+            sym = symbol if len(symbol) > 6 else _select_symbol(mt5, symbol)
+            self._resolved[symbol] = sym
+        info = mt5.symbol_info(sym)
+        tick = mt5.symbol_info_tick(sym)
+        if info is None or tick is None or not tick.bid:
+            raise MarketDataUnavailable(f"No quote for {sym}")
+        day = mt5.copy_rates_from_pos(sym, mt5.TIMEFRAME_D1, 0, 1)
+        out = {
+            "symbol": symbol.upper(),
+            "broker_symbol": sym,
+            "description": getattr(info, "description", "") or "",
+            "bid": float(tick.bid),
+            "ask": float(tick.ask),
+            "spread_points": int(getattr(info, "spread", 0) or 0),
+            "point": float(getattr(info, "point", 0.0) or 0.0),
+            "digits": int(getattr(info, "digits", 5) or 5),
+            "tick_time": datetime.fromtimestamp(int(tick.time), tz=timezone.utc),
+            "day_high": None,
+            "day_low": None,
+        }
+        if day is not None and len(day):
+            out["day_high"] = float(day[0]["high"])
+            out["day_low"] = float(day[0]["low"])
+        return out
 
 
 def create_market_data_gateway():

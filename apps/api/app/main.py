@@ -9,6 +9,7 @@ from .core.config import APP_NAME, cors_origins
 from .core.database import db_path
 from .core.env_loader import load_env_file
 from .market.intelligence_cycle import run_intelligence_cycle
+from .market.scanner_engine import get_scanner_engine, scanner_enabled
 from .market.strength_engine import get_strength_engine
 from .routers import auth, market_intelligence, platform, tenant_admin
 from .services.bootstrap import bootstrap
@@ -51,6 +52,8 @@ async def startup():
         log.info("MI worker scheduled every %s seconds", interval)
     if os.getenv("STRENGTH_ENGINE_ENABLED", "1").strip() not in ("0", "false", "no"):
         get_strength_engine().start()
+    if scanner_enabled():
+        get_scanner_engine().start()
 
 
 @app.on_event("shutdown")
@@ -58,6 +61,7 @@ async def shutdown():
     if _mi_worker:
         _mi_worker.stop()
     get_strength_engine().stop()
+    get_scanner_engine().stop()
 
 
 app.include_router(auth.router)

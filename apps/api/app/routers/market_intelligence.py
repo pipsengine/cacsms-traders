@@ -9,6 +9,7 @@ from ..market.intelligence_cycle import run_intelligence_cycle
 from ..market.mt5_gateway import create_market_data_gateway
 from ..market.mt5_platform_status import get_mt5_market_context
 from ..market.repository import MarketRepository
+from ..market.scanner_engine import MarketScannerEngine, chart_candles, get_scanner_engine, scanner_enabled
 from ..market.strength_engine import StrengthEngine, get_strength_engine
 from ..market.strength_intel_service import analysis_payload, historical_payload, pairs_payload
 from ..market.strength_intel_store import active_scope, latest_pair_snapshot
@@ -160,6 +161,71 @@ def pair_relationship_analysis(pair: str, period: str = Query("24H")):
         return _or_503(analysis_payload(_ready_engine(), pair, period))
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+def _scanner() -> MarketScannerEngine:
+    engine = get_scanner_engine()
+    if not engine.running and scanner_enabled():
+        engine.start()
+    return engine
+
+
+@router.get("/scanner")
+def market_scanner():
+    """Market Scanner: inspection-priority classification for XAUUSD + 28 FX pairs (analysis only)."""
+    return _scanner().payload()
+
+
+@router.get("/scanner/{symbol}")
+def market_scanner_instrument(symbol: str):
+    detail = _scanner().detail(symbol)
+    if detail is None:
+        raise HTTPException(404, f"{symbol.upper()} is not in the scanner universe or has not been scanned yet")
+    return detail
+
+
+@router.get("/scanner/{symbol}/candles")
+def market_scanner_candles(symbol: str, timeframe: str = Query("D1"), limit: int = Query(120, ge=10, le=500)):
+    """Closed candles from the persisted market data store for the scanner detail chart."""
+    try:
+        return chart_candles(symbol, timeframe, limit)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/structure/overview")
+def structure_overview():
+    """Market Structure → Structure Overview: multi-timeframe regimes, alignment and structural events."""
+    return _scanner().structure_overview_payload()
+
+
+@router.get("/h8-bos-btl")
+def h8_bos_btl():
+    """H8 BOS & BTL Intelligence: summary counts and the priority-sorted alert strip (closed-bar analysis only)."""
+    return _scanner().h8_bos_btl_payload()
+
+
+@router.get("/h8-bos-btl/latest")
+def h8_bos_btl_latest(symbol: str = Query(...)):
+    """Latest W / H8 / H1 / M30 analysis snapshot for one instrument (observer of the scanner engine)."""
+    detail = _scanner().h8_bos_btl_detail(symbol)
+    if detail is None:
+        raise HTTPException(404, f"{symbol.upper()} is not in the scanner universe")
+    return detail
+
+
+@router.get("/structure/range")
+def range_structure():
+    """Market Structure → Range Structure: weekly range intelligence for every scanner instrument."""
+    return _scanner().range_payload()
+
+
+@router.get("/structure/range/{symbol}")
+def range_structure_instrument(symbol: str):
+    detail = _scanner().range_detail(symbol)
+    if detail is None:
+        raise HTTPException(404, f"{symbol.upper()} is not in the scanner universe")
+    return detail
 
 
 @router.get("/strength/{currency}/history")
