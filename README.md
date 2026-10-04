@@ -58,12 +58,31 @@ then remove the flag.
 1. Trading host `.env`: `APP_ENV=production`, `DATABASE_PATH=<absolute path>`, strong `SUPER_ADMIN_PASSWORD` /
    `BOOTSTRAP_PASSWORD`, `API_PROXY_SECRET=<long random string>`, and the `CTRADER_*` values (server-side only).
    Restart the API (`npm run dev`, or `py -3.14 scripts/run_api.py`).
-2. Publish the API over HTTPS, e.g. a named Cloudflare Tunnel to `http://localhost:8000`.
+2. Publish the API on a **stable** HTTPS hostname. Quick tunnels (`*.trycloudflare.com`) change URL on every restart and
+   are not a production option. With a domain on Cloudflare, a named tunnel running as a Windows service:
+   ```powershell
+   winget install --id Cloudflare.cloudflared
+   cloudflared tunnel login                                  # authorise the domain
+   cloudflared tunnel create cacsms-api
+   cloudflared tunnel route dns cacsms-api api.<your-domain>
+   # %USERPROFILE%\.cloudflared\config.yml:
+   #   tunnel: <tunnel-id>
+   #   credentials-file: C:\Users\<you>\.cloudflared\<tunnel-id>.json
+   #   ingress:
+   #     - hostname: api.<your-domain>
+   #       service: http://localhost:8000
+   #     - service: http_status:404
+   cloudflared service install                               # survives logoff / reboot
+   ```
+   A VPS / cloud host running this same backend works identically — only `API_ORIGIN` changes.
+   Keep the API itself running independently of any browser (e.g. a scheduled task "At startup" running
+   `py -3.14 scripts/run_api.py`); the strength engine, scanner and workers live in that process.
 3. Vercel → Project → Settings: Root Directory `apps/web`. Environment Variables (Production, **not** `VITE_*`):
-   `API_ORIGIN=https://<tunnel-host>` (no trailing slash, no `/api`) and `API_PROXY_SECRET=<same value as the host>`.
-   Leave `VITE_API_BASE` unset so the browser stays same-origin.
+   `API_ORIGIN=https://api.<your-domain>` (no trailing slash, no `/api`) and `API_PROXY_SECRET=<same value as the host>`.
+   The frontend bundle contains no backend address: it always calls its own `/api`.
+   (Local dev proxy target defaults to `http://127.0.0.1:8000`; override with `DEV_API_ORIGIN` if needed.)
 4. Redeploy (Deployments → Redeploy, or push to the connected branch). Environment variable changes need a redeploy.
-5. Verify: `https://cacsms-traders.vercel.app/api/health` → `200 {"status":"ok",...}`. A `503` from the proxy means
+5. Verify: `https://cacsms-traders.vercel.app/api/health` → `200 {"status":"ok",...,"autonomous_services":{...}}`. A `503` from the proxy means
    `API_ORIGIN` is not set; `502` means the host or tunnel is down.
 6. cTrader: register `https://cacsms-traders.vercel.app/api/connections/ctrader/callback` as the redirect URI in the
    cTrader Open API app and set the same value in `CTRADER_REDIRECT_URI`.

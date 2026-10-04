@@ -1,5 +1,5 @@
-from fastapi import APIRouter,Depends,HTTPException,Response
-import logging,uuid,json
+from fastapi import APIRouter,Depends,HTTPException,Request,Response
+import logging,os,uuid,json
 from ..core.config import app_env
 from ..deps import current_user
 from ..core.database import db
@@ -10,8 +10,19 @@ from ..domain.gateway import LocalMT5Gateway
 from ..domain.mt5_connection import _active_tenant_id
 log=logging.getLogger(__name__)
 router=APIRouter(tags=['Platform'])
+def _service_state(enabled:bool,running:bool)->str: return 'disabled' if not enabled else 'running' if running else 'stopped'
+def autonomous_services(app)->dict:
+ """Backend-resident engines (independent of any browser session): state only."""
+ from ..market.scanner_engine import get_scanner_engine,scanner_enabled
+ from ..market.strength_engine import get_strength_engine
+ worker=getattr(app.state,'mi_worker',None)
+ return {
+  'strength_engine':_service_state(os.getenv('STRENGTH_ENGINE_ENABLED','1').strip() not in ('0','false','no'),get_strength_engine().running),
+  'market_scanner':_service_state(scanner_enabled(),get_scanner_engine().running),
+  'intelligence_worker':_service_state(worker is not None,bool(worker and worker.running)),
+ }
 @router.get('/health')
-def health(response:Response):
+def health(request:Request,response:Response):
  """Public liveness probe: reachability only — no paths, versions, accounts or secrets."""
  database=auth='unavailable'
  try:
@@ -25,7 +36,10 @@ def health(response:Response):
   log.warning('Health check: database unavailable',exc_info=True)
  ok=database=='reachable' and auth=='ready'
  if not ok: response.status_code=503
- return {'status':'ok' if ok else 'degraded','api':'reachable','database':database,'auth':auth,'environment':app_env(),'time':iso()}
+ try: services=autonomous_services(request.app)
+ except Exception:
+  log.warning('Health check: service state unavailable',exc_info=True); services='unavailable'
+ return {'status':'ok' if ok else 'degraded','api':'reachable','database':database,'auth':auth,'environment':app_env(),'autonomous_services':services,'time':iso()}
 @router.get('/system/health')
 def system_health(user=Depends(current_user)):
  with db() as c:

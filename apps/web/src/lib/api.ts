@@ -1,8 +1,11 @@
-const BASE = import.meta.env.VITE_API_BASE ?? '';
+/**
+ * The browser always calls its own origin under /api. Which backend that reaches is environment configuration,
+ * never baked into the bundle: Vite dev proxy → local API in development, Vercel /api function → API_ORIGIN in production.
+ */
 export const API_PREFIX = '/api';
 
-/** Absolute URL for a backend path, e.g. apiUrl('/auth/login') -> '/api/auth/login'. */
-export const apiUrl = (path: string) => `${BASE}${API_PREFIX}${path}`;
+/** URL for a backend path, e.g. apiUrl('/auth/login') -> '/api/auth/login'. */
+export const apiUrl = (path: string) => `${API_PREFIX}${path}`;
 
 /** fetch() for backend calls: same-origin session cookie plus the client header the API requires on cookie-authenticated writes. */
 export function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {

@@ -50,6 +50,7 @@ async def startup():
     if os.getenv("MI_WORKER_ENABLED", "0").strip() in ("1", "true", "yes"):
         interval = int(os.getenv("MI_WORKER_INTERVAL", "300"))
         _mi_worker = MarketIntelligenceWorker(_mi_cycle_async, interval=interval)
+        app.state.mi_worker = _mi_worker
         asyncio.create_task(_mi_worker.start())
         log.info("MI worker scheduled every %s seconds", interval)
     if os.getenv("STRENGTH_ENGINE_ENABLED", "1").strip() not in ("0", "false", "no"):

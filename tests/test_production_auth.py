@@ -31,7 +31,41 @@ def test_public_health_reports_only_safe_fields(client):
     assert body["database"] == "reachable"
     assert body["auth"] == "ready"
     assert body["environment"] == "development"
-    assert set(body) == {"status", "api", "database", "auth", "environment", "time"}
+    assert set(body) == {"status", "api", "database", "auth", "environment", "autonomous_services", "time"}
+    assert set(body["autonomous_services"]) == {"strength_engine", "market_scanner", "intelligence_worker"}
+    assert all(v in ("running", "stopped", "disabled") for v in body["autonomous_services"].values())
+
+
+def test_invalid_login_is_401_not_404(client):
+    r = client.post("/api/auth/login", json={"username": "Admin", "password": "wrong-password"})
+    assert r.status_code == 401
+
+
+def test_cors_allows_configured_vercel_origin_with_credentials(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.middleware.cors import CORSMiddleware
+
+    from apps.api.app.core.config import cors_origins
+
+    monkeypatch.setenv("WEB_ORIGINS", "https://cacsms-traders.vercel.app")
+    probe = FastAPI()
+    probe.add_middleware(CORSMiddleware, allow_origins=cors_origins(), allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+    @probe.post("/api/auth/login")
+    def _login():
+        return {}
+
+    r = TestClient(probe).options(
+        "/api/auth/login",
+        headers={
+            "Origin": "https://cacsms-traders.vercel.app",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type,x-ct-client",
+        },
+    )
+    assert r.status_code == 200
+    assert r.headers["access-control-allow-origin"] == "https://cacsms-traders.vercel.app"
+    assert r.headers["access-control-allow-credentials"] == "true"
 
 
 def test_routes_live_only_under_api_prefix(client):
