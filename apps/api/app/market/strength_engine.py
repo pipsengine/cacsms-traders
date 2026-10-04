@@ -10,18 +10,22 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from ..core.database import db
-from .constants import FX_PAIRS_28, MATRIX_TIMEFRAMES
+from .constants import COMPUTE_TIMEFRAMES, FX_PAIRS_28, MATRIX_TIMEFRAMES
 from .csm_engine import CalculationMode, CsmMatrixResult
 from .csm_live import LiveCsmSource, bar_basis
+from .csm_scoring import normalize_all_scores
 from .csm_service import CurrencyStrengthMatrixService
 from .ingestion_runner import MarketIngestionRunner
 from .intelligence_cycle import write_relationships
 from .mt5_gateway import create_market_data_gateway
 from .mt5_platform_status import get_mt5_market_context
+from .pair_relationships import Scores, pair_relationships
 from .repository import MarketRepository
+from .strength_intel_config import dynamics_lookback_minutes
+from .strength_intel_store import active_scope, reference_scores, save_pair_snapshot
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +47,7 @@ HEARTBEAT_RECALC_SECONDS = 60.0
 STALE_AFTER_SECONDS = 120.0
 BOOTSTRAP_RETRY_SECONDS = 60.0
 MODE_INTEREST_SECONDS = 30.0
+REFERENCE_REFRESH_SECONDS = 60.0
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -72,6 +77,11 @@ class StrengthEngine:
         self._last_tick_ok: datetime | None = None
         self._last_persisted_at: datetime | None = None
         self._last_bar_change_at: datetime | None = None
+        self._scores: Scores = {}
+        self._pairs: list[dict] = []
+        self._reference: tuple[datetime, Scores] | None = None
+        self._reference_mono = 0.0
+        self._scores_sig: tuple | None = None
 
     @property
     def running(self) -> bool:
@@ -191,6 +201,7 @@ class StrengthEngine:
                 self._live = None
 
             now_mono = time.monotonic()
+            from_live = result is not None
             if result is None and (
                 changed or self._result is None or now_mono - self._last_calc_mono >= HEARTBEAT_RECALC_SECONDS
             ):
@@ -199,13 +210,20 @@ class StrengthEngine:
                 signature = tuple(
                     round(result.values[c].get(tf, 0.0), 4) for c in sorted(result.values) for tf in MATRIX_TIMEFRAMES
                 )
-                persist_due = signature != self._last_persisted_sig and (
+                # The stored-candle fallback is a different basis from the live source; never mix it into history.
+                persist_due = from_live and signature != self._last_persisted_sig and (
                     self._last_persist_mono == 0.0
                     or now_mono - self._last_persist_mono >= SNAPSHOT_INTERVAL_SECONDS
                 )
+                if persist_due or now_mono - self._reference_mono >= REFERENCE_REFRESH_SECONDS:
+                    self._refresh_reference(conn, now, now_mono)
+                self._update_intelligence(result, signature)
                 if persist_due:
                     svc.persist(result)
                     write_relationships(repo, result)
+                    with self._lock:
+                        pairs = self._pairs
+                    save_pair_snapshot(conn, active_scope(conn), result.as_of, pairs)
                     self._last_persist_mono = now_mono
                     self._last_persisted_sig = signature
                     self._last_persisted_at = now
@@ -224,6 +242,51 @@ class StrengthEngine:
             self._state = "READY" if connected else "MT5_DISCONNECTED"
             self._error = None
 
+    def _refresh_reference(self, conn, now: datetime, now_mono: float) -> None:
+        ref = reference_scores(conn, now - timedelta(minutes=dynamics_lookback_minutes()))
+        with self._lock:
+            self._reference = ref
+            self._reference_mono = now_mono
+            self._scores_sig = None
+
+    def _update_intelligence(self, result: CsmMatrixResult, signature: tuple) -> None:
+        """Scores + 28-pair relationships, recomputed only when values or the reference change."""
+        with self._lock:
+            if signature == self._scores_sig:
+                return
+            ref = self._reference
+        scores = normalize_all_scores(result.values, COMPUTE_TIMEFRAMES, result.quality)
+        pairs = pair_relationships(scores, ref[1] if ref else None)
+        with self._lock:
+            self._scores = scores
+            self._pairs = pairs
+            self._scores_sig = signature
+
+    def intelligence(self) -> dict | None:
+        """Current scores, pair relationships and lookback reference shared by all Strength Intelligence tabs."""
+        with self._lock:
+            result = self._result
+            if result is None:
+                return None
+            if not self._scores or self._scores_sig is None:
+                self._scores = normalize_all_scores(result.values, COMPUTE_TIMEFRAMES, result.quality)
+                self._pairs = pair_relationships(self._scores, self._reference[1] if self._reference else None)
+                self._scores_sig = ("on-demand",)
+            ref = self._reference
+            return {
+                "as_of": result.as_of,
+                "scores": self._scores,
+                "pairs": self._pairs,
+                "reference": ref[1] if ref else None,
+                "reference_as_of": ref[0] if ref else None,
+                "last_persisted_at": self._last_persisted_at,
+            }
+
+    def ensure_reference(self) -> None:
+        if self._reference is None and time.monotonic() - self._reference_mono >= REFERENCE_REFRESH_SECONDS:
+            with db() as conn:
+                self._refresh_reference(conn, datetime.now(timezone.utc), time.monotonic())
+
     def seed_from_db(self) -> None:
         """Calculate once from stored candles when the background loop has not produced a result yet."""
         with db() as conn:
@@ -240,11 +303,11 @@ class StrengthEngine:
                 if not self.running:
                     self._state = "READY" if ctx["mt5_connected"] else "MT5_DISCONNECTED"
 
-    def payload(self, sort_by: str = "AVG", mode: CalculationMode = CalculationMode.CLOSE_CLOSE) -> dict | None:
+    def engine_meta(self) -> dict | None:
+        """Connection / freshness / basket state shared by every Strength Intelligence payload."""
         with self._lock:
             result = self._result
             ctx = dict(self._ctx)
-            histories = self._histories
             state = self._state
             error = self._error
             last_tick = self._last_tick_ok
@@ -252,7 +315,6 @@ class StrengthEngine:
             last_change = self._last_bar_change_at
         if result is None:
             return None
-
         now = datetime.now(timezone.utc)
         connected = bool(ctx.get("mt5_connected") and ctx.get("market_data_ready"))
         stale_reason = None
@@ -265,28 +327,46 @@ class StrengthEngine:
         live = bool(
             connected and stale_reason is None and result.pairs_loaded >= len(FX_PAIRS_28) and result.historical_ok
         )
+        return {
+            "as_of": result.as_of.isoformat(),
+            "last_calculated_at": result.as_of.isoformat(),
+            "mt5_connected": connected,
+            "mt5_server": str(ctx.get("mt5_server") or "MetaTrader 5"),
+            "live_data": live,
+            "historical_ok": result.historical_ok,
+            "missing_history": [{"symbol": m.symbol, "timeframe": m.timeframe} for m in result.missing[:50]],
+            "pairs_loaded": result.pairs_loaded,
+            "pairs_total": len(FX_PAIRS_28),
+            "missing_pairs": result.missing_pairs,
+            "engine_state": state,
+            "bar_basis": bar_basis(),
+            "closed_bar_only": bar_basis() == "closed",
+            "engine_error": error,
+            "stale": stale_reason is not None,
+            "stale_reason": stale_reason,
+            "live_refresh_at": _iso(last_tick),
+            "last_persisted_at": _iso(last_persisted),
+            "last_bar_change_at": _iso(last_change),
+            "snapshot_interval_seconds": SNAPSHOT_INTERVAL_SECONDS,
+        }
+
+    def payload(self, sort_by: str = "AVG", mode: CalculationMode = CalculationMode.CLOSE_CLOSE) -> dict | None:
+        with self._lock:
+            result = self._result
+            histories = self._histories
+        meta = self.engine_meta()
+        if result is None or meta is None:
+            return None
         svc = CurrencyStrengthMatrixService(None)  # type: ignore[arg-type]
         out = svc.to_api_payload(
             result,
             sort_by=sort_by.upper(),
-            mt5_connected=connected,
-            mt5_server=str(ctx.get("mt5_server") or "MetaTrader 5"),
-            live_data=live,
+            mt5_connected=meta["mt5_connected"],
+            mt5_server=meta["mt5_server"],
+            live_data=meta["live_data"],
             histories=histories,
         )
-        out["meta"].update(
-            {
-                "engine_state": state,
-                "bar_basis": bar_basis(),
-                "closed_bar_only": bar_basis() == "closed",
-                "engine_error": error,
-                "stale": stale_reason is not None,
-                "stale_reason": stale_reason,
-                "live_refresh_at": _iso(last_tick),
-                "last_persisted_at": _iso(last_persisted),
-                "last_bar_change_at": _iso(last_change),
-            }
-        )
+        out["meta"].update({k: v for k, v in meta.items() if k not in ("as_of", "last_calculated_at")})
         if mode != CalculationMode.CLOSE_CLOSE:
             self._apply_mode(out, svc, mode, sort_by)
         return out

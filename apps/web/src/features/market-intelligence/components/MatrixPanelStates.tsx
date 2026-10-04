@@ -4,15 +4,29 @@ import type { MatrixMeta } from '../types';
 import { ErrorState } from './ErrorState';
 import { LoadingSkeleton } from './LoadingSkeleton';
 
-/** Blocking state shown instead of the matrix when no calculation is available yet. */
+type BannerMeta = Pick<
+  MatrixMeta,
+  | 'pairs_loaded'
+  | 'pairs_total'
+  | 'missing_pairs'
+  | 'engine_state'
+  | 'stale_reason'
+  | 'engine_error'
+  | 'historical_ok'
+  | 'missing_history'
+>;
+
+/** Blocking state shown instead of a panel when no calculation is available yet. */
 export function MatrixBlockingState({
   loading,
   error,
   onRetry,
+  label = 'strength matrix',
 }: {
   loading: boolean;
   error: string;
   onRetry: () => void;
+  label?: string;
 }) {
   if (error) return <ErrorState message={error} onRetry={onRetry} />;
   return (
@@ -20,20 +34,20 @@ export function MatrixBlockingState({
       <LoadingSkeleton />
       <p>
         <Loader2 size={14} className="si-spin" aria-hidden />
-        {loading ? 'Loading strength matrix…' : 'Calculating currency strength from closed MT5 bars…'}
+        {loading ? `Loading ${label}…` : 'Calculating currency strength from closed MT5 bars…'}
       </p>
     </div>
   );
 }
 
-/** Non-blocking banners shown above a matrix that is available but degraded. */
+/** Non-blocking banners shown above a panel that is available but degraded. */
 export function MatrixStatusBanners({
   meta,
   error,
   hasScores,
   onRetry,
 }: {
-  meta: MatrixMeta;
+  meta: BannerMeta;
   error: string;
   hasScores: boolean;
   onRetry: () => void;

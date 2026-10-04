@@ -4,6 +4,10 @@ import type {
   RelationshipRow,
   QualityRow,
   CalculationMode,
+  HistoricalStrengthPayload,
+  HistoryPeriod,
+  PairRelationshipsPayload,
+  RelationshipAnalysisPayload,
 } from './types';
 
 const BASE = import.meta.env.VITE_API_BASE ?? '';
@@ -47,6 +51,13 @@ export const marketIntelligenceApi = {
     ),
   relationshipHistory: (p: string, tf: string) =>
     get<RelationshipRow[]>(`/relationships/${p}/history?timeframe=${tf}`),
+  historicalStrength: (period: HistoryPeriod, timeframe = 'AVG') =>
+    get<HistoricalStrengthPayload>(`/strength/historical?${new URLSearchParams({ period, timeframe })}`),
+  pairRelationships: () => get<PairRelationshipsPayload>('/relationships/pairs'),
+  relationshipAnalysis: (pair: string, period: HistoryPeriod) =>
+    get<RelationshipAnalysisPayload>(
+      `/relationships/pairs/${encodeURIComponent(pair)}/analysis?${new URLSearchParams({ period })}`,
+    ),
   quality: () => get<QualityRow[]>('/data-quality'),
   health: () => get<{ status: string }>('/health'),
 };

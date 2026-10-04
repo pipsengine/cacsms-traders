@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Grid3x3 } from 'lucide-react';
 import { PageTabs, TabPanel } from '../../components/PageTabs';
 import { marketIntelligenceApi } from '../../features/market-intelligence/api';
-import { useAsync, usePollingAsync } from '../../features/market-intelligence/hooks/useMarketIntelligence';
+import { usePollingAsync } from '../../features/market-intelligence/hooks/useMarketIntelligence';
 import {
   CURRENCY_FILTER_OPTIONS,
   MATRIX_TFS,
@@ -18,19 +18,13 @@ import {
   MatrixBlockingState,
   MatrixStatusBanners,
 } from '../../features/market-intelligence/components/MatrixPanelStates';
-import { RelationshipTable } from '../../features/market-intelligence/components/RelationshipTable';
-import { RelationshipLegend } from '../../features/market-intelligence/components/RelationshipLegend';
-import { EmptyState } from '../../features/market-intelligence/components/EmptyState';
-import { ErrorState } from '../../features/market-intelligence/components/ErrorState';
-import { LoadingSkeleton } from '../../features/market-intelligence/components/LoadingSkeleton';
-import { StrengthHistoryPanel } from '../../features/market-intelligence/components/StrengthHistoryPanel';
-import { RelationshipAnalysisPanel } from '../hub-panels/RelationshipAnalysisPanel';
+import { HistoricalStrengthTab } from '../../features/market-intelligence/components/HistoricalStrengthTab';
+import { PairRelationshipsTab } from '../../features/market-intelligence/components/PairRelationshipsTab';
+import { RelationshipAnalysisTab } from '../../features/market-intelligence/components/RelationshipAnalysisTab';
 import { writeHashRoute } from '../../lib/routes';
 import type { Health } from '../../types';
 import type { CalculationMode } from '../../features/market-intelligence/types';
 
-const CURRENCIES = ['EUR', 'GBP', 'USD', 'JPY', 'AUD', 'NZD', 'CAD', 'CHF'];
-const REL_TFS = ['ALL', 'YTD', 'Q', 'MN', 'W', 'D1', 'H8', 'H1', 'M15', 'M5', 'M1'];
 const SORT_TFS = ['AVG', ...MATRIX_TFS.filter((tf) => tf !== 'AVG')];
 const POLL_MS = 1000;
 const CALC_MODES: { id: CalculationMode; label: string }[] = [
@@ -59,11 +53,8 @@ export function StrengthIntelligence({
     setTab(id);
     writeHashRoute('strength-intelligence', id);
   };
-  const [relTf, setRelTf] = useState('ALL');
   const [sortBy, setSortBy] = useState('AVG');
   const [currencyFilter, setCurrencyFilter] = useState('ALL');
-  const [histCurrency, setHistCurrency] = useState('EUR');
-  const [histTf, setHistTf] = useState('H1');
   const [focusPair, setFocusPair] = useState('EURUSD');
   const [pageVisible, setPageVisible] = useState(
     () => typeof document !== 'undefined' && document.visibilityState === 'visible',
@@ -88,22 +79,6 @@ export function StrengthIntelligence({
     enabled: pageVisible,
     intervalMs: POLL_MS,
   });
-
-  const rel = useAsync(
-    () => marketIntelligenceApi.relationships(relTf === 'ALL' ? undefined : relTf),
-    [relTf],
-    { enabled: tab === 'relationships' || tab === 'analysis' },
-  );
-  const hist = useAsync(
-    () => marketIntelligenceApi.strengthHistory(histCurrency, histTf),
-    [histCurrency, histTf],
-    { enabled: tab === 'historical' },
-  );
-  const pairHist = useAsync(
-    () => marketIntelligenceApi.relationshipHistory(focusPair, histTf),
-    [focusPair, histTf],
-    { enabled: tab === 'analysis' },
-  );
 
   const data = matrix.data;
   const meta = data?.meta ?? null;
@@ -216,81 +191,21 @@ export function StrengthIntelligence({
       </TabPanel>
 
       <TabPanel active={tab} id="historical">
-        <div className="hub-inline-filters">
-          <label>
-            Currency
-            <select value={histCurrency} onChange={(e) => setHistCurrency(e.target.value)}>
-              {CURRENCIES.map((c) => (
-                <option key={c}>{c}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Timeframe
-            <select value={histTf} onChange={(e) => setHistTf(e.target.value)}>
-              {SORT_TFS.map((x) => (
-                <option key={x}>{x}</option>
-              ))}
-            </select>
-          </label>
-        </div>
-        {hist.loading ? (
-          <LoadingSkeleton />
-        ) : hist.error ? (
-          <ErrorState message={hist.error} onRetry={hist.refresh} />
-        ) : hist.data?.length ? (
-          <StrengthHistoryPanel currency={histCurrency} rows={hist.data} />
-        ) : (
-          <EmptyState title="No historical strength" body="History appears after persisted strength snapshots exist." />
-        )}
+        <HistoricalStrengthTab enabled={pageVisible && tab === 'historical'} />
       </TabPanel>
 
       <TabPanel active={tab} id="relationships">
-        <div className="hub-toolbar" style={{ marginTop: 0 }}>
-          <select value={relTf} onChange={(e) => setRelTf(e.target.value)} aria-label="Timeframe filter">
-            {REL_TFS.map((x) => (
-              <option key={x}>{x}</option>
-            ))}
-          </select>
-        </div>
-        <section className="mi-card">
-          <header>
-            <div>
-              <span className="mi-eyebrow">Pairwise intelligence</span>
-              <h2>Currency relationship map</h2>
-            </div>
-          </header>
-          {rel.loading ? (
-            <LoadingSkeleton />
-          ) : rel.error ? (
-            <ErrorState message={rel.error} onRetry={rel.refresh} />
-          ) : rel.data?.length ? (
-            <RelationshipTable rows={rel.data} />
-          ) : (
-            <EmptyState title="No relationship snapshots" body="Relationships appear after strength calculation." />
-          )}
-        </section>
-        <RelationshipLegend />
+        <PairRelationshipsTab
+          enabled={pageVisible && tab === 'relationships'}
+          onAnalyse={(pair) => {
+            setFocusPair(pair);
+            pickTab('analysis');
+          }}
+        />
       </TabPanel>
 
       <TabPanel active={tab} id="analysis">
-        <div className="hub-inline-filters">
-          <label>
-            Focus pair
-            <select value={focusPair} onChange={(e) => setFocusPair(e.target.value)}>
-              {(rel.data?.map((r) => r.pair) ?? ['EURUSD', 'GBPUSD', 'USDJPY']).slice(0, 28).map((p) => (
-                <option key={p}>{p}</option>
-              ))}
-            </select>
-          </label>
-        </div>
-        <RelationshipAnalysisPanel
-          pair={focusPair}
-          rows={pairHist.data}
-          loading={pairHist.loading}
-          error={pairHist.error}
-          onRetry={pairHist.refresh}
-        />
+        <RelationshipAnalysisTab enabled={pageVisible && tab === 'analysis'} pair={focusPair} onPairChange={setFocusPair} />
       </TabPanel>
     </div>
   );

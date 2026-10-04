@@ -9,9 +9,24 @@ from ..market.intelligence_cycle import run_intelligence_cycle
 from ..market.mt5_gateway import create_market_data_gateway
 from ..market.mt5_platform_status import get_mt5_market_context
 from ..market.repository import MarketRepository
-from ..market.strength_engine import get_strength_engine
+from ..market.strength_engine import StrengthEngine, get_strength_engine
+from ..market.strength_intel_service import analysis_payload, historical_payload, pairs_payload
+from ..market.strength_intel_store import active_scope, latest_pair_snapshot
 
 router = APIRouter(prefix="/api/market-intelligence", tags=["Market Intelligence"])
+
+
+def _ready_engine() -> StrengthEngine:
+    engine = get_strength_engine()
+    if engine.engine_meta() is None or not engine.running:
+        engine.seed_from_db()
+    return engine
+
+
+def _or_503(payload: dict | None) -> dict:
+    if payload is None:
+        raise HTTPException(503, "Strength engine has not produced a calculation yet")
+    return payload
 
 
 def _require_close_close(calculation_mode: str) -> CalculationMode:
@@ -107,6 +122,44 @@ def strength_sparklines(
             c: [{"as_of": a, "score": s} for a, s in repo.score_history(c, timeframe.upper(), limit)]
             for c in CSM_CURRENCIES
         }
+
+
+@router.get("/strength/historical")
+def strength_historical(period: str = Query("24H"), timeframe: str = Query("AVG")):
+    """Historical Strength tab: persisted 0–100 scores, trends, momentum, extremes and events."""
+    try:
+        return _or_503(historical_payload(_ready_engine(), period, timeframe))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/relationships/pairs")
+def pair_relationships_live():
+    """Pair Relationships tab: 28-pair strength differentials from the engine's current scores."""
+    return _or_503(pairs_payload(_ready_engine()))
+
+
+@router.get("/relationships/pairs/snapshot")
+def pair_relationships_snapshot():
+    """Latest persisted pair intelligence for the active tenant/account (downstream consumers)."""
+    with db() as conn:
+        scope = active_scope(conn)
+        rows = latest_pair_snapshot(conn, scope)
+    return {
+        "scope": {"tenant_id": scope[0] or None, "trading_account_id": scope[1] or None},
+        "as_of": rows[0]["as_of"] if rows else None,
+        "analysis_only": True,
+        "rows": rows,
+    }
+
+
+@router.get("/relationships/pairs/{pair}/analysis")
+def pair_relationship_analysis(pair: str, period: str = Query("24H")):
+    """Relationship Analysis tab: multi-timeframe structural interpretation for one pair."""
+    try:
+        return _or_503(analysis_payload(_ready_engine(), pair, period))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.get("/strength/{currency}/history")
