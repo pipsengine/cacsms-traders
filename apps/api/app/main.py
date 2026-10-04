@@ -1,9 +1,11 @@
 import asyncio
+import hmac
 import logging
 import os
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from .core.config import APP_NAME, cors_origins
 from .core.database import db_path
@@ -11,7 +13,7 @@ from .core.env_loader import load_env_file
 from .market.intelligence_cycle import run_intelligence_cycle
 from .market.scanner_engine import get_scanner_engine, scanner_enabled
 from .market.strength_engine import get_strength_engine
-from .routers import auth, market_intelligence, platform, tenant_admin
+from .routers import auth, ctrader, market_intelligence, platform, tenant_admin
 from .services.bootstrap import bootstrap
 from .workers.market_intelligence_worker import MarketIntelligenceWorker
 
@@ -64,7 +66,30 @@ async def shutdown():
     get_scanner_engine().stop()
 
 
-app.include_router(auth.router)
-app.include_router(platform.router)
-app.include_router(tenant_admin.router)
+LOOPBACK = ("127.0.0.1", "::1", "localhost", "testclient")
+FORWARDED_HEADERS = ("x-forwarded-for", "cf-connecting-ip", "x-real-ip")
+
+
+@app.middleware("http")
+async def require_proxy_secret(request: Request, call_next):
+    """When API_PROXY_SECRET is set, public traffic must arrive through the Vercel proxy that carries it.
+
+    Direct local calls (Vite dev proxy, scripts) stay allowed: loopback peer with no forwarding headers.
+    """
+    secret = os.getenv("API_PROXY_SECRET", "").strip()
+    if secret and request.url.path.startswith("/api/"):
+        direct_local = (request.client is None or request.client.host in LOOPBACK) and not any(
+            h in request.headers for h in FORWARDED_HEADERS
+        )
+        sent = request.headers.get("x-ct-proxy-secret", "")
+        if not direct_local and not hmac.compare_digest(sent, secret):
+            return JSONResponse({"detail": "Forbidden"}, status_code=403)
+    return await call_next(request)
+
+
+# Every backend route lives under /api — one convention for local dev, the Vercel proxy and API clients.
+app.include_router(auth.router, prefix="/api")
+app.include_router(platform.router, prefix="/api")
+app.include_router(tenant_admin.router, prefix="/api")
+app.include_router(ctrader.router, prefix="/api")
 app.include_router(market_intelligence.router)

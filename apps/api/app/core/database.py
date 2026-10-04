@@ -11,9 +11,20 @@ def db_path()->Path:
  resolved=p if p.is_absolute() else (ROOT/p).resolve()
  return resolved
 
+class DatabaseUnavailable(RuntimeError):
+ pass
+
+def _creation_allowed()->bool:
+ if os.getenv('APP_ENV','development').strip().lower()!='production': return True
+ return os.getenv('DATABASE_ALLOW_CREATE','0').strip().lower() in ('1','true','yes')
+
 def connect():
  path=db_path()
- path.parent.mkdir(parents=True,exist_ok=True)
+ if not path.exists():
+  # Production never silently starts on a fresh empty database (e.g. an ephemeral disk).
+  if not _creation_allowed():
+   raise DatabaseUnavailable(f'Production database not found at {path}; set DATABASE_PATH to the durable database file (or DATABASE_ALLOW_CREATE=1 for first provisioning)')
+  path.parent.mkdir(parents=True,exist_ok=True)
  c=sqlite3.connect(path,timeout=15,check_same_thread=False)
  c.row_factory=sqlite3.Row
  c.execute('PRAGMA foreign_keys=ON')

@@ -16,6 +16,30 @@ def cors_origins():
   origins.update(x.strip() for x in extra.split(',') if x.strip())
  return sorted(origins)
 SESSION_HOURS=int(os.getenv('SESSION_HOURS','12'))
+SESSION_COOKIE='ct_session'
+CSRF_HEADER='x-ct-client'
+
+def app_env()->str:
+ return os.getenv('APP_ENV','development').strip().lower()
+
+def is_production()->bool:
+ return app_env()=='production'
+
+def _flag(name:str)->bool|None:
+ raw=os.getenv(name,'').strip().lower()
+ if raw in ('1','true','yes'): return True
+ if raw in ('0','false','no'): return False
+ return None
+
+def session_cookie_secure(request_is_https:bool)->bool:
+ """Secure is always on in production; otherwise follows the request scheme (http dev keeps it off)."""
+ forced=_flag('SESSION_COOKIE_SECURE')
+ if forced is not None and not is_production(): return forced
+ return is_production() or request_is_https
+
+def session_cookie_samesite()->str:
+ v=os.getenv('SESSION_COOKIE_SAMESITE','lax').strip().lower()
+ return v if v in ('lax','strict') else 'lax'
 BOOTSTRAP_USERNAME=os.getenv('BOOTSTRAP_USERNAME','cacsms')
 BOOTSTRAP_PASSWORD=os.getenv('BOOTSTRAP_PASSWORD','ChangeMe!2026')
 BOOTSTRAP_EMAIL=os.getenv('BOOTSTRAP_EMAIL','admin@cacsms.local')

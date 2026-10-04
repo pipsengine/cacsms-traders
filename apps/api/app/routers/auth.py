@@ -1,9 +1,10 @@
-from fastapi import APIRouter,Depends,HTTPException,Header
+from fastapi import APIRouter,Depends,HTTPException,Header,Request,Response
 import uuid
 from ..schemas.auth import LoginRequest,ChangePasswordRequest,ProfilePatch
+from ..core.config import SESSION_COOKIE,SESSION_HOURS,session_cookie_samesite,session_cookie_secure
 from ..core.database import db, execute_retry
 from ..core.security import verify_password,new_token,token_hash,expires,iso,hash_password
-from ..deps import current_user
+from ..deps import current_user,session_token
 from ..core.audit import write_audit
 router=APIRouter(prefix='/auth',tags=['Authentication'])
 
@@ -15,20 +16,30 @@ def user_payload(c,user_row):
  body['memberships']=memberships
  return body
 
+def _is_https(request:Request)->bool:
+ return request.url.scheme=='https' or request.headers.get('x-forwarded-proto','').split(',')[0].strip()=='https'
+
+def _cookie_args(request:Request)->dict:
+ return {'key':SESSION_COOKIE,'path':'/api','httponly':True,'secure':session_cookie_secure(_is_https(request)),'samesite':session_cookie_samesite()}
+
 @router.post('/login')
-def login(x:LoginRequest):
+def login(x:LoginRequest,request:Request,response:Response):
  with db() as c:
   u=c.execute("SELECT * FROM users WHERE username=? AND status='ACTIVE'",(x.username,)).fetchone()
   if not u or not verify_password(x.password,u['password_hash']): raise HTTPException(401,'Invalid credentials')
   token=new_token(); sid=str(uuid.uuid4())
   execute_retry(c,'INSERT INTO auth_sessions(id,user_id,token_hash,expires_at,created_at) VALUES(?,?,?,?,?)',(sid,u['id'],token_hash(token),expires(),iso()))
   execute_retry(c,'UPDATE users SET last_login_at=? WHERE id=?',(iso(),u['id']))
+  response.set_cookie(value=token,max_age=SESSION_HOURS*3600,**_cookie_args(request))
   return {'access_token':token,'token_type':'bearer','user':user_payload(c,u)}
 @router.post('/logout')
-def logout(user=Depends(current_user),authorization:str|None=Header(default=None)):
+def logout(request:Request,response:Response,user=Depends(current_user),authorization:str|None=Header(default=None)):
+ token=session_token(request,authorization)
  with db() as c:
-  if authorization and authorization.startswith('Bearer '):
-   c.execute('UPDATE auth_sessions SET revoked_at=? WHERE token_hash=? AND revoked_at IS NULL',(iso(),token_hash(authorization[7:])))
+  if token:
+   c.execute('UPDATE auth_sessions SET revoked_at=? WHERE token_hash=? AND revoked_at IS NULL',(iso(),token_hash(token)))
+ args=_cookie_args(request)
+ response.delete_cookie(args.pop('key'),**args)
  return {'ok':True}
 @router.get('/me')
 def me(user=Depends(current_user)):

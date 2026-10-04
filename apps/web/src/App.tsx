@@ -21,7 +21,8 @@ import { LEGACY_ROUTE, parseHashRoute, writeHashRoute } from './lib/routes';
 import { marketIntelligenceApi } from './features/market-intelligence/api';
 
 export function App() {
-  const [authed, setAuthed] = React.useState(!!localStorage.getItem('ct_token'));
+  // null = session not yet checked; the session itself lives in an HttpOnly cookie.
+  const [authed, setAuthed] = React.useState<boolean | null>(null);
   const [route, setRoute] = React.useState<AppRouteState>(() => parseHashRoute());
   const [user, setUser] = React.useState<AuthUser | null>(null);
   const [health, setHealth] = React.useState<Health | null>(null);
@@ -48,7 +49,7 @@ export function App() {
 
   const refresh = React.useCallback(async () => {
     const [h, s, t, me] = await Promise.all([
-      get<Health>('/health'),
+      get<Health>('/system/health'),
       get<Summary>('/dashboard/summary'),
       get<Tenant[]>('/tenants'),
       get<AuthUser>('/auth/me'),
@@ -69,9 +70,19 @@ export function App() {
   }, []);
 
   React.useEffect(() => {
+    localStorage.removeItem('ct_token');
+    get<AuthUser>('/auth/me')
+      .then((me) => {
+        setUser(me);
+        setAuthed(true);
+      })
+      .catch(() => setAuthed(false));
+  }, []);
+
+  React.useEffect(() => {
     if (!authed) return;
     refresh().catch(() => {
-      localStorage.removeItem('ct_token');
+      setUser(null);
       setAuthed(false);
     });
   }, [authed, refresh]);
@@ -80,11 +91,20 @@ export function App() {
     try {
       await post('/auth/logout', {});
     } catch {
-      /* ignore */
+      /* session already invalid */
     }
-    localStorage.removeItem('ct_token');
     setAuthed(false);
     setUser(null);
+  }
+
+  if (authed === null) {
+    return (
+      <div className="login-screen">
+        <div className="login-card">
+          <p className="login-lead">Checking session…</p>
+        </div>
+      </div>
+    );
   }
 
   if (!authed) {

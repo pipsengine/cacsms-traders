@@ -1,0 +1,152 @@
+"""Production API path: /api routing, cookie sessions, health, DB guard, proxy secret and cTrader callback."""
+from urllib.parse import parse_qs, urlparse
+
+import pytest
+from fastapi.testclient import TestClient
+
+ADMIN = {"username": "Admin", "password": "P@882w0rd"}
+CLIENT_HEADER = {"X-CT-Client": "web"}
+
+
+@pytest.fixture()
+def client(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "test.db"))
+    monkeypatch.setenv("BOOTSTRAP_PASSWORD", "TestPass!123")
+    for name in ("APP_ENV", "API_PROXY_SECRET", "CTRADER_CLIENT_ID", "CTRADER_CLIENT_SECRET", "CTRADER_REDIRECT_URI"):
+        monkeypatch.delenv(name, raising=False)
+    from apps.api.app.main import app
+    from apps.api.app.services.bootstrap import bootstrap
+
+    bootstrap()
+    with TestClient(app) as c:
+        yield c
+
+
+def test_public_health_reports_only_safe_fields(client):
+    r = client.get("/api/health")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "ok"
+    assert body["api"] == "reachable"
+    assert body["database"] == "reachable"
+    assert body["auth"] == "ready"
+    assert body["environment"] == "development"
+    assert set(body) == {"status", "api", "database", "auth", "environment", "time"}
+
+
+def test_routes_live_only_under_api_prefix(client):
+    assert client.post("/auth/login", json=ADMIN).status_code == 404
+    assert client.get("/health").status_code == 404
+    assert client.post("/api/auth/login", json=ADMIN).status_code == 200
+
+
+def test_cookie_session_login_me_logout(client):
+    r = client.post("/api/auth/login", json=ADMIN)
+    assert r.status_code == 200, r.text
+    set_cookie = r.headers["set-cookie"]
+    assert "ct_session=" in set_cookie
+    assert "HttpOnly" in set_cookie
+    assert "Path=/api" in set_cookie
+    assert "samesite=lax" in set_cookie.lower()
+
+    me = client.get("/api/auth/me")
+    assert me.status_code == 200
+    assert me.json()["username"] == "Admin"
+
+    assert client.post("/api/auth/logout").status_code == 403, "cookie writes require the client header"
+    assert client.post("/api/auth/logout", headers=CLIENT_HEADER).status_code == 200
+    assert client.get("/api/auth/me").status_code == 401
+
+
+def test_protected_routes_reject_unauthenticated(client):
+    for path in ("/api/auth/me", "/api/tenants", "/api/system/health", "/api/dashboard/summary"):
+        assert client.get(path).status_code == 401, path
+    assert client.get("/api/connections/ctrader/status", params={"tenant_id": "tenant-cacsms"}).status_code == 401
+
+
+def test_production_cookie_is_secure(client, monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    r = client.post("/api/auth/login", json=ADMIN)
+    assert r.status_code == 200
+    assert "Secure" in r.headers["set-cookie"]
+    assert client.get("/api/health").json()["environment"] == "production"
+
+
+def test_production_refuses_to_create_missing_database(monkeypatch, tmp_path):
+    from apps.api.app.core.database import DatabaseUnavailable, connect
+
+    missing = tmp_path / "missing" / "prod.db"
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("DATABASE_PATH", str(missing))
+    monkeypatch.delenv("DATABASE_ALLOW_CREATE", raising=False)
+    with pytest.raises(DatabaseUnavailable):
+        connect()
+    assert not missing.exists()
+
+
+def test_proxy_secret_enforced_for_forwarded_traffic(client, monkeypatch):
+    monkeypatch.setenv("API_PROXY_SECRET", "s3cret-value")
+    forwarded = {"X-Forwarded-For": "203.0.113.7"}
+    assert client.get("/api/health", headers=forwarded).status_code == 403
+    assert client.get("/api/health", headers={**forwarded, "x-ct-proxy-secret": "wrong"}).status_code == 403
+    assert client.get("/api/health", headers={**forwarded, "x-ct-proxy-secret": "s3cret-value"}).status_code == 200
+    assert client.get("/api/health").status_code == 200, "direct local calls stay allowed"
+
+
+def _ctrader_env(monkeypatch):
+    monkeypatch.setenv("CTRADER_CLIENT_ID", "client-id-test")
+    monkeypatch.setenv("CTRADER_CLIENT_SECRET", "client-secret-test")
+    monkeypatch.setenv("CTRADER_REDIRECT_URI", "https://cacsms-traders.vercel.app/api/connections/ctrader/callback")
+    monkeypatch.setenv("CTRADER_ENVIRONMENT", "demo")
+
+
+def test_ctrader_callback_route_exists_and_rejects_bad_requests(client, monkeypatch):
+    r = client.get("/api/connections/ctrader/callback", params={"code": "x", "state": "y"}, follow_redirects=False)
+    assert r.status_code == 303
+    assert "ctrader=not_configured" in r.headers["location"]
+
+    _ctrader_env(monkeypatch)
+    r = client.get("/api/connections/ctrader/callback", params={"code": "x", "state": "forged"}, follow_redirects=False)
+    assert r.status_code == 303
+    assert "ctrader=invalid_state" in r.headers["location"]
+
+    r = client.get("/api/connections/ctrader/callback", follow_redirects=False)
+    assert "ctrader=invalid_request" in r.headers["location"]
+
+
+def test_ctrader_authorize_and_callback_store_tokens_server_side(client, monkeypatch):
+    _ctrader_env(monkeypatch)
+    from apps.api.app.routers import ctrader
+
+    seen = {}
+
+    def fake_exchange(cfg, code):
+        seen["code"] = code
+        return {"accessToken": "ACCESS-TOKEN-XYZ", "refreshToken": "REFRESH-TOKEN-XYZ", "tokenType": "bearer", "expiresIn": 2628000}
+
+    monkeypatch.setattr(ctrader, "_exchange", fake_exchange)
+    user = client.post("/api/auth/login", json=ADMIN).json()["user"]
+    tenant_id = user["memberships"][0]["tenant_id"]
+
+    status = client.get("/api/connections/ctrader/status", params={"tenant_id": tenant_id})
+    assert status.json()["configured"] is True
+    assert status.json()["connected"] is False
+
+    auth = client.post("/api/connections/ctrader/authorize", headers=CLIENT_HEADER, json={"tenant_id": tenant_id})
+    assert auth.status_code == 200, auth.text
+    url = auth.json()["authorize_url"]
+    assert "client-secret-test" not in url
+    state = parse_qs(urlparse(url).query)["state"][0]
+
+    cb = client.get("/api/connections/ctrader/callback", params={"code": "AUTH-CODE", "state": state}, follow_redirects=False)
+    assert cb.status_code == 303
+    assert "ctrader=connected" in cb.headers["location"]
+    assert seen["code"] == "AUTH-CODE"
+
+    replay = client.get("/api/connections/ctrader/callback", params={"code": "AUTH-CODE", "state": state}, follow_redirects=False)
+    assert "ctrader=invalid_state" in replay.headers["location"]
+
+    status = client.get("/api/connections/ctrader/status", params={"tenant_id": tenant_id})
+    body = status.text
+    assert status.json()["connected"] is True
+    assert "ACCESS-TOKEN-XYZ" not in body and "REFRESH-TOKEN-XYZ" not in body and "client-secret-test" not in body

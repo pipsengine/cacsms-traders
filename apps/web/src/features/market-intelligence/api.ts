@@ -9,16 +9,12 @@ import type {
   PairRelationshipsPayload,
   RelationshipAnalysisPayload,
 } from './types';
+import { apiFetch } from '../../lib/api';
 
-const BASE = import.meta.env.VITE_API_BASE ?? '';
-const root = `${BASE}/api/market-intelligence`;
+const root = '/market-intelligence';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const token = localStorage.getItem('ct_token');
-  const headers = new Headers(init?.headers);
-  if (token) headers.set('Authorization', `Bearer ${token}`);
-  if (init?.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
-  const r = await fetch(`${root}${path}`, { credentials: 'include', headers, ...init });
+  const r = await apiFetch(`${root}${path}`, init);
   if (!r.ok) {
     const text = await r.text();
     throw new Error(text || r.statusText || 'Request failed');

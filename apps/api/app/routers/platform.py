@@ -1,5 +1,6 @@
-from fastapi import APIRouter,Depends,HTTPException
-import uuid,json
+from fastapi import APIRouter,Depends,HTTPException,Response
+import logging,uuid,json
+from ..core.config import app_env
 from ..deps import current_user
 from ..core.database import db
 from ..core.security import iso
@@ -7,9 +8,26 @@ from ..core.audit import write_audit
 from ..schemas.admin import TenantCreate,SystemModeUpdate
 from ..domain.gateway import LocalMT5Gateway
 from ..domain.mt5_connection import _active_tenant_id
+log=logging.getLogger(__name__)
 router=APIRouter(tags=['Platform'])
 @router.get('/health')
-def health():
+def health(response:Response):
+ """Public liveness probe: reachability only — no paths, versions, accounts or secrets."""
+ database=auth='unavailable'
+ try:
+  with db() as c:
+   c.execute('SELECT 1').fetchone()
+   database='reachable'
+   ready=c.execute("SELECT 1 FROM users WHERE is_platform_admin=1 AND status='ACTIVE' LIMIT 1").fetchone()
+   c.execute('SELECT 1 FROM auth_sessions LIMIT 1').fetchone()
+   auth='ready' if ready else 'not_ready'
+ except Exception:
+  log.warning('Health check: database unavailable',exc_info=True)
+ ok=database=='reachable' and auth=='ready'
+ if not ok: response.status_code=503
+ return {'status':'ok' if ok else 'degraded','api':'reachable','database':database,'auth':auth,'environment':app_env(),'time':iso()}
+@router.get('/system/health')
+def system_health(user=Depends(current_user)):
  with db() as c:
   c.execute('SELECT 1').fetchone()
   active=_active_tenant_id(c)

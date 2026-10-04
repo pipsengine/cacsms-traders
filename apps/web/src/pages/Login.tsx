@@ -3,12 +3,11 @@ import { ShieldCheck } from 'lucide-react';
 import { post } from '../lib/api';
 
 type LoginResponse = {
-  access_token: string;
   user: { display_name: string; username: string };
 };
 
-export function Login({ onSuccess }: { onSuccess: (token: string) => void }) {
-  const [username, setUsername] = React.useState('cacsms');
+export function Login({ onSuccess }: { onSuccess: () => void }) {
+  const [username, setUsername] = React.useState('');
   const [password, setPassword] = React.useState('');
   const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
@@ -18,9 +17,8 @@ export function Login({ onSuccess }: { onSuccess: (token: string) => void }) {
     setBusy(true);
     setError(null);
     try {
-      const res = await post<LoginResponse>('/auth/login', { username, password });
-      localStorage.setItem('ct_token', res.access_token);
-      onSuccess(res.access_token);
+      await post<LoginResponse>('/auth/login', { username, password });
+      onSuccess();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {
@@ -41,7 +39,7 @@ export function Login({ onSuccess }: { onSuccess: (token: string) => void }) {
         <p className="login-lead">Sign in to administer tenants, accounts and system controls.</p>
         <label>
           Username
-          <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" />
+          <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required />
         </label>
         <label>
           Password
@@ -50,7 +48,7 @@ export function Login({ onSuccess }: { onSuccess: (token: string) => void }) {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             autoComplete="current-password"
-            placeholder="Bootstrap password from .env"
+            required
           />
         </label>
         {error && <div className="login-error">{error}</div>}
@@ -58,9 +56,6 @@ export function Login({ onSuccess }: { onSuccess: (token: string) => void }) {
           <ShieldCheck />
           {busy ? 'Signing in…' : 'Sign in'}
         </button>
-        <p className="muted login-foot">
-          Super admin: Admin · Bootstrap user: cacsms · use API bootstrap / .env in development.
-        </p>
       </form>
     </div>
   );

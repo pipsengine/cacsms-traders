@@ -1,13 +1,10 @@
 import type { H8BosBtlDetail, H8BosBtlPayload } from './types';
+import { apiFetch } from '../../lib/api';
 
-const BASE = import.meta.env.VITE_API_BASE ?? '';
-const root = `${BASE}/api/market-intelligence/h8-bos-btl`;
+const root = '/market-intelligence/h8-bos-btl';
 
 async function get<T>(path: string): Promise<T> {
-  const token = localStorage.getItem('ct_token');
-  const headers = new Headers();
-  if (token) headers.set('Authorization', `Bearer ${token}`);
-  const r = await fetch(`${root}${path}`, { credentials: 'include', headers });
+  const r = await apiFetch(`${root}${path}`);
   if (!r.ok) {
     const text = await r.text();
     throw new Error(text || r.statusText || 'Request failed');
