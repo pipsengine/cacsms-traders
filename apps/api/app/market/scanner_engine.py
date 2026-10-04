@@ -56,6 +56,8 @@ from .structure_overview import (
 from .structure_overview_config import OVERVIEW_TIMEFRAMES, REGIMES, overview_settings, overview_settings_payload
 from .h8_bos_btl import h1_validation, h8_core, h8_live, m30_confirmation, weekly_core, weekly_live
 from .h8_bos_btl_config import ALERT_KINDS, ALERT_PRIORITY, h8_bos_btl_settings, h8_bos_btl_settings_payload
+from .trend_structure import mtf_rows, trend_core, trend_events, trend_view
+from .trend_structure_config import TREND_TIMEFRAMES, trend_settings, trend_settings_payload
 from .strength_engine import get_strength_engine
 from .strength_intel_store import active_scope
 
@@ -176,6 +178,7 @@ class MarketScannerEngine:
                 "range_core": range_core,
                 "overview": self._overview_core(bars, range_core, rs),
                 "h8bb": self._h8bb_core(bars),
+                "trend": trend_core(bars, trend_settings()),
                 "range_ltf": ltf_context(d1, bars["H8"], h1, rs),
                 "structures": structures,
                 "primary_tf": primary_tf,
@@ -451,6 +454,44 @@ class MarketScannerEngine:
                     ev.get("analysis_id") if confirmed else None,
                     json.dumps(
                         {"event": ev if confirmed else None, "developing": r["developing"], "weekly": r["weekly"]},
+                        default=str,
+                    ),
+                ),
+            )
+        for r in self._trend_rows(closed_only=True):
+            if not r["available"]:
+                continue
+            v = r["_view"]
+            geo = v["geometry"] or {}
+            execute_retry(
+                conn,
+                """INSERT OR REPLACE INTO mi_trend_structure_snapshot(tenant_id,trading_account_id,cycle_id,as_of,symbol,
+                     direction,trend_state,strength,age_weeks,cell_w,cell_d1,cell_h8,cell_h1,setup,pullback_depth_pct,
+                     analysis_close_at,details_json)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    tenant,
+                    account,
+                    cycle,
+                    at.isoformat(),
+                    r["symbol"],
+                    v["direction"],
+                    v["state"]["key"],
+                    v["strength"],
+                    v["age_weeks"],
+                    *((v["cells"].get(tf) or {}).get("key") for tf in TREND_TIMEFRAMES),
+                    v["setup"]["key"],
+                    geo.get("depth_pct"),
+                    v["anchor"],
+                    json.dumps(
+                        {
+                            "components": v["components"],
+                            "health": v["health"],
+                            "geometry": geo or None,
+                            "structure_sequence": v["structure_sequence"],
+                            "reversal_reasons": v["reversal_reasons"],
+                            "events": r["_events"],
+                        },
                         default=str,
                     ),
                 ),
@@ -1009,6 +1050,98 @@ class MarketScannerEngine:
         if p["resistance"]:
             out.append({"key": "BTL_UP", "title": "Bullish BTL", "detail": f"H8 close above the falling trend line (≈{f(p['resistance']['level'])})."})
         return out
+
+
+    # ----- Trend Structure (Market Structure → Trend Structure) -----
+
+    def _trend_rows(self, *, closed_only: bool = False) -> list[dict]:
+        """Per-instrument trend view. ``closed_only`` ignores the live quote (persistence never stores developing state)."""
+        s, ovs = trend_settings(), overview_settings()
+        now = datetime.now(timezone.utc)
+        with self._lock:
+            rows = {r["symbol"]: r for r in self._rows}
+            analysis = dict(self._analysis)
+        out = []
+        for sym in SCANNER_UNIVERSE:
+            row = rows.get(sym) or {}
+            a = analysis.get(sym) or {}
+            base = {
+                "symbol": sym,
+                "base": sym[:3],
+                "quote": sym[3:6],
+                "name": row.get("name") or instrument_name(sym),
+                "asset": "Commodity" if sym == GOLD else "Forex",
+                "digits": row.get("digits") or (2 if sym == GOLD else 3 if sym.endswith("JPY") else 5),
+                "price": row.get("price"),
+            }
+            ov, core = a.get("overview"), a.get("trend")
+            if not ov or not core or ov["regimes"].get("W") is None:
+                reason = row.get("excluded_reason") or a.get("excluded") or "Insufficient closed history"
+                out.append({**base, "available": False, "reason": reason})
+                continue
+            price = None if closed_only else base["price"]
+            view = trend_view(core, ov, price, now, s, ovs)
+            if not view["available"]:
+                out.append({**base, "available": False, "reason": view["reason"]})
+                continue
+            out.append({**base, "available": True, "_view": view, "_core": core,
+                        "_events": trend_events(core, ov, price, now, s, ovs)})
+        return out
+
+    @staticmethod
+    def _trend_public(r: dict) -> dict:
+        base = {k: v for k, v in r.items() if not k.startswith("_")}
+        if not r["available"]:
+            return base
+        v = r["_view"]
+        return {
+            **base,
+            "direction": v["direction"],
+            "cells": v["cells"],
+            "state": v["state"],
+            "strength": v["strength"],
+            "age_weeks": v["age_weeks"],
+            "setup": v["setup"]["key"],
+            "pullback": bool(v["state"]["key"].endswith("PULLBACK")),
+            "reversal_risk": v["setup"]["key"] == "REVERSAL_RISK",
+        }
+
+    def trend_structure_payload(self) -> dict:
+        rows = [self._trend_public(r) for r in self._trend_rows()]
+        ok = [r for r in rows if r["available"]]
+        counts = {
+            "analysed": len(ok),
+            "total": len(rows),
+            "trending": sum(1 for r in ok if r["direction"]),
+            "bullish": sum(1 for r in ok if r["direction"] == "BULLISH"),
+            "bearish": sum(1 for r in ok if r["direction"] == "BEARISH"),
+            "pullback": sum(1 for r in ok if r["pullback"]),
+            "continuation": sum(1 for r in ok if r["setup"] == "CONTINUATION"),
+            "reversal_risk": sum(1 for r in ok if r["reversal_risk"]),
+        }
+        rows.sort(key=lambda r: (not r["available"], not r.get("direction"), -(r.get("strength") or 0), r["symbol"]))
+        return {"meta": {**self.meta(), "trend_settings": trend_settings_payload()}, "counts": counts, "rows": rows}
+
+    def trend_structure_detail(self, symbol: str) -> dict | None:
+        sym = symbol.upper()
+        r = next((x for x in self._trend_rows() if x["symbol"] == sym), None)
+        if r is None:
+            return None
+        summary = self._trend_public(r)
+        meta = {**self.meta(), "trend_settings": trend_settings_payload()}
+        if not r["available"]:
+            return {"meta": meta, "available": False, "summary": summary}
+        v, core = r["_view"], r["_core"]
+        return {
+            "meta": meta,
+            "available": True,
+            "summary": summary,
+            "view": {k: v[k] for k in v if k not in ("cells", "regimes")},
+            "mtf": mtf_rows(core, v),
+            "events": r["_events"],
+            "channels": {tf: (core.get(tf) or {}).get("channel") for tf in TREND_TIMEFRAMES},
+            "last_closed": {tf: (core.get(tf) or {}).get("closed_at") for tf in TREND_TIMEFRAMES},
+        }
 
 
 def _close_at_or_before(h1: list[Bar], at: datetime) -> float | None:

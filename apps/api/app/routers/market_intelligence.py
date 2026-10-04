@@ -214,6 +214,20 @@ def h8_bos_btl_latest(symbol: str = Query(...)):
     return detail
 
 
+@router.get("/structure/trend")
+def trend_structure():
+    """Market Structure → Trend Structure: W/D1/H8/H1 trend matrix, strength, age and setup counts (closed bars)."""
+    return _scanner().trend_structure_payload()
+
+
+@router.get("/structure/trend/{symbol}")
+def trend_structure_instrument(symbol: str):
+    detail = _scanner().trend_structure_detail(symbol)
+    if detail is None:
+        raise HTTPException(404, f"{symbol.upper()} is not in the scanner universe")
+    return detail
+
+
 @router.get("/structure/range")
 def range_structure():
     """Market Structure → Range Structure: weekly range intelligence for every scanner instrument."""
