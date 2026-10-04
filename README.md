@@ -34,6 +34,22 @@ npm install
 npm run dev
 ```
 
+## Deployment
+| Part | Location |
+|---|---|
+| Frontend (Vite build of `apps/web`) | Vercel — https://cacsms-traders.vercel.app |
+| Backend API (FastAPI + SQLite + MT5) | Windows host running the MT5 terminal; must be exposed on a public HTTPS URL |
+| Source | https://github.com/pipsengine/cacsms-traders |
+
+The backend cannot run on Vercel (it needs the MT5 terminal, the SQLite file and long-running engine threads).
+To make the Vercel site work:
+
+1. Expose the API over HTTPS (e.g. Cloudflare Tunnel: `cloudflared tunnel --url http://localhost:8000`, or a named tunnel / Windows VPS).
+2. In the Vercel project → Settings → Environment Variables set `VITE_API_BASE=https://<public-api-host>` (no trailing slash), then redeploy — Vite bakes it in at build time.
+3. In the API `.env` keep `WEB_ORIGINS=https://cacsms-traders.vercel.app` (CORS) and set strong `SUPER_ADMIN_PASSWORD` / `BOOTSTRAP_PASSWORD`; restart the API.
+
+Without `VITE_API_BASE` the deployed site calls `cacsms-traders.vercel.app/auth/login` itself and every sign-in returns 404.
+
 ## Market Intelligence layer
 Integrated from the detailed Market Intelligence package (see `docs/MARKET_INTELLIGENCE_INTEGRATION.md`):
 - Backend: `apps/api/app/market/`, `/api/market-intelligence/*` routes, migration `003_market_intelligence_foundation.sql`
