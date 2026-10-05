@@ -31,7 +31,7 @@ def ensure_super_admin(conn, tenant_id: str, now: str, permission_codes: list[st
         )
 
     row = conn.execute(
-        "SELECT id FROM users WHERE id=? OR username=? COLLATE NOCASE",
+        "SELECT id FROM users WHERE id=? OR LOWER(username)=LOWER(?)",
         (SUPER_ADMIN_USER_ID, cfg["username"]),
     ).fetchone()
     pw_hash = hash_password(cfg["password"])

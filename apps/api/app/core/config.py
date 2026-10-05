@@ -6,6 +6,7 @@ APP_NAME = os.getenv('APP_NAME', 'Cacsms-Traders')
 ENV = os.getenv('APP_ENV', 'development').strip().lower()
 APP_HOST = os.getenv('APP_HOST', '0.0.0.0').strip() or '0.0.0.0'
 APP_PORT = int(os.getenv('APP_PORT', '8000'))
+DATABASE_URL = os.getenv('DATABASE_URL', '').strip() or None
 DB_PATH = ROOT / os.getenv('DATABASE_PATH', 'database/db_cacsms-traders.db')
 WEB_ORIGIN = os.getenv('WEB_ORIGIN', '').strip()
 API_ORIGIN = os.getenv('API_ORIGIN', '').strip()

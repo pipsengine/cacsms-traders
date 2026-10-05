@@ -21,27 +21,6 @@ def autonomous_services(app)->dict:
   'market_scanner':_service_state(scanner_enabled(),get_scanner_engine().running),
   'intelligence_worker':_service_state(worker is not None,bool(worker and worker.running)),
  }
-@router.get('/health')
-@router.get('/health/ready')
-def health(request:Request,response:Response):
- """Public readiness probe for the cloud backend. Returns 503 when database/auth bootstrapping is incomplete."""
- database=auth='unavailable'
- try:
-  with db() as c:
-   c.execute('SELECT 1').fetchone()
-   database='reachable'
-   ready=c.execute("SELECT 1 FROM users WHERE is_platform_admin=1 AND status='ACTIVE' LIMIT 1").fetchone()
-   c.execute('SELECT 1 FROM auth_sessions LIMIT 1').fetchone()
-   auth='ready' if ready else 'not_ready'
- except Exception:
-  log.warning('Health check: database unavailable',exc_info=True)
- ok=database=='reachable' and auth=='ready'
- if not ok: response.status_code=503
- try: services=autonomous_services(request.app)
- except Exception:
-  log.warning('Health check: service state unavailable',exc_info=True); services='unavailable'
- return {'status':'ok' if ok else 'degraded','api':'reachable','database':database,'auth':auth,'environment':app_env(),'autonomous_services':services,'time':iso()}
-
 @router.get('/health/live')
 def liveness(request:Request,response:Response):
  """Liveness endpoint: indicates the API process is alive even if a downstream dependency is degraded."""
@@ -50,6 +29,43 @@ def liveness(request:Request,response:Response):
  except Exception:
   services='unavailable'
  return {'status':'ok','api':'reachable','environment':app_env(),'autonomous_services':services,'time':iso()}
+
+@router.get('/health/ready')
+def readiness(request:Request,response:Response):
+ """Readiness endpoint: database and bootstrap dependencies must be ready for requests."""
+ database='unavailable'; auth='unavailable'; ok=False
+ try:
+  with db() as c:
+   c.execute('SELECT 1').fetchone()
+   database='reachable'
+   ready=c.execute("SELECT 1 FROM users WHERE is_platform_admin=1 AND status='ACTIVE' LIMIT 1").fetchone()
+   c.execute('SELECT 1 FROM auth_sessions LIMIT 1').fetchone()
+   auth='ready' if ready else 'not_ready'
+   ok = database == 'reachable' and auth == 'ready'
+ except Exception:
+  log.warning('Health check: database unavailable', exc_info=True)
+  database='unavailable'; auth='unavailable'; ok=False
+ if not ok:
+  response.status_code=503
+ return {'status':'ok' if ok else 'degraded','api':'reachable','database':database,'auth':auth,'environment':app_env(),'time':iso()}
+
+@router.get('/health')
+def health(request:Request,response:Response):
+ """Public health summary for the cloud backend."""
+ live = liveness(request, response)
+ ready = readiness(request, response)
+ payload = {
+  'status': 'ok' if live.get('status') == 'ok' and ready.get('status') == 'ok' else 'degraded',
+  'api': live.get('api'),
+  'database': ready.get('database'),
+  'auth': ready.get('auth'),
+  'environment': app_env(),
+  'autonomous_services': live.get('autonomous_services'),
+  'time': iso(),
+ }
+ if payload['status'] != 'ok':
+  response.status_code = 503
+ return payload
 
 @router.get('/system/health')
 def system_health(user=Depends(current_user)):

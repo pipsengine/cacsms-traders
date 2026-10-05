@@ -1,26 +1,46 @@
 import logging
 import os
+import re
 import sqlite3
 import time
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterable
+
 from .config import ROOT, app_env
+
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except Exception:  # pragma: no cover - optional dependency in dev/test env
+    psycopg = None
+    dict_row = None
 
 log = logging.getLogger(__name__)
 
 
-def db_path()->Path:
- raw=os.getenv('DATABASE_PATH','database/db_cacsms-traders.db')
- p=Path(raw)
- resolved=p if p.is_absolute() else (ROOT/p).resolve()
- return resolved
+def database_url() -> str | None:
+    value = os.getenv('DATABASE_URL', '').strip()
+    return value or None
+
+
+def db_path() -> Path:
+    if app_env() == 'production':
+        return Path('DATABASE_URL')
+    raw = os.getenv('DATABASE_PATH', 'database/db_cacsms-traders.db')
+    p = Path(raw)
+    resolved = p if p.is_absolute() else (ROOT / p).resolve()
+    return resolved
+
 
 class DatabaseUnavailable(RuntimeError):
- pass
+    pass
 
-def _creation_allowed()->bool:
- if app_env()!='production': return True
- return os.getenv('DATABASE_ALLOW_CREATE','0').strip().lower() in ('1','true','yes')
+
+def _creation_allowed() -> bool:
+    if app_env() != 'production':
+        return True
+    return os.getenv('DATABASE_ALLOW_CREATE', '0').strip().lower() in ('1', 'true', 'yes')
 
 
 def _ensure_database_directory(path: Path) -> None:
@@ -38,51 +58,186 @@ def _ensure_database_directory(path: Path) -> None:
         )
 
 
-def connect():
- path=db_path()
- if not path.exists():
-  # Production never silently starts on a fresh empty database (e.g. an ephemeral disk).
-  if not _creation_allowed():
-   raise DatabaseUnavailable(f'Production database not found at {path}; set DATABASE_PATH to the durable database file (or DATABASE_ALLOW_CREATE=1 for first provisioning)')
-  _ensure_database_directory(path)
- else:
-  _ensure_database_directory(path)
- log.info('Opening SQLite database at %s (env=%s)', path, app_env())
- try:
-  c=sqlite3.connect(path,timeout=15,check_same_thread=False)
- except sqlite3.Error as exc:
-  log.exception('SQLite connect failed for %s', path)
-  raise DatabaseUnavailable(f'Unable to open SQLite database at {path}: {exc}') from exc
- c.row_factory=sqlite3.Row
- c.execute('PRAGMA foreign_keys=ON')
- c.execute('PRAGMA journal_mode=WAL')
- c.execute('PRAGMA synchronous=NORMAL')
- c.execute('PRAGMA busy_timeout=15000')
- return c
+def _sqlite_connect():
+    path = db_path()
+    if not path.exists():
+        if not _creation_allowed():
+            raise DatabaseUnavailable(
+                f'Production database not found at {path}; set DATABASE_PATH to the durable database file (or DATABASE_ALLOW_CREATE=1 for first provisioning)'
+            )
+        _ensure_database_directory(path)
+    else:
+        _ensure_database_directory(path)
 
-def execute_retry(conn: sqlite3.Connection, sql: str, params=(), *, attempts: int = 8) -> sqlite3.Cursor:
+    log.info('Opening SQLite database at %s (env=%s)', path, app_env())
+    try:
+        conn = sqlite3.connect(path, timeout=15, check_same_thread=False)
+    except sqlite3.Error as exc:
+        log.exception('SQLite connect failed for %s', path)
+        raise DatabaseUnavailable(f'Unable to open SQLite database at {path}: {exc}') from exc
+    conn.row_factory = sqlite3.Row
+    conn.execute('PRAGMA foreign_keys=ON')
+    conn.execute('PRAGMA journal_mode=WAL')
+    conn.execute('PRAGMA synchronous=NORMAL')
+    conn.execute('PRAGMA busy_timeout=15000')
+    return conn
+
+
+def _postgres_connect():
+    url = database_url()
+    if not url:
+        raise DatabaseUnavailable('Production requires DATABASE_URL to connect to PostgreSQL/Neon.')
+    if psycopg is None:
+        raise DatabaseUnavailable('psycopg is required in production for PostgreSQL/Neon support.')
+    log.info('Opening PostgreSQL database using DATABASE_URL (env=%s)', app_env())
+    try:
+        conn = psycopg.connect(url, autocommit=False, row_factory=dict_row)
+    except Exception as exc:  # pragma: no cover - environment-specific failure path
+        log.exception('PostgreSQL connection failed')
+        raise DatabaseUnavailable(f'Unable to connect to PostgreSQL: {exc}') from exc
+    return conn
+
+
+def _convert_question_marks(sql: str, params):
+    if '?' not in sql:
+        return sql, params
+    if params in (None, (), []):
+        return sql.replace('?', '%s'), params
+    values = tuple(params)
+    return sql.replace('?', '%s'), values
+
+
+def _sql_conflict_columns(table_name: str) -> str | None:
+    mapping = {
+        'mi_scanner_snapshot': 'tenant_id, trading_account_id, symbol, as_of',
+        'mi_range_structure_snapshot': 'tenant_id, trading_account_id, symbol, as_of',
+        'mi_structure_overview_snapshot': 'tenant_id, trading_account_id, symbol, as_of',
+        'mi_h8_bos_btl_snapshot': 'tenant_id, trading_account_id, symbol, as_of',
+        'mi_trend_structure_snapshot': 'tenant_id, trading_account_id, symbol, as_of',
+        'mi_pair_intel_snapshot': 'tenant_id, trading_account_id, pair, as_of',
+        'ctrader_oauth_states': 'state_hash',
+        'ctrader_connections': 'tenant_id, environment',
+    }
+    return mapping.get(table_name.lower())
+
+
+def _rewrite_production_sql(sql: str, params):
+    if app_env() != 'production' or not database_url():
+        return sql, params
+
+    normalized = sql.strip()
+    if not normalized:
+        return sql, params
+
+    upper = normalized.upper()
+    if 'INSERT OR IGNORE' in upper:
+        match = re.match(r'\s*INSERT\s+OR\s+IGNORE\s+INTO\s+([A-Za-z0-9_\.]+)\s*\((.*?)\)\s*VALUES\s*\((.*?)\)\s*', normalized, re.I | re.S)
+        if match:
+            table = match.group(1)
+            columns = match.group(2).strip()
+            values = match.group(3).strip()
+            rewritten = f'INSERT INTO {table}({columns}) VALUES({values}) ON CONFLICT DO NOTHING'
+            return _convert_question_marks(rewritten, params)
+
+    if 'INSERT OR REPLACE' in upper:
+        match = re.match(r'\s*INSERT\s+OR\s+REPLACE\s+INTO\s+([A-Za-z0-9_\.]+)\s*\((.*?)\)\s*VALUES\s*\((.*?)\)\s*', normalized, re.I | re.S)
+        if match:
+            table = match.group(1)
+            columns = match.group(2).strip()
+            values = match.group(3).strip()
+            conflict_target = _sql_conflict_columns(table)
+            if conflict_target:
+                cols = [c.strip() for c in columns.split(',') if c.strip()]
+                updates = ', '.join(f'{col}=EXCLUDED.{col}' for col in cols if col not in [x.strip() for x in conflict_target.split(',')])
+                rewritten = f'INSERT INTO {table}({columns}) VALUES({values}) ON CONFLICT ({conflict_target}) DO UPDATE SET {updates}'
+            else:
+                rewritten = f'INSERT INTO {table}({columns}) VALUES({values}) ON CONFLICT DO NOTHING'
+            return _convert_question_marks(rewritten, params)
+
+    return _convert_question_marks(normalized, params)
+
+
+class _CompatConnection:
+    def __init__(self, raw_conn, provider: str):
+        self._raw = raw_conn
+        self.provider = provider
+
+    def execute(self, sql, params=(), **kwargs):
+        if self.provider == 'sqlite':
+            return self._raw.execute(sql, params, **kwargs)
+        sql2, params2 = _rewrite_production_sql(sql, params)
+        return self._raw.execute(sql2, params2, **kwargs)
+
+    def executemany(self, sql, seq_of_params):
+        if self.provider == 'sqlite':
+            return self._raw.executemany(sql, seq_of_params)
+        converted = []
+        for params in seq_of_params:
+            sql2, params2 = _rewrite_production_sql(sql, params)
+            converted.append((sql2, params2))
+        for sql2, params2 in converted:
+            self._raw.execute(sql2, params2)
+        return None
+
+    def executescript(self, sql):
+        if self.provider == 'sqlite':
+            return self._raw.executescript(sql)
+        statements = [part.strip() for part in sql.split(';') if part.strip()]
+        for part in statements:
+            self.execute(part)
+        return None
+
+    def __getattr__(self, name):
+        return getattr(self._raw, name)
+
+    def commit(self):
+        return self._raw.commit()
+
+    def rollback(self):
+        return self._raw.rollback()
+
+    def close(self):
+        return self._raw.close()
+
+
+def connect():
+    if app_env() == 'production':
+        if not database_url():
+            raise DatabaseUnavailable('Production requires DATABASE_URL to connect to PostgreSQL/Neon.')
+        raw = _postgres_connect()
+        return _CompatConnection(raw, 'postgresql')
+    raw = _sqlite_connect()
+    return _CompatConnection(raw, 'sqlite')
+
+
+def execute_retry(conn, sql: str, params=(), *, attempts: int = 8, sleep_seconds: float = 0.05):
     for attempt in range(attempts):
         try:
             return conn.execute(sql, params)
-        except sqlite3.OperationalError as exc:
-            if "locked" not in str(exc).lower() or attempt >= attempts - 1:
+        except Exception as exc:
+            msg = str(exc).lower()
+            if ('locked' not in msg and 'timeout' not in msg and 'busy' not in msg) or attempt >= attempts - 1:
                 raise
-            time.sleep(0.05 * (attempt + 1))
-    raise sqlite3.OperationalError("database is locked")
+            time.sleep(sleep_seconds * (attempt + 1))
+    raise RuntimeError('database is locked or busy')
+
 
 @contextmanager
 def db():
-    c=connect()
+    conn = connect()
     try:
-        yield c
+        yield conn
         for attempt in range(8):
             try:
-                c.commit()
+                conn.commit()
                 break
-            except sqlite3.OperationalError as exc:
-                if "locked" not in str(exc).lower() or attempt >= 7:
+            except Exception as exc:
+                msg = str(exc).lower()
+                if ('locked' not in msg and 'timeout' not in msg and 'busy' not in msg) or attempt >= 7:
                     raise
                 time.sleep(0.05 * (attempt + 1))
     except Exception:
-        c.rollback(); raise
-    finally: c.close()
+        conn.rollback()
+        raise
+    finally:
+        conn.close()

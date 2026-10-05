@@ -8,8 +8,8 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from .core.config import APP_NAME, cors_origins
-from .core.database import DatabaseUnavailable, db_path
+from .core.config import APP_NAME, app_env, cors_origins
+from .core.database import DatabaseUnavailable, database_url, db_path
 from .core.env_loader import load_env_file
 from .market.intelligence_cycle import run_intelligence_cycle
 from .market.scanner_engine import get_scanner_engine, scanner_enabled
@@ -33,6 +33,19 @@ async def database_unavailable_handler(request: Request, exc: DatabaseUnavailabl
 async def sqlite_error_handler(request: Request, exc: sqlite3.DatabaseError):
     log.warning('SQLite error for %s %s: %s', request.method, request.url.path, exc)
     return JSONResponse({"detail": "Database unavailable"}, status_code=503)
+
+try:
+    import psycopg
+except Exception:  # pragma: no cover - optional dependency is installed in prod
+    psycopg = None
+
+
+@app.exception_handler(Exception)
+async def fallback_exception_handler(request: Request, exc: Exception):
+    if database_url() and (psycopg is not None and isinstance(exc, psycopg.Error)):
+        log.warning('PostgreSQL error for %s %s: %s', request.method, request.url.path, exc)
+        return JSONResponse({"detail": "Database unavailable"}, status_code=503)
+    raise exc
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins(),
@@ -56,7 +69,8 @@ async def startup():
     except DatabaseUnavailable:
         log.exception("Startup bootstrap failed because the production database is unavailable: %s", db_path())
         raise
-    log.info("SQLite database: %s", db_path())
+    provider = "PostgreSQL/Neon" if app_env() == "production" else "SQLite"
+    log.info("Database provider: %s", provider)
     from .domain.mt5_diagnostics import mt5_python_package_status
 
     mt5_pkg = mt5_python_package_status()
