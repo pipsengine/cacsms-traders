@@ -2,13 +2,35 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
+import time
+from datetime import datetime, timezone
+
+_PRICE_SCALE = 100_000
+_TIMEFRAME_SECONDS = {
+    "M1": 60,
+    "M5": 300,
+    "M15": 900,
+    "M30": 1_800,
+    "H1": 3_600,
+    "D1": 86_400,
+    "W": 604_800,
+    "W1": 604_800,
+    "MN": 2_592_000,
+    "MN1": 2_592_000,
+}
+_PERIODS = {"M1": 1, "M5": 5, "M15": 7, "M30": 8, "H1": 9, "D1": 12, "W": 13, "W1": 13, "MN": 14, "MN1": 14}
 
 
 def main() -> int:
     request_data = json.load(sys.stdin)
     if request_data.get("environment") != "demo":
         print("CTRADER_RESULT:{\"error\":\"demo_only\"}", flush=True)
+        return 1
+    action = request_data.get("action", "discover")
+    if action not in ("discover", "symbols", "history"):
+        print("CTRADER_RESULT:{\"error\":\"unsupported_action\"}", flush=True)
         return 1
 
     try:
@@ -18,8 +40,11 @@ def main() -> int:
             ProtoOAApplicationAuthReq,
             ProtoOAAssetListReq,
             ProtoOAGetAccountListByAccessTokenReq,
+            ProtoOAGetTrendbarsReq,
+            ProtoOASymbolsListReq,
             ProtoOATraderReq,
         )
+        from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOATrendbarPeriod
         from twisted.internet import reactor
     except Exception:
         print("CTRADER_RESULT:{\"error\":\"sdk_unavailable\"}", flush=True)
@@ -32,8 +57,9 @@ def main() -> int:
         print("CTRADER_RESULT:{\"error\":\"not_configured\"}", flush=True)
         return 1
 
-    result: dict = {"accounts": [], "error": None}
+    result: dict = {"accounts": [], "symbols": [], "candles": [], "missing_symbols": [], "error": None}
     account_metadata: dict[str, dict] = {}
+    pending_candles = 0
     reactor_instance = reactor
     client = Client(EndPoints.PROTOBUF_DEMO_HOST, EndPoints.PROTOBUF_PORT, TcpProtocol)
     timeout_call = None
@@ -85,6 +111,16 @@ def main() -> int:
             finish()
 
     def on_account_authorized(account_id: str, _response) -> None:
+        if action == "symbols":
+            symbols_req = ProtoOASymbolsListReq()
+            symbols_req.ctidTraderAccountId = int(account_id)
+            client.send(symbols_req).addCallbacks(on_symbols, failed)
+            return
+        if action == "history":
+            symbols_req = ProtoOASymbolsListReq()
+            symbols_req.ctidTraderAccountId = int(account_id)
+            client.send(symbols_req).addCallbacks(lambda response: on_history_symbols(account_id, response), failed)
+            return
         trader_req = ProtoOATraderReq()
         trader_req.ctidTraderAccountId = int(account_id)
         client.send(trader_req).addCallbacks(
@@ -105,10 +141,113 @@ def main() -> int:
         account_metadata[account_id]["assets"] = list(response.asset)
         account_details_done(account_id)
 
+    expected_symbols = {str(symbol).upper() for symbol in request_data.get("symbols", [])}
+
+    def canonical_symbol(provider_name: str) -> str | None:
+        normalized = re.sub(r"[^A-Z0-9]", "", provider_name.upper())
+        exact = [symbol for symbol in expected_symbols if normalized == symbol]
+        if exact:
+            return exact[0]
+        candidates = [symbol for symbol in expected_symbols if symbol in normalized]
+        return max(candidates, key=len) if candidates else None
+
+    def on_symbols(response) -> None:
+        result["symbols"] = [
+            {
+                "provider_symbol": item.symbolName,
+                "symbol_id": str(item.symbolId),
+                "canonical_symbol": canonical_symbol(item.symbolName),
+                "environment": "demo",
+            }
+            for item in response.symbol
+        ]
+        finish()
+
+    def on_history_symbols(account_id: str, response) -> None:
+        nonlocal pending_candles
+        symbols_by_canonical = {
+            canonical_symbol(item.symbolName): item.symbolId
+            for item in response.symbol
+            if canonical_symbol(item.symbolName)
+        }
+        requests = request_data.get("requests", [])
+        available = []
+        for item in requests:
+            canonical = str(item.get("symbol", "")).upper()
+            provider_id = symbols_by_canonical.get(canonical)
+            if provider_id is None:
+                result["missing_symbols"].append(canonical)
+                continue
+            available.append((canonical, provider_id, str(item.get("timeframe", "")).upper(), item))
+        if not available:
+            finish("symbols_unavailable")
+            return
+        pending_candles = len(available)
+        for canonical, provider_id, timeframe, request in available:
+            period = _PERIODS.get(timeframe)
+            if period is None:
+                pending_candles -= 1
+                result["missing_symbols"].append(f"{canonical}:{timeframe}")
+                continue
+            trendbars_req = ProtoOAGetTrendbarsReq()
+            trendbars_req.ctidTraderAccountId = int(account_id)
+            trendbars_req.symbolId = int(provider_id)
+            trendbars_req.period = period
+            trendbars_req.count = max(1, min(int(request.get("count", 400)), 2000))
+            trendbars_req.toTimestamp = int(request.get("end") or time.time() * 1000)
+            if request.get("start"):
+                trendbars_req.fromTimestamp = int(request["start"])
+            client.send(trendbars_req).addCallbacks(
+                lambda reply, symbol=canonical, tf=timeframe: on_trendbars(symbol, tf, reply), failed
+            )
+        if pending_candles == 0:
+            finish("unsupported_timeframes")
+
+    def on_trendbars(symbol: str, timeframe: str, response) -> None:
+        nonlocal pending_candles
+        duration = _TIMEFRAME_SECONDS[timeframe]
+        now_epoch = int(datetime.now(timezone.utc).timestamp())
+        for bar in response.trendbar:
+            open_epoch = int(bar.utcTimestampInMinutes) * 60
+            close_epoch = open_epoch + duration
+            if close_epoch > now_epoch:
+                continue
+            low = float(bar.low) / _PRICE_SCALE
+            result["candles"].append(
+                {
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "open_time": open_epoch,
+                    "close_time": close_epoch,
+                    "open": (float(bar.low) + float(bar.deltaOpen)) / _PRICE_SCALE,
+                    "high": (float(bar.low) + float(bar.deltaHigh)) / _PRICE_SCALE,
+                    "low": low,
+                    "close": (float(bar.low) + float(bar.deltaClose)) / _PRICE_SCALE,
+                    "tick_volume": int(bar.volume),
+                    "spread": 0,
+                    "source": "CTRADER",
+                    "is_closed": True,
+                }
+            )
+        pending_candles -= 1
+        if pending_candles == 0:
+            finish()
+
     def on_account_list(response) -> None:
         demo_accounts = [account for account in response.ctidTraderAccount if not account.isLive]
+        requested_account_id = str(request_data.get("account_id", ""))
+        if requested_account_id:
+            demo_accounts = [account for account in demo_accounts if str(account.ctidTraderAccountId) == requested_account_id]
         if not demo_accounts:
             finish("no_demo_accounts")
+            return
+        if action in ("symbols", "history"):
+            selected = demo_accounts[0]
+            account_id = str(selected.ctidTraderAccountId)
+            auth_req = ProtoOAAccountAuthReq()
+            auth_req.ctidTraderAccountId = selected.ctidTraderAccountId
+            auth_req.accessToken = access_token
+            client.send(auth_req).addCallbacks(lambda auth: on_account_authorized(account_id, auth), failed)
             return
         for account in demo_accounts:
             account_id = str(account.ctidTraderAccountId)

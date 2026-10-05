@@ -1,7 +1,5 @@
-from typing import Protocol
-from .models import Candle
-class MarketDataGateway(Protocol):
- def connection_state(self)->dict:...
- def closed_candles(self,symbol:str,timeframe:str,count:int)->list[Candle]:...
- def latest_tick(self,symbol:str)->dict:...
-class MarketDataUnavailable(RuntimeError): pass
+"""Backward-compatible imports for the former MT5-only market-data contract."""
+from .provider_contract import MarketDataProvider as MarketDataGateway
+from .provider_contract import MarketDataUnavailable
+
+__all__ = ["MarketDataGateway", "MarketDataUnavailable"]
