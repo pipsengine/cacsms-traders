@@ -22,8 +22,9 @@ def autonomous_services(app)->dict:
   'intelligence_worker':_service_state(worker is not None,bool(worker and worker.running)),
  }
 @router.get('/health')
+@router.get('/health/ready')
 def health(request:Request,response:Response):
- """Public liveness probe: reachability only — no paths, versions, accounts or secrets."""
+ """Public readiness probe for the cloud backend. Returns 503 when database/auth bootstrapping is incomplete."""
  database=auth='unavailable'
  try:
   with db() as c:
@@ -40,6 +41,16 @@ def health(request:Request,response:Response):
  except Exception:
   log.warning('Health check: service state unavailable',exc_info=True); services='unavailable'
  return {'status':'ok' if ok else 'degraded','api':'reachable','database':database,'auth':auth,'environment':app_env(),'autonomous_services':services,'time':iso()}
+
+@router.get('/health/live')
+def liveness(request:Request,response:Response):
+ """Liveness endpoint: indicates the API process is alive even if a downstream dependency is degraded."""
+ try:
+  services=autonomous_services(request.app)
+ except Exception:
+  services='unavailable'
+ return {'status':'ok','api':'reachable','environment':app_env(),'autonomous_services':services,'time':iso()}
+
 @router.get('/system/health')
 def system_health(user=Depends(current_user)):
  with db() as c:

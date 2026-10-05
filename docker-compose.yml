@@ -1,0 +1,32 @@
+version: "3.9"
+
+services:
+  api:
+    build: .
+    container_name: cacsms-api
+    restart: unless-stopped
+    environment:
+      APP_ENV: production
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8000
+      DATABASE_PATH: /data/db_cacsms-traders.db
+      API_ORIGIN: ${API_ORIGIN:-https://api.example.com}
+      WEB_ORIGINS: ${WEB_ORIGINS:-https://cacsms-traders.vercel.app}
+      API_PROXY_SECRET: ${API_PROXY_SECRET:-change-me}
+      CTRADER_CLIENT_ID: ${CTRADER_CLIENT_ID:-}
+      CTRADER_CLIENT_SECRET: ${CTRADER_CLIENT_SECRET:-}
+      CTRADER_REDIRECT_URI: ${CTRADER_REDIRECT_URI:-https://cacsms-traders.vercel.app/api/connections/ctrader/callback}
+      CTRADER_ENVIRONMENT: demo
+    ports:
+      - "8000:8000"
+    volumes:
+      - cacsms-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/ready').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  cacsms-data:

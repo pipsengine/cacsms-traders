@@ -1,21 +1,39 @@
 from pathlib import Path
 import os
-ROOT=Path(__file__).resolve().parents[4]
-APP_NAME=os.getenv('APP_NAME','Cacsms-Traders')
-ENV=os.getenv('APP_ENV','development')
-DB_PATH=ROOT/os.getenv('DATABASE_PATH','database/db_cacsms-traders.db')
-WEB_ORIGIN=os.getenv('WEB_ORIGIN','http://localhost:5173')
+
+ROOT = Path(__file__).resolve().parents[4]
+APP_NAME = os.getenv('APP_NAME', 'Cacsms-Traders')
+ENV = os.getenv('APP_ENV', 'development').strip().lower()
+APP_HOST = os.getenv('APP_HOST', '0.0.0.0').strip() or '0.0.0.0'
+APP_PORT = int(os.getenv('APP_PORT', '8000'))
+DB_PATH = ROOT / os.getenv('DATABASE_PATH', 'database/db_cacsms-traders.db')
+WEB_ORIGIN = os.getenv('WEB_ORIGIN', '').strip()
+API_ORIGIN = os.getenv('API_ORIGIN', '').strip()
+
 
 def cors_origins():
- origins={WEB_ORIGIN}
- if ENV=='development':
-  for host in ('localhost','127.0.0.1'):
-   origins.add(f'http://{host}:5173')
- extra=os.getenv('WEB_ORIGINS','')
- if extra:
-  origins.update(x.strip() for x in extra.split(',') if x.strip())
- return sorted(origins)
-SESSION_HOURS=int(os.getenv('SESSION_HOURS','12'))
+    origins = set()
+    for candidate in (WEB_ORIGIN, API_ORIGIN):
+        if candidate:
+            origins.add(candidate.rstrip('/'))
+
+    if ENV == 'production':
+        extra = os.getenv('WEB_ORIGINS', '')
+        if extra:
+            origins.update(x.strip().rstrip('/') for x in extra.split(',') if x.strip())
+        if not origins:
+            origins.add('https://cacsms-traders.vercel.app')
+        return sorted(origins)
+
+    for host in ('localhost', '127.0.0.1'):
+        origins.add(f'http://{host}:5173')
+    extra = os.getenv('WEB_ORIGINS', '')
+    if extra:
+        origins.update(x.strip().rstrip('/') for x in extra.split(',') if x.strip())
+    return sorted(origins)
+
+
+SESSION_HOURS = int(os.getenv('SESSION_HOURS', '12'))
 SESSION_COOKIE='ct_session'
 CSRF_HEADER='x-ct-client'
 

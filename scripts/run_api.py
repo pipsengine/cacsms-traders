@@ -13,7 +13,8 @@ load_env_file()
 import uvicorn
 
 if __name__ == "__main__":
-    # Off by default: on Windows the reloader's Ctrl+C reaches the whole console group and
-    # `concurrently -k` then stops the web dev server too.
+    # Cloud deployment binds to the public interface; localhost remains development-only.
+    host = os.getenv("APP_HOST", "0.0.0.0").strip() or "0.0.0.0"
+    port = int(os.getenv("APP_PORT", "8000"))
     reload = os.getenv("API_RELOAD", "0").strip() in ("1", "true", "yes")
-    uvicorn.run("apps.api.app.main:app", host="127.0.0.1", port=8000, reload=reload)
+    uvicorn.run("apps.api.app.main:app", host=host, port=port, reload=reload)
