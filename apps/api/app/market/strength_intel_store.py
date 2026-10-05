@@ -7,7 +7,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 from ..core.database import execute_retry
-from ..domain.mt5_connection import _active_tenant_id
+from .market_data import configuration
 from .constants import normalize_matrix_timeframe
 from .pair_relationships import Scores, split_pair
 from .relationship_analysis import Point, diff_series
@@ -16,15 +16,9 @@ from .strength_intel_config import ANALYSIS_TIMEFRAMES
 
 
 def active_scope(conn: sqlite3.Connection) -> tuple[str, str]:
-    """(tenant_id, trading_account_id) of the shared MT5 session; '' when not configured."""
-    tenant = _active_tenant_id(conn) or ""
-    if not tenant:
-        return "", ""
-    row = conn.execute(
-        "SELECT trading_account_id FROM trading_connections WHERE tenant_id=? ORDER BY updated_at DESC LIMIT 1",
-        (tenant,),
-    ).fetchone()
-    return tenant, str(row[0]) if row and row[0] else ""
+    """Explicit scope of the active market-data configuration."""
+    cfg = configuration(conn)
+    return cfg["tenant_id"], cfg["account_id"]
 
 
 def reference_scores(conn: sqlite3.Connection, at_or_before: datetime) -> tuple[datetime, Scores] | None:

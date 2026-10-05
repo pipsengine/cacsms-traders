@@ -22,19 +22,29 @@ export function MatrixBlockingState({
   error,
   onRetry,
   label = 'strength matrix',
+  meta,
 }: {
+  meta?: MatrixMeta | null;
   loading: boolean;
   error: string;
   onRetry: () => void;
   label?: string;
 }) {
   if (error) return <ErrorState message={error} onRetry={onRetry} />;
+  if (meta && meta.engine_state !== "SYNCING" && meta.engine_state !== "READY") return (
+    <div className="si-state" role="status">
+      <strong>MARKET DATA UNAVAILABLE</strong>
+      <p>{meta.provider_status === "AUTHORIZATION REQUIRED" ? "cTrader authorization required" : (meta.engine_error || meta.error_code || meta.engine_state)}</p>
+      <p>{meta.pairs_loaded ?? 0}/{meta.pairs_total ?? 28} pairs loaded{meta.missing_pairs?.length ? ` - missing ${meta.missing_pairs.join(", ")}` : ""}</p>
+      <a href="#/system-control/mt5">System Control: Market &amp; Trading Connections</a>
+    </div>
+  );
   return (
     <div className="si-state si-state--calc">
       <LoadingSkeleton />
       <p>
         <Loader2 size={14} className="si-spin" aria-hidden />
-        {loading ? `Loading ${label}…` : 'Calculating currency strength from closed MT5 bars…'}
+        {loading ? `Loading ${label}…` : 'Calculating currency strength from synchronized closed bars…'}
       </p>
     </div>
   );
@@ -67,12 +77,12 @@ export function MatrixStatusBanners({
       retry: true,
     });
   }
-  if (meta.stale_reason === 'MT5_DISCONNECTED') {
+  if (meta.stale_reason === 'PROVIDER_DISCONNECTED') {
     banners.push({
-      key: 'mt5',
+      key: 'provider',
       tone: 'off',
       icon: <PlugZap size={14} />,
-      text: 'MT5 disconnected — values below are the last valid calculation and are stale. Reconnect in System Control.',
+      text: 'Market data disconnected — values below are the last valid calculation and are stale. Reconnect in System Control.',
     });
   } else if (meta.stale_reason === 'ENGINE_STALLED') {
     banners.push({
@@ -90,7 +100,7 @@ export function MatrixStatusBanners({
       key: 'sync',
       tone: 'info',
       icon: <RefreshCw size={14} className="si-spin" />,
-      text: 'Syncing closed-bar history from MT5 — calculation updates automatically.',
+      text: 'Syncing closed-bar history from the active provider — calculation updates automatically.',
     });
   }
   if (loaded < total) {

@@ -7,13 +7,12 @@ from .constants import FX_PAIRS_28, NATIVE_CANDLE_TIMEFRAMES
 from .h8_aggregate import aggregate_h8_from_h1
 from .ingestion import CandleIngestionService
 from .models import Candle, DataQuality
-from .mt5_contract import MarketDataUnavailable
-from .mt5_gateway import _broker_symbol
+from .provider_contract import MarketDataUnavailable
 from .quality import assess
 
 log = logging.getLogger(__name__)
 
-_MT5_NATIVE = ("M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN")
+_NATIVE = ("M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN")
 
 
 class MarketIngestionRunner:
@@ -62,7 +61,7 @@ class MarketIngestionRunner:
         summary = {"pairs": len(FX_PAIRS_28), "results": [], "errors": 0}
         for pair in FX_PAIRS_28:
             for tf in NATIVE_CANDLE_TIMEFRAMES:
-                if tf not in _MT5_NATIVE and tf != "H8":
+                if tf not in _NATIVE and tf != "H8":
                     continue
                 r = self.sync_pair_timeframe(pair, tf)
                 summary["results"].append(r)

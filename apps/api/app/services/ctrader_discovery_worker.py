@@ -209,7 +209,15 @@ def main() -> int:
         now_epoch = int(datetime.now(timezone.utc).timestamp())
         for bar in response.trendbar:
             open_epoch = int(bar.utcTimestampInMinutes) * 60
-            close_epoch = open_epoch + duration
+            if timeframe in ("MN", "MN1"):
+                opened = datetime.fromtimestamp(open_epoch, timezone.utc)
+                close_epoch = int(datetime(
+                    opened.year + (opened.month == 12),
+                    1 if opened.month == 12 else opened.month + 1,
+                    1, tzinfo=timezone.utc,
+                ).timestamp())
+            else:
+                close_epoch = open_epoch + duration
             if close_epoch > now_epoch:
                 continue
             low = float(bar.low) / _PRICE_SCALE

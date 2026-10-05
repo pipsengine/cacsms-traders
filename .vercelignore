@@ -1,0 +1,6 @@
+database/*.db
+database/*.db-*
+.pytest_cache/
+.test-tmp-strength/
+.env
+.env.*

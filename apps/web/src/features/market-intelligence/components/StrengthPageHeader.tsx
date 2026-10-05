@@ -23,18 +23,18 @@ type LiveStatus = { tone: 'live' | 'warn' | 'off'; title: string; sub: string };
 
 function liveStatus(meta: MatrixMeta | null, apiError: boolean): LiveStatus {
   if (apiError) return { tone: 'off', title: 'API UNAVAILABLE', sub: 'Showing last received calculation' };
-  if (!meta) return { tone: 'warn', title: 'CONNECTING', sub: 'Waiting for strength engine' };
-  if (!meta.mt5_connected || meta.stale_reason === 'MT5_DISCONNECTED') {
-    return { tone: 'off', title: 'MT5 DISCONNECTED', sub: 'Last valid calculation shown as stale' };
+  if (!meta) return { tone: 'warn', title: 'MARKET DATA UNAVAILABLE', sub: 'Awaiting provider diagnostics' };
+  if (!meta.provider_connected) {
+    return { tone: 'off', title: 'MARKET DATA UNAVAILABLE', sub: meta.provider_status === 'AUTHORIZATION REQUIRED' ? 'cTrader authorization required' : (meta.error_code || meta.provider_status || 'Connect a provider in System Control') };
   }
   if (meta.stale_reason === 'ENGINE_STALLED') {
     return { tone: 'warn', title: 'STALE DATA', sub: 'Strength engine not refreshing' };
   }
   if (meta.live_data) {
     const basis = meta.closed_bar_only ? 'Closed bars only' : 'Live price (EarnForex)';
-    return { tone: 'live', title: 'LIVE DATA', sub: `MT5 Connected • ${basis}` };
+    return { tone: 'live', title: 'LIVE DATA', sub: `${meta.active_provider || "Market data"} Connected • ${basis}` };
   }
-  return { tone: 'warn', title: 'SYNCING', sub: 'MT5 Connected • Completing basket history' };
+  return { tone: 'warn', title: meta.engine_state || 'SYNCING', sub: `${meta.active_provider || 'Market data'}: completing basket history` };
 }
 
 export function StrengthPageHeader({ meta, apiError = false }: { meta: MatrixMeta | null; apiError?: boolean }) {

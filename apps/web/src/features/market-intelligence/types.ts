@@ -29,8 +29,8 @@ export interface StrengthRow {
 }
 
 export type StrengthTone = 'positive' | 'neutral' | 'negative';
-export type EngineState = 'STARTING' | 'SYNCING' | 'READY' | 'MT5_DISCONNECTED' | 'ERROR';
-export type StaleReason = 'MT5_DISCONNECTED' | 'ENGINE_STALLED';
+export type EngineState = 'STARTING' | 'SYNCING' | 'READY' | 'PROVIDER_DISCONNECTED' | 'ERROR';
+export type StaleReason = 'PROVIDER_DISCONNECTED' | 'ENGINE_STALLED';
 
 export interface StrengthClassification {
   key: string;
@@ -48,8 +48,11 @@ export interface MatrixMeta {
   bar_basis?: 'earnforex' | 'closed';
   mode_pending?: boolean;
   data_source: string;
-  mt5_connected: boolean;
-  mt5_server?: string;
+  provider_connected?: boolean;
+  active_provider?: string;
+  provider_status?: string;
+  authorization_status?: string;
+  error_code?: string | null;
   live_data?: boolean;
   historical_ok: boolean;
   missing_history: { symbol: string; timeframe: string }[];
@@ -121,8 +124,8 @@ export type EngineMeta = Pick<
   MatrixMeta,
   | 'as_of'
   | 'last_calculated_at'
-  | 'mt5_connected'
-  | 'mt5_server'
+  | 'provider_connected'
+  | 'active_provider'
   | 'live_data'
   | 'historical_ok'
   | 'missing_history'

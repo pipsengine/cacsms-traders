@@ -6,3 +6,6 @@ __pycache__/
 *.pyc
 logs/*.log
 database/backups/*.db
+.vercel
+.env*
+.test-tmp-strength/

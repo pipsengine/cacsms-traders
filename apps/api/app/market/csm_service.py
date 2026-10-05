@@ -23,7 +23,6 @@ from .csm_engine import (
 from .csm_scoring import normalize_all_scores
 from .csm_windows import rolling_quarter_start, window_closes, year_start
 from .models import StrengthPoint
-from .mt5_gateway import _broker_symbol
 from .repository import MarketRepository
 from .strength_classification import classify, thresholds_payload
 
@@ -43,9 +42,6 @@ class CurrencyStrengthMatrixService:
         stored = self.repo.resolve_stored_symbol(p)
         if stored and stored in by_symbol and len(by_symbol[stored]) >= 2:
             return by_symbol[stored]
-        broker = _broker_symbol(p)
-        if broker in by_symbol and len(by_symbol[broker]) >= 2:
-            return by_symbol[broker]
         return None
 
     def _d1_series_for_pair(
@@ -57,9 +53,6 @@ class CurrencyStrengthMatrixService:
         stored = self.repo.resolve_stored_symbol(p)
         if stored and stored in by_symbol:
             return by_symbol[stored]
-        broker = _broker_symbol(p)
-        if broker in by_symbol:
-            return by_symbol[broker]
         return []
 
     def _synthetic_ytd_q(
@@ -106,7 +99,7 @@ class CurrencyStrengthMatrixService:
 
     @staticmethod
     def missing_pairs(pair_data: dict[str, dict[str, list[float]]]) -> list[str]:
-        """Pairs lacking closed-bar history on at least one MT5-backed matrix timeframe."""
+        """Pairs lacking closed-bar history on at least one provider-backed matrix timeframe."""
         candle_tfs = [tf for tf in MATRIX_TIMEFRAMES if tf not in SYNTHETIC_MATRIX_TIMEFRAMES]
         return [p for p in FX_PAIRS_28 if not all(p in pair_data.get(tf, {}) for tf in candle_tfs)]
 
@@ -254,8 +247,8 @@ class CurrencyStrengthMatrixService:
         calculation_mode: CalculationMode = CalculationMode.CLOSE_CLOSE,
         sort_by: str = "AVG",
         bars_difference: int = 1,
-        mt5_connected: bool = False,
-        mt5_server: str = "MT5",
+        provider_connected: bool = False,
+        active_provider: str = "none",
         live_data: bool = False,
         histories: dict[str, list[tuple[str, float]]] | None = None,
     ) -> dict:
@@ -294,9 +287,9 @@ class CurrencyStrengthMatrixService:
                 "bars_difference": bars_difference,
                 "sort_by": sort_by,
                 "closed_bar_only": True,
-                "data_source": f"MT5 ({mt5_server})" if mt5_server else "MT5",
-                "mt5_connected": mt5_connected,
-                "mt5_server": mt5_server,
+                "data_source": active_provider,
+                "provider_connected": provider_connected,
+                "active_provider": active_provider,
                 "live_data": live_data,
                 "historical_ok": result.historical_ok,
                 "missing_history": missing,

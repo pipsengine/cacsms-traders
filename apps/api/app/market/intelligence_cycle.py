@@ -11,7 +11,7 @@ from .csm_engine import CalculationMode
 from .csm_service import CurrencyStrengthMatrixService
 from .ingestion_runner import MarketIngestionRunner
 from .models import StrengthPoint
-from .mt5_gateway import create_market_data_gateway
+from .market_data import create_market_data_gateway, market_context
 from .relationship_engine import RelationshipEngine
 from .repository import MarketRepository
 
@@ -52,8 +52,11 @@ def write_relationships(repo: MarketRepository, result) -> int:
 def run_intelligence_cycle(*, ingest: bool = True, candle_count: int = 400) -> dict:
     run_id = str(uuid.uuid4())
     started = datetime.now(timezone.utc)
-    gateway = create_market_data_gateway()
     with db() as conn:
+        context = market_context(conn)
+        if not context["market_data_ready"]:
+            return {"market_data": context, "analysis_only": True}
+        gateway = create_market_data_gateway(conn)
         repo = MarketRepository(conn)
         ingest_summary = None
         if ingest:
@@ -63,6 +66,8 @@ def run_intelligence_cycle(*, ingest: bool = True, candle_count: int = 400) -> d
                 log.exception("Ingestion phase failed")
                 ingest_summary = {"errors": -1, "message": "ingestion_failed"}
 
+        if ingest_summary and ingest_summary.get("errors"):
+            return {"market_data": context, "ingest": ingest_summary, "strength_engine_status": "INCOMPLETE_BASKET"}
         csm = CurrencyStrengthMatrixService(repo)
         result = csm.calculate(calculation_mode=CalculationMode.CLOSE_CLOSE)
         csm.persist(result, run_id=run_id)
@@ -70,7 +75,8 @@ def run_intelligence_cycle(*, ingest: bool = True, candle_count: int = 400) -> d
 
         payload = csm.to_api_payload(
             result,
-            mt5_connected=bool(gateway.connection_state().get("connected")),
+            provider_connected=context["market_data_ready"],
+            active_provider=context["active_provider"],
         )
         return {
             "run_id": run_id,

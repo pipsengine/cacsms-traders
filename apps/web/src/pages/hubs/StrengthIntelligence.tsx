@@ -88,7 +88,7 @@ export function StrengthIntelligence({
 
   return (
     <div className="si-page">
-      <StrengthPageHeader meta={meta} apiError={!!matrix.error && !!data} />
+      <StrengthPageHeader meta={meta} apiError={!!matrix.error} />
 
       {data?.currency_summary.length ? (
         <CurrencyStrengthStrip cards={data.currency_summary} stale={!!meta?.stale} />
@@ -185,7 +185,7 @@ export function StrengthIntelligence({
               <MatrixStatusBar meta={meta} />
             </>
           ) : (
-            <MatrixBlockingState loading={matrix.loading} error={matrix.error} onRetry={matrix.refresh} />
+            <MatrixBlockingState meta={meta} loading={matrix.loading} error={matrix.error} onRetry={matrix.refresh} />
           )}
         </section>
       </TabPanel>

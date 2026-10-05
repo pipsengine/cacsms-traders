@@ -6,8 +6,7 @@ from ..market.csm_engine import CalculationMode
 from ..market.csm_service import CurrencyStrengthMatrixService
 from ..market.ingestion_runner import MarketIngestionRunner
 from ..market.intelligence_cycle import run_intelligence_cycle
-from ..market.mt5_gateway import create_market_data_gateway
-from ..market.mt5_platform_status import get_mt5_market_context
+from ..market.market_data import create_market_data_gateway, market_context
 from ..market.repository import MarketRepository
 from ..market.scanner_engine import MarketScannerEngine, chart_candles, get_scanner_engine, scanner_enabled
 from ..market.strength_engine import StrengthEngine, get_strength_engine
@@ -56,8 +55,10 @@ def matrix(
     except ValueError as exc:
         raise HTTPException(400, f"Unknown calculation mode: {calculation_mode}") from exc
     engine = get_strength_engine()
+    if not engine.running or not engine._ctx.get("active_provider"):
+        engine.seed_from_db()
     payload = engine.payload(sort_by, mode)
-    if payload is None or not engine.running:
+    if payload is None:
         engine.seed_from_db()
         payload = engine.payload(sort_by, mode)
     if payload is None:
@@ -74,7 +75,9 @@ def matrix_compute(
     """Persist a snapshot from stored candles (operational/admin use)."""
     mode = _require_close_close(calculation_mode)
     with db() as conn:
-        ctx = get_mt5_market_context(conn)
+        ctx = market_context(conn)
+        if not ctx["market_data_ready"]:
+            return {"market_data": ctx, "matrix": [], "analysis_only": True}
         svc = CurrencyStrengthMatrixService(MarketRepository(conn))
         result = svc.calculate(calculation_mode=mode, bars_difference=bars_difference)
         svc.persist(result)
@@ -83,25 +86,30 @@ def matrix_compute(
             calculation_mode=mode,
             sort_by=sort_by.upper(),
             bars_difference=bars_difference,
-            mt5_connected=bool(ctx["mt5_connected"]),
-            mt5_server=str(ctx["mt5_server"]),
+
             histories=svc.score_histories(),
         )
 
 
 @router.get("/status")
 def mi_status():
-    gw = create_market_data_gateway()
-    return {"market_data": gw.connection_state(), "worker_hint": "Set MI_WORKER_ENABLED=1 to run scheduled cycles"}
+    with db() as conn:
+        context = market_context(conn)
+    engine = get_strength_engine()
+    if not engine.running:
+        engine.seed_from_db()
+    return {"market_data": {**context, **(engine.engine_meta() or {})}}
 
 
 @router.post("/ingest")
 def ingest_market_data(candle_count: int = Query(400, ge=50, le=2000)):
-    gw = create_market_data_gateway()
     with db() as conn:
-        ctx = get_mt5_market_context(conn)
+        ctx = market_context(conn)
+        if not ctx["market_data_ready"]:
+            return {"market_data": ctx, "ingest": None, "analysis_only": True}
+        gw = create_market_data_gateway(conn)
         summary = MarketIngestionRunner(gw, MarketRepository(conn), candle_count=candle_count).sync_universe()
-    return {"market_data": gw.connection_state(), "mt5": ctx, "ingest": summary}
+    return {"market_data": ctx, "ingest": summary}
 
 
 @router.post("/cycle")

@@ -76,7 +76,14 @@ def system_health(user=Depends(current_user)):
   c.execute('SELECT 1').fetchone()
   active=_active_tenant_id(c)
   mt5=LocalMT5Gateway(active).health(conn=c) if active else LocalMT5Gateway().health(conn=c)
- return {'application':'Cacsms-Traders','api':'HEALTHY','database':'HEALTHY','mt5':mt5}
+  from ..market.market_data import market_context
+  market_data=market_context(c)
+  from ..market.strength_engine import get_strength_engine
+  engine=get_strength_engine()
+  meta=engine.engine_meta() or {}
+  if engine.running and meta.get("active_provider")==market_data["active_provider"]:
+   market_data.update(meta)
+ return {'application':'Cacsms-Traders','api':'HEALTHY','database':'HEALTHY','mt5':mt5,'market_data':market_data}
 @router.get('/dashboard/summary')
 def summary(user=Depends(current_user)):
  with db() as c:

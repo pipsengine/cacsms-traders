@@ -31,7 +31,7 @@ function MatrixCell({
 }) {
   if (score === undefined || quality === 'MISSING' || quality === 'INVALID') {
     return (
-      <span className="mi-heat-cell mi-heat-empty" title="No MT5 history for this timeframe">
+      <span className="mi-heat-cell mi-heat-empty" title="No provider history for this timeframe">
         —
       </span>
     );
