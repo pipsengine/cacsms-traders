@@ -22,6 +22,9 @@ type CTraderStatus = {
   connected: boolean;
   authorization_status: string;
   connection_status: string;
+  provider_status: string;
+  application_status: string;
+  message: string | null;
   last_successful_connection_at: string | null;
   last_sync_at: string | null;
   last_error_code: string | null;
@@ -35,6 +38,7 @@ function fmt(value?: string | null) {
 }
 
 const CALLBACK_MESSAGES: Record<string, { success?: string; error?: string }> = {
+  app_inactive: { error: 'cTrader provider authorization unavailable: pending provider activation.' },
   connected: { success: 'cTrader authorization and demo account discovery completed.' },
   denied: { error: 'cTrader authorization was declined.' },
   invalid_state: { error: 'The authorization state expired or was already used. Start a new connection.' },
@@ -150,9 +154,13 @@ export function SystemControlCTraderPanel({
       </div>
       {error && <Notice title="cTrader connection" text={error} tone="warning" />}
       {success && <Notice title="cTrader connection" text={success} />}
+      {data?.provider_status === 'APP_INACTIVE' && (
+        <Notice title="Pending provider activation" text={data.message || 'cTrader provider authorization unavailable.'} tone="warning" />
+      )}
       <div className="detail-list">
         <div><span>Provider</span><b>cTrader</b></div>
         <div><span>Environment</span><b>Demo</b></div>
+        <div><span>Provider status</span><b>{data?.provider_status?.replaceAll('_', ' ') ?? 'Unknown'}</b></div>
         <div><span>Connection health</span><b>{loading ? 'Checking…' : data?.connection_status?.replaceAll('_', ' ') ?? 'Unknown'}</b></div>
         <div><span>Authorization</span><b>{data?.authorization_status?.replaceAll('_', ' ') ?? 'Unknown'}</b></div>
         <div><span>Last successful connection</span><b>{fmt(data?.last_successful_connection_at)}</b></div>
@@ -161,6 +169,7 @@ export function SystemControlCTraderPanel({
       {data?.configuration_error && (
         <p className="muted">Server configuration issue: {data.configuration_error.replaceAll('_', ' ')}.</p>
       )}
+      {data?.provider_status === 'APP_INACTIVE' && <p className="muted">After cTrader activates the application, select Connect cTrader to start a new authorization. No automatic authorization retries are performed.</p>}
       {data?.accounts.map((account) => (
         <div className="gateway-item" key={`${account.account}-${account.broker}`}>
           <Cable />

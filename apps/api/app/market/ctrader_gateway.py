@@ -22,6 +22,8 @@ class CTraderGateway:
         self.account_id = cfg['account_id']
 
     def _request(self, action, **kwargs):
+        from .constants import FX_PAIRS_28
+        kwargs.setdefault('symbols', list(FX_PAIRS_28))
         try:
             result = subprocess.run([sys.executable, ctrader_discovery_worker.__file__],
                 input=json.dumps(dict(environment='demo', access_token=self._token, account_id=self.account_id, action=action, **kwargs)),

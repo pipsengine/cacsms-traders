@@ -9,3 +9,5 @@ database/backups/*.db
 .vercel
 .env*
 .test-tmp-strength/
+.test-tmp-ctrader-inactive/
+.deploy-ctrader-state/

@@ -14,6 +14,87 @@ ADMIN = {"username": "Admin", "password": "P@882w0rd"}
 CLIENT_HEADER = {"X-CT-Client": "web"}
 
 
+def test_ctrader_inactive_callback_and_manual_activation_recovery(client, monkeypatch):
+    _ctrader_env(monkeypatch)
+    monkeypatch.setenv('MARKET_DATA_PROVIDER', 'ctrader')
+    from apps.api.app.routers import ctrader
+    from apps.api.app.core.database import db
+    from apps.api.app.services.ctrader_application_state import APP_INACTIVE, application_state
+    tenant = client.post('/api/auth/login', json=ADMIN).json()['user']['memberships'][0]['tenant_id']
+
+    def start():
+        r = client.post('/api/connections/ctrader/authorize', headers=CLIENT_HEADER, json={'tenant_id': tenant})
+        assert r.status_code == 200
+        query = parse_qs(urlparse(r.json()['authorize_url']).query)
+        assert query['client_id'] == [os.environ['CTRADER_CLIENT_ID']]
+        assert query['scope'] == ['accounts']
+        assert 'client_secret' not in query
+        return query['state'][0]
+
+    def inactive_exchange(cfg, code):
+        raise ctrader.CTraderProviderError('Application authentication failed: OA client is not in active state.')
+
+    monkeypatch.setattr(ctrader, '_exchange', inactive_exchange)
+    discovery = __import__('unittest.mock', fromlist=['Mock']).Mock()
+    monkeypatch.setattr(ctrader, '_discover_accounts', discovery)
+    state = start()
+    r = client.get('/api/connections/ctrader/callback', params={'state': state, 'code': 'test-only-code'}, follow_redirects=False)
+    assert 'ctrader=app_inactive' in r.headers['location']
+    discovery.assert_not_called()
+    with db() as c:
+        assert application_state(c) == 'APP_INACTIVE'
+        assert c.execute('SELECT COUNT(*) FROM ctrader_connections').fetchone()[0] == 0
+    for _ in range(2):
+        status = client.get('/api/connections/ctrader/status', params={'tenant_id': tenant}).json()
+        assert status['provider_status'] == 'APP_INACTIVE'
+        assert status['last_error_code'] == APP_INACTIVE
+        assert status['authorization_status'] == 'PENDING_PROVIDER_ACTIVATION'
+        assert status['connection_status'] == 'DISCONNECTED'
+        assert not status['connected']
+    from apps.api.app.routers import market_intelligence
+    from apps.api.app.market.strength_engine import StrengthEngine
+    engine = StrengthEngine()
+    monkeypatch.setattr(market_intelligence, 'get_strength_engine', lambda: engine)
+    matrix = client.get('/api/market-intelligence/matrix').json()
+    assert matrix['meta']['error_code'] == APP_INACTIVE
+    assert matrix['meta']['pairs_loaded'] == 0
+    assert matrix['matrix'] == []
+
+    # A manual retry after activation uses the normal state/token/account flow.
+    state = start()
+    monkeypatch.setattr(ctrader, '_exchange', lambda cfg, code: {'accessToken': 'test-access', 'refreshToken': 'test-refresh', 'expiresIn': 3600})
+    monkeypatch.setattr(ctrader, '_discover_accounts', lambda token: [{'ctid_trader_account_id': 'test-account', 'environment': 'demo'}])
+    r = client.get('/api/connections/ctrader/callback', params={'state': state, 'code': 'test-only-code'}, follow_redirects=False)
+    assert 'ctrader=connected' in r.headers['location']
+    status = client.get('/api/connections/ctrader/status', params={'tenant_id': tenant}).json()
+    assert status['provider_status'] == 'CONNECTED'
+    assert status['application_status'] == 'ACTIVE'
+    assert status['connected']
+
+
+def test_ctrader_worker_decodes_inactive_error_without_proceeding():
+    from types import SimpleNamespace
+    from apps.api.app.services.ctrader_discovery_worker import decode_response
+    response = SimpleNamespace(errorCode='CH_CLIENT_AUTH_FAILURE', description='OA client is not in active state')
+    with pytest.raises(RuntimeError, match='^CTRADER_APP_INACTIVE$'):
+        decode_response(object(), lambda message: response)
+    success = SimpleNamespace()
+    assert decode_response(object(), lambda message: success) is success
+
+
+def test_ctrader_inactive_does_not_retry_token_refresh(client, monkeypatch):
+    _ctrader_env(monkeypatch)
+    from apps.api.app.core.database import db
+    from apps.api.app.routers import ctrader
+    from apps.api.app.services.ctrader_application_state import record_application_state
+    with db() as c:
+        record_application_state(c, 'APP_INACTIVE')
+    monkeypatch.setattr(ctrader, '_refresh', lambda *args: pytest.fail('Inactive application must not auto-refresh'))
+    row = ctrader._refresh_if_needed({'authorization_status': 'AUTHORIZED', 'access_token': 'test-only'}, ctrader.ctrader_config())
+    assert row['authorization_status'] == 'PENDING_PROVIDER_ACTIVATION'
+    assert row['connection_status'] == 'DISCONNECTED'
+
+
 def test_main_imports_under_vercel_without_database_url():
     env = os.environ.copy()
     env["VERCEL"] = "1"

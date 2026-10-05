@@ -34,7 +34,7 @@ export function MatrixBlockingState({
   if (meta && meta.engine_state !== "SYNCING" && meta.engine_state !== "READY") return (
     <div className="si-state" role="status">
       <strong>MARKET DATA UNAVAILABLE</strong>
-      <p>{meta.provider_status === "AUTHORIZATION REQUIRED" ? "cTrader authorization required" : (meta.engine_error || meta.error_code || meta.engine_state)}</p>
+      <p>{meta.error_code === 'CTRADER_APP_INACTIVE' ? 'cTrader provider authorization unavailable' : meta.provider_status === "AUTHORIZATION REQUIRED" ? "cTrader authorization required" : (meta.engine_error || meta.error_code || meta.engine_state)}</p>
       <p>{meta.pairs_loaded ?? 0}/{meta.pairs_total ?? 28} pairs loaded{meta.missing_pairs?.length ? ` - missing ${meta.missing_pairs.join(", ")}` : ""}</p>
       <a href="#/system-control/mt5">System Control: Market &amp; Trading Connections</a>
     </div>

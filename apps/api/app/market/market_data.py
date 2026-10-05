@@ -35,6 +35,16 @@ def market_context(conn):
         if ctrader_config() is None:
             out['error_code'] = 'ctrader_not_configured'
             return out
+        from ..services.ctrader_application_state import APP_INACTIVE, application_state
+        app_state = application_state(conn)
+        out['application_status'] = app_state
+        if app_state == 'APP_INACTIVE':
+            out.update(provider_status='APP_INACTIVE', authorization_status='PENDING_PROVIDER_ACTIVATION',
+                       error_code=APP_INACTIVE, reason='cTrader provider authorization unavailable')
+            return out
+        if app_state == 'AUTHORIZING':
+            out.update(provider_status='AUTHORIZING', authorization_status='AUTHORIZING')
+            return out
         out['provider_status'] = 'AUTHORIZATION REQUIRED'
         out['error_code'] = 'ctrader_authorization_required'
         if not cfg['tenant_id']:

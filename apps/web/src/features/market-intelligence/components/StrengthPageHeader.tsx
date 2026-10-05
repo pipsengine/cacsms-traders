@@ -25,6 +25,7 @@ function liveStatus(meta: MatrixMeta | null, apiError: boolean): LiveStatus {
   if (apiError) return { tone: 'off', title: 'API UNAVAILABLE', sub: 'Showing last received calculation' };
   if (!meta) return { tone: 'warn', title: 'MARKET DATA UNAVAILABLE', sub: 'Awaiting provider diagnostics' };
   if (!meta.provider_connected) {
+    if (meta.error_code === 'CTRADER_APP_INACTIVE') return { tone: 'off', title: 'MARKET DATA UNAVAILABLE', sub: 'cTrader provider authorization unavailable' };
     return { tone: 'off', title: 'MARKET DATA UNAVAILABLE', sub: meta.provider_status === 'AUTHORIZATION REQUIRED' ? 'cTrader authorization required' : (meta.error_code || meta.provider_status || 'Connect a provider in System Control') };
   }
   if (meta.stale_reason === 'ENGINE_STALLED') {

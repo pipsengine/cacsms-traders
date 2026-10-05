@@ -23,6 +23,19 @@ _TIMEFRAME_SECONDS = {
 _PERIODS = {"M1": 1, "M5": 5, "M15": 7, "M30": 8, "H1": 9, "D1": 12, "W": 13, "W1": 13, "MN": 14, "MN1": 14}
 
 
+def decode_response(message, extract):
+    """SDK send() returns a ProtoMessage envelope, including error responses."""
+    response = extract(message)
+    if getattr(response, 'errorCode', None):
+        # This file also runs as a standalone subprocess.
+        if __package__:
+            from .ctrader_application_state import provider_error_code
+        else:
+            from ctrader_application_state import provider_error_code
+        raise RuntimeError(provider_error_code(response.errorCode, getattr(response, 'description', '')))
+    return response
+
+
 def main() -> int:
     request_data = json.load(sys.stdin)
     if request_data.get("environment") != "demo":
@@ -34,7 +47,7 @@ def main() -> int:
         return 1
 
     try:
-        from ctrader_open_api import Client, EndPoints, TcpProtocol
+        from ctrader_open_api import Client, EndPoints, TcpProtocol, Protobuf
         from ctrader_open_api.messages.OpenApiMessages_pb2 import (
             ProtoOAAccountAuthReq,
             ProtoOAApplicationAuthReq,
@@ -76,8 +89,12 @@ def main() -> int:
         client.stopService()
         reactor_instance.callLater(0, reactor_instance.stop)
 
-    def failed(_failure) -> None:
-        finish("provider_unavailable")
+    def failed(failure) -> None:
+        message = str(getattr(failure, 'value', ''))
+        finish('CTRADER_APP_INACTIVE' if message == 'CTRADER_APP_INACTIVE' else 'provider_unavailable')
+
+    def send(message):
+        return client.send(message).addCallback(lambda reply: decode_response(reply, Protobuf.extract))
 
     def account_details_done(account_id: str) -> None:
         item = account_metadata[account_id]
@@ -114,22 +131,22 @@ def main() -> int:
         if action == "symbols":
             symbols_req = ProtoOASymbolsListReq()
             symbols_req.ctidTraderAccountId = int(account_id)
-            client.send(symbols_req).addCallbacks(on_symbols, failed)
+            send(symbols_req).addCallbacks(on_symbols, failed)
             return
         if action == "history":
             symbols_req = ProtoOASymbolsListReq()
             symbols_req.ctidTraderAccountId = int(account_id)
-            client.send(symbols_req).addCallbacks(lambda response: on_history_symbols(account_id, response), failed)
+            send(symbols_req).addCallbacks(lambda response: on_history_symbols(account_id, response), failed)
             return
         trader_req = ProtoOATraderReq()
         trader_req.ctidTraderAccountId = int(account_id)
-        client.send(trader_req).addCallbacks(
+        send(trader_req).addCallbacks(
             lambda trader, aid=account_id: on_trader(aid, trader), failed
         )
 
         assets_req = ProtoOAAssetListReq()
         assets_req.ctidTraderAccountId = int(account_id)
-        client.send(assets_req).addCallbacks(
+        send(assets_req).addCallbacks(
             lambda assets, aid=account_id: on_assets(aid, assets), failed
         )
 
@@ -197,7 +214,7 @@ def main() -> int:
             trendbars_req.toTimestamp = int(request.get("end") or time.time() * 1000)
             if request.get("start"):
                 trendbars_req.fromTimestamp = int(request["start"])
-            client.send(trendbars_req).addCallbacks(
+            send(trendbars_req).addCallbacks(
                 lambda reply, symbol=canonical, tf=timeframe: on_trendbars(symbol, tf, reply), failed
             )
         if pending_candles == 0:
@@ -255,7 +272,7 @@ def main() -> int:
             auth_req = ProtoOAAccountAuthReq()
             auth_req.ctidTraderAccountId = selected.ctidTraderAccountId
             auth_req.accessToken = access_token
-            client.send(auth_req).addCallbacks(lambda auth: on_account_authorized(account_id, auth), failed)
+            send(auth_req).addCallbacks(lambda auth: on_account_authorized(account_id, auth), failed)
             return
         for account in demo_accounts:
             account_id = str(account.ctidTraderAccountId)
@@ -263,20 +280,20 @@ def main() -> int:
             auth_req = ProtoOAAccountAuthReq()
             auth_req.ctidTraderAccountId = account.ctidTraderAccountId
             auth_req.accessToken = access_token
-            client.send(auth_req).addCallbacks(
+            send(auth_req).addCallbacks(
                 lambda auth, aid=account_id: on_account_authorized(aid, auth), failed
             )
 
     def on_app_authorized(_response) -> None:
         accounts_req = ProtoOAGetAccountListByAccessTokenReq()
         accounts_req.accessToken = access_token
-        client.send(accounts_req).addCallbacks(on_account_list, failed)
+        send(accounts_req).addCallbacks(on_account_list, failed)
 
     def on_connected(connected_client) -> None:
         app_auth = ProtoOAApplicationAuthReq()
         app_auth.clientId = client_id
         app_auth.clientSecret = client_secret
-        connected_client.send(app_auth).addCallbacks(on_app_authorized, failed)
+        send(app_auth).addCallbacks(on_app_authorized, failed)
 
     client.setConnectedCallback(on_connected)
     timeout_call = reactor_instance.callLater(18, finish, "provider_timeout")

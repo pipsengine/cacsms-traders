@@ -36,6 +36,10 @@ from ..core.security import (
 from ..deps import current_user
 from ..services.access import require_permission
 from ..services import ctrader_discovery_worker
+from ..services.ctrader_application_state import (
+    APP_INACTIVE, INACTIVE_MESSAGE, application_state, diagnostic_state,
+    provider_error_code, record_application_state,
+)
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/connections/ctrader", tags=["cTrader"])
@@ -50,8 +54,8 @@ ACCOUNT_DISCOVERY_TIMEOUT = 22
 
 class CTraderProviderError(RuntimeError):
     def __init__(self, code: str):
-        self.code = code
-        super().__init__(code)
+        self.code = provider_error_code(code)
+        super().__init__(self.code)
 
 
 def _configuration_error() -> str | None:
@@ -130,14 +134,14 @@ def _token_request(params: dict, method: str = "GET") -> dict:
             payload = {}
         if not isinstance(payload, dict):
             payload = {}
-        code = str(payload.get("errorCode") or "token_request_rejected")[:80]
+        code = provider_error_code(payload.get("errorCode") or payload.get("error"), payload.get("description") or payload.get("error_description") or '')
         raise CTraderProviderError(code) from None
     except (urllib.error.URLError, TimeoutError, ValueError):
         raise CTraderProviderError("provider_unavailable") from None
     if not isinstance(payload, dict):
         raise CTraderProviderError("invalid_provider_response")
-    if payload.get("errorCode"):
-        raise CTraderProviderError(str(payload["errorCode"])[:80])
+    if payload.get("errorCode") or payload.get('error'):
+        raise CTraderProviderError(provider_error_code(payload.get("errorCode") or payload.get('error'), payload.get("description") or payload.get("error_description") or ''))
     return payload
 
 
@@ -151,6 +155,7 @@ def status(tenant_id: str = Query(...), user=Depends(current_user)):
     can_manage = False
     with db() as c:
         require_permission(c, user, tenant_id, "connections.read")
+        app_state = application_state(c)
         try:
             require_permission(c, user, tenant_id, "connections.manage")
             can_manage = True
@@ -181,7 +186,9 @@ def status(tenant_id: str = Query(...), user=Depends(current_user)):
                 accounts = [dict(account, authorization_status="REAUTH_REQUIRED") for account in accounts]
         elif row is not None:
             row = dict(row)
-    row = _refresh_if_needed(dict(row), cfg) if row is not None and cfg is not None else row
+    row = _refresh_if_needed(dict(row), cfg) if row is not None and cfg is not None and app_state != 'APP_INACTIVE' else row
+    with db() as c:
+        app_state = application_state(c)
     safe_accounts = [
         {
             "account": _mask_identifier(account["trader_login"] or account["ctid_trader_account_id"]),
@@ -201,7 +208,12 @@ def status(tenant_id: str = Query(...), user=Depends(current_user)):
         for account in accounts
     ]
     authorized = row is not None and row["authorization_status"] == "AUTHORIZED"
-    connected = cfg is not None and authorized and row["connection_status"] == "CONNECTED" and bool(safe_accounts)
+    connected = cfg is not None and app_state not in ('APP_INACTIVE', 'AUTHORIZING') and authorized and row["connection_status"] == "CONNECTED" and bool(safe_accounts)
+    provider_status = diagnostic_state(cfg is not None, app_state, dict(row) if row else None, connected)
+    inactive = provider_status == 'APP_INACTIVE'
+    if inactive:
+        for account in safe_accounts:
+            account['authorization'] = 'PENDING_PROVIDER_ACTIVATION'
     return {
         "configured": cfg is not None,
         "can_manage": can_manage,
@@ -209,11 +221,14 @@ def status(tenant_id: str = Query(...), user=Depends(current_user)):
         "provider": "cTrader",
         "environment": "demo",
         "connected": bool(connected),
-        "authorization_status": row["authorization_status"] if row else "NOT_AUTHORIZED",
-        "connection_status": row["connection_status"] if row else "DISCONNECTED",
+        "provider_status": provider_status,
+        "application_status": app_state,
+        "message": INACTIVE_MESSAGE if inactive else None,
+        "authorization_status": 'PENDING_PROVIDER_ACTIVATION' if inactive else row["authorization_status"] if row else "NOT_AUTHORIZED",
+        "connection_status": 'DISCONNECTED' if inactive else row["connection_status"] if row else "DISCONNECTED",
         "last_successful_connection_at": row["last_successful_connection_at"] if row else None,
         "last_sync_at": row["last_sync_at"] if row else None,
-        "last_error_code": row["last_error_code"] if row else None,
+        "last_error_code": APP_INACTIVE if inactive else row["last_error_code"] if row else None,
         "accounts": safe_accounts,
     }
 
@@ -226,6 +241,8 @@ def authorize(x: AuthorizeRequest, user=Depends(current_user)):
     state = secrets.token_urlsafe(32)
     with db() as c:
         require_permission(c, user, x.tenant_id, "connections.manage")
+        if application_state(c) != 'APP_INACTIVE':
+            record_application_state(c, 'AUTHORIZING')
         c.execute(
             "INSERT INTO ctrader_oauth_states(state_hash,tenant_id,user_id,environment,expires_at,created_at) VALUES(?,?,?,?,?,?)",
             (token_hash(state), x.tenant_id, user["id"], cfg["environment"], iso(now() + STATE_TTL), iso()),
@@ -336,6 +353,7 @@ def _persist_tokens(tenant_id: str, user_id: str, payload: dict) -> None:
 def _persist_accounts(tenant_id: str, user_id: str, accounts: list[dict]) -> None:
     timestamp = iso()
     with db() as c:
+        record_application_state(c, 'ACTIVE')
         c.execute(
             "UPDATE ctrader_accounts SET authorization_status='NOT_AUTHORIZED',updated_at=? WHERE tenant_id=? AND environment='demo'",
             (timestamp, tenant_id),
@@ -379,8 +397,16 @@ def _record_failure(
     connection_status: str = "DISCOVERY_FAILED",
     authorization_status: str | None = None,
 ) -> None:
+    code = provider_error_code(code)
+    if code == APP_INACTIVE:
+        connection_status = 'DISCONNECTED'
+        authorization_status = 'PENDING_PROVIDER_ACTIVATION'
     timestamp = iso()
     with db() as c:
+        if code == APP_INACTIVE:
+            record_application_state(c, 'APP_INACTIVE')
+        elif application_state(c) == 'AUTHORIZING':
+            record_application_state(c, 'UNKNOWN')
         c.execute(
             """UPDATE ctrader_connections SET connection_status=?,authorization_status=COALESCE(?,authorization_status),
                  last_error_code=?,updated_at=? WHERE tenant_id=? AND environment='demo'""",
@@ -395,6 +421,10 @@ def _record_failure(
 
 
 def _refresh_if_needed(row: dict, cfg: dict) -> dict:
+    with db() as c:
+        if application_state(c) == 'APP_INACTIVE':
+            return {**row, 'authorization_status': 'PENDING_PROVIDER_ACTIVATION',
+                    'connection_status': 'DISCONNECTED', 'last_error_code': APP_INACTIVE}
     if row.get("authorization_status") != "AUTHORIZED" or not row.get("access_token"):
         return row
     expires_at = _expiry(row.get("expires_at"))
@@ -408,6 +438,10 @@ def _refresh_if_needed(row: dict, cfg: dict) -> dict:
         access, refresh, token_type, new_expires = _token_values(payload)
     except (CTraderProviderError, ValueError) as exc:
         code = exc.code if isinstance(exc, CTraderProviderError) else "reauthorization_required"
+        if code == APP_INACTIVE:
+            _record_failure(row['tenant_id'], row['connected_by'], code)
+            return {**row, 'authorization_status': 'PENDING_PROVIDER_ACTIVATION',
+                    'connection_status': 'DISCONNECTED', 'last_error_code': APP_INACTIVE}
         status = "REAUTH_REQUIRED" if code in ("invalid_grant", "reauthorization_required", "CH_ACCESS_TOKEN_INVALID") else "PROVIDER_UNAVAILABLE"
         _record_failure(
             row["tenant_id"], row["connected_by"], code, status,
@@ -451,7 +485,7 @@ def _consume_state(state: str) -> dict | None:
 
 
 @router.get("/callback")
-def callback(code: str | None = None, state: str | None = None, error: str | None = None):
+def callback(code: str | None = None, state: str | None = None, error: str | None = None, error_description: str | None = None):
     """OAuth redirect target. Authenticated by the one-time state, not by session (it is a top-level redirect)."""
     if not state:
         return _back("invalid_request")
@@ -462,6 +496,9 @@ def callback(code: str | None = None, state: str | None = None, error: str | Non
     if st is None:
         return _back("invalid_state")
     if error:
+        if provider_error_code(error, error_description or '') == APP_INACTIVE:
+            _record_failure(st['tenant_id'], st['user_id'], APP_INACTIVE)
+            return _back('app_inactive')
         _record_failure(st["tenant_id"], st["user_id"], "provider_denied", "REAUTH_REQUIRED")
         return _back("denied")
     if not code:
@@ -476,7 +513,7 @@ def callback(code: str | None = None, state: str | None = None, error: str | Non
             _record_failure(st["tenant_id"], st["user_id"], exc.code, "REAUTH_REQUIRED", authorization_status="REAUTH_REQUIRED")
         except Exception as audit_exc:
             log.warning("cTrader token exchange failure state could not be recorded; error_type=%s", type(audit_exc).__name__)
-        return _back("exchange_failed")
+        return _back('app_inactive' if exc.code == APP_INACTIVE else "exchange_failed")
     except Exception as exc:
         log.warning("cTrader token persistence failed; error_type=%s", type(exc).__name__)
         try:
@@ -493,7 +530,7 @@ def callback(code: str | None = None, state: str | None = None, error: str | Non
             _record_failure(st["tenant_id"], st["user_id"], exc.code)
         except Exception as audit_exc:
             log.warning("cTrader discovery failure state could not be recorded; error_type=%s", type(audit_exc).__name__)
-        return _back("discovery_failed")
+        return _back('app_inactive' if exc.code == APP_INACTIVE else "discovery_failed")
     except Exception as exc:
         log.warning("cTrader account persistence failed; error_type=%s", type(exc).__name__)
         try:
