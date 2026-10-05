@@ -33,7 +33,8 @@ def remove_demo_mock_accounts(c) -> int:
 
 def _migration_dir():
     if app_env() == 'production':
-        return ROOT / 'database' / 'migrations' / 'postgres'
+        service_root = Path(__file__).resolve().parents[2]
+        return service_root / 'database' / 'migrations' / 'postgres'
     return ROOT / 'database' / 'migrations'
 
 

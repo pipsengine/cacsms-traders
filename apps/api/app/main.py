@@ -168,7 +168,7 @@ async def require_proxy_secret(request: Request, call_next):
     Direct local calls (Vite dev proxy, scripts) stay allowed: loopback peer with no forwarding headers.
     """
     secret = os.getenv("API_PROXY_SECRET", "").strip()
-    if secret and request.url.path.startswith("/api/"):
+    if secret and not _is_vercel() and request.url.path.startswith("/api/"):
         direct_local = (request.client is None or request.client.host in LOOPBACK) and not any(
             h in request.headers for h in FORWARDED_HEADERS
         )

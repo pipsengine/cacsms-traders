@@ -21,7 +21,9 @@ def test_main_imports_under_vercel_without_database_url():
     env.pop("DATABASE_URL", None)
     command = (
         "from apps.api.app.main import app; "
-        "assert any(getattr(route, 'path', None) == '/api/health/live' for route in app.routes)"
+        "assert any(getattr(route, 'path', None) == '/api/health/live' for route in app.routes); "
+        "from apps.api.app.services.bootstrap import _migration_dir; "
+        "assert list(_migration_dir().glob('*.sql'))"
     )
     result = subprocess.run(
         [sys.executable, "-c", command],
@@ -191,6 +193,17 @@ def test_proxy_secret_enforced_for_forwarded_traffic(client, monkeypatch):
     assert client.get("/api/health", headers={**forwarded, "x-ct-proxy-secret": "wrong"}).status_code == 403
     assert client.get("/api/health", headers={**forwarded, "x-ct-proxy-secret": "s3cret-value"}).status_code == 200
     assert client.get("/api/health").status_code == 200, "direct local calls stay allowed"
+
+def test_vercel_service_ingress_does_not_require_external_proxy_secret(client, monkeypatch):
+    monkeypatch.setenv("VERCEL", "1")
+    monkeypatch.setenv("API_PROXY_SECRET", "configured-secret")
+    forwarded = {"x-forwarded-for": "203.0.113.7"}
+
+    me = client.get("/api/auth/me", headers=forwarded)
+    login = client.post("/api/auth/login", json={"username": "missing", "password": "wrong"}, headers=forwarded)
+
+    assert me.status_code == 401
+    assert login.status_code == 401
 
 
 def _ctrader_env(monkeypatch):
