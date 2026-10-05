@@ -2,13 +2,14 @@ import asyncio
 import hmac
 import logging
 import os
+import sqlite3
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .core.config import APP_NAME, cors_origins
-from .core.database import db_path
+from .core.database import DatabaseUnavailable, db_path
 from .core.env_loader import load_env_file
 from .market.intelligence_cycle import run_intelligence_cycle
 from .market.scanner_engine import get_scanner_engine, scanner_enabled
@@ -20,6 +21,18 @@ from .workers.market_intelligence_worker import MarketIntelligenceWorker
 log = logging.getLogger(__name__)
 
 app = FastAPI(title=f"{APP_NAME} API", version="1.1.0", docs_url="/docs", redoc_url="/redoc")
+
+
+@app.exception_handler(DatabaseUnavailable)
+async def database_unavailable_handler(request: Request, exc: DatabaseUnavailable):
+    log.warning('Database unavailable for %s %s: %s', request.method, request.url.path, exc)
+    return JSONResponse({"detail": "Database unavailable"}, status_code=503)
+
+
+@app.exception_handler(sqlite3.DatabaseError)
+async def sqlite_error_handler(request: Request, exc: sqlite3.DatabaseError):
+    log.warning('SQLite error for %s %s: %s', request.method, request.url.path, exc)
+    return JSONResponse({"detail": "Database unavailable"}, status_code=503)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins(),
@@ -38,7 +51,11 @@ async def _mi_cycle_async():
 @app.on_event("startup")
 async def startup():
     load_env_file()
-    bootstrap()
+    try:
+        bootstrap()
+    except DatabaseUnavailable:
+        log.exception("Startup bootstrap failed because the production database is unavailable: %s", db_path())
+        raise
     log.info("SQLite database: %s", db_path())
     from .domain.mt5_diagnostics import mt5_python_package_status
 
