@@ -23,44 +23,47 @@ def autonomous_services(app)->dict:
  }
 @router.get('/health/live')
 def liveness(request:Request,response:Response):
- """Liveness endpoint: indicates the API process is alive even if a downstream dependency is degraded."""
- try:
-  services=autonomous_services(request.app)
- except Exception:
-  services='unavailable'
- return {'status':'ok','api':'reachable','environment':app_env(),'autonomous_services':services,'time':iso()}
+ """Liveness reports only that the HTTP application is serving requests."""
+ return {'status':'ok','api':'reachable','environment':app_env(),'time':iso()}
 
 @router.get('/health/ready')
 def readiness(request:Request,response:Response):
  """Readiness endpoint: database and bootstrap dependencies must be ready for requests."""
- database='unavailable'; auth='unavailable'; ok=False
+ bootstrap=getattr(request.app.state,'database_bootstrap_status','not_started')
+ database='unavailable'; auth='not_ready'; ok=False
  try:
   with db() as c:
    c.execute('SELECT 1').fetchone()
    database='reachable'
-   ready=c.execute("SELECT 1 FROM users WHERE is_platform_admin=1 AND status='ACTIVE' LIMIT 1").fetchone()
-   c.execute('SELECT 1 FROM auth_sessions LIMIT 1').fetchone()
-   auth='ready' if ready else 'not_ready'
-   ok = database == 'reachable' and auth == 'ready'
- except Exception:
-  log.warning('Health check: database unavailable', exc_info=True)
+   if bootstrap == 'ready':
+    ready=c.execute("SELECT 1 FROM users WHERE is_platform_admin=1 AND status='ACTIVE' LIMIT 1").fetchone()
+    c.execute('SELECT 1 FROM auth_sessions LIMIT 1').fetchone()
+    auth='ready' if ready else 'not_ready'
+   ok = database == 'reachable' and bootstrap == 'ready' and auth == 'ready'
+ except Exception as exc:
+  log.warning('Health check database unavailable; error_type=%s',type(exc).__name__)
   database='unavailable'; auth='unavailable'; ok=False
  if not ok:
   response.status_code=503
- return {'status':'ok' if ok else 'degraded','api':'reachable','database':database,'auth':auth,'environment':app_env(),'time':iso()}
+ return {'status':'ok' if ok else 'degraded','api':'reachable','database':database,'bootstrap':bootstrap,'auth':auth,'environment':app_env(),'time':iso()}
 
 @router.get('/health')
 def health(request:Request,response:Response):
  """Public health summary for the cloud backend."""
  live = liveness(request, response)
  ready = readiness(request, response)
+ try:
+  services=autonomous_services(request.app)
+ except Exception:
+  services='unavailable'
  payload = {
   'status': 'ok' if live.get('status') == 'ok' and ready.get('status') == 'ok' else 'degraded',
   'api': live.get('api'),
   'database': ready.get('database'),
+  'bootstrap': ready.get('bootstrap'),
   'auth': ready.get('auth'),
   'environment': app_env(),
-  'autonomous_services': live.get('autonomous_services'),
+  'autonomous_services': services,
   'time': iso(),
  }
  if payload['status'] != 'ok':

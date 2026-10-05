@@ -1,5 +1,7 @@
 """Production API path: /api routing, cookie sessions, health, DB guard, proxy secret and cTrader callback."""
 from urllib.parse import parse_qs, urlparse
+from contextlib import contextmanager
+from threading import Event
 
 import pytest
 from fastapi.testclient import TestClient
@@ -31,9 +33,45 @@ def test_public_health_reports_only_safe_fields(client):
     assert body["database"] == "reachable"
     assert body["auth"] == "ready"
     assert body["environment"] == "development"
-    assert set(body) == {"status", "api", "database", "auth", "environment", "autonomous_services", "time"}
+    assert set(body) == {"status", "api", "database", "bootstrap", "auth", "environment", "autonomous_services", "time"}
     assert set(body["autonomous_services"]) == {"strength_engine", "market_scanner", "intelligence_worker"}
     assert all(v in ("running", "stopped", "disabled") for v in body["autonomous_services"].values())
+
+
+def test_vercel_liveness_survives_database_bootstrap_failure(monkeypatch, caplog):
+    from fastapi.testclient import TestClient
+
+    from apps.api.app import main as main_module
+    from apps.api.app.routers import platform as platform_module
+
+    database_url = "postgresql://user:secret@example.invalid/traders"
+    bootstrap_started = Event()
+
+    def fail_bootstrap():
+        bootstrap_started.set()
+        raise RuntimeError(f"migration failed for {database_url}")
+
+    @contextmanager
+    def unavailable_database():
+        raise RuntimeError("database unavailable")
+        yield
+
+    monkeypatch.setenv("VERCEL", "1")
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    monkeypatch.setattr(main_module, "bootstrap", fail_bootstrap)
+    monkeypatch.setattr(platform_module, "db", unavailable_database)
+
+    with TestClient(main_module.app) as client:
+        assert bootstrap_started.wait(timeout=5)
+        live = client.get("/api/health/live")
+        ready = client.get("/api/health/ready")
+
+    assert live.status_code == 200
+    assert live.json()["status"] == "ok"
+    assert ready.status_code == 503
+    assert ready.json()["database"] == "unavailable"
+    assert database_url not in live.text + ready.text + caplog.text
 
 
 def test_invalid_login_is_401_not_404(client):
@@ -99,11 +137,15 @@ def test_protected_routes_reject_unauthenticated(client):
 
 
 def test_production_cookie_is_secure(client, monkeypatch):
+    from apps.api.app.core.config import session_cookie_secure
+
     monkeypatch.setenv("APP_ENV", "production")
-    r = client.post("/api/auth/login", json=ADMIN)
+    assert session_cookie_secure(False) is True
+    monkeypatch.setenv("APP_ENV", "development")
+    r = client.post("/api/auth/login", json=ADMIN, headers={"x-forwarded-proto": "https"})
     assert r.status_code == 200
     assert "Secure" in r.headers["set-cookie"]
-    assert client.get("/api/health").json()["environment"] == "production"
+    assert client.get("/api/health").json()["environment"] == "development"
 
 
 def test_production_refuses_to_create_missing_database(monkeypatch, tmp_path):

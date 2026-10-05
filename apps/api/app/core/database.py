@@ -3,6 +3,7 @@ import os
 import re
 import sqlite3
 import time
+import traceback
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable
@@ -17,6 +18,15 @@ except Exception:  # pragma: no cover - optional dependency in dev/test env
     dict_row = None
 
 log = logging.getLogger(__name__)
+
+
+def _safe_database_error(exc: Exception) -> str:
+    message = str(exc)
+    for name in ('DATABASE_URL', 'BOOTSTRAP_PASSWORD', 'SUPER_ADMIN_PASSWORD', 'CTRADER_CLIENT_SECRET', 'API_PROXY_SECRET'):
+        secret = os.getenv(name, '')
+        if secret:
+            message = message.replace(secret, '[REDACTED]')
+    return message[:2000]
 
 
 def database_url() -> str | None:
@@ -93,8 +103,10 @@ def _postgres_connect():
     try:
         conn = psycopg.connect(url, autocommit=False, row_factory=dict_row)
     except Exception as exc:  # pragma: no cover - environment-specific failure path
-        log.exception('PostgreSQL connection failed')
-        raise DatabaseUnavailable(f'Unable to connect to PostgreSQL: {exc}') from exc
+        detail = _safe_database_error(exc)
+        frames = ''.join(traceback.format_tb(exc.__traceback__))
+        log.error('PostgreSQL connection failed; error_type=%s; detail=%s\n%s', type(exc).__name__, detail, frames)
+        raise DatabaseUnavailable(f'Unable to connect to PostgreSQL: {detail}') from exc
     return conn
 
 
