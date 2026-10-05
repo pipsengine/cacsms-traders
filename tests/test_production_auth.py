@@ -23,7 +23,9 @@ def test_main_imports_under_vercel_without_database_url():
         "from apps.api.app.main import app; "
         "assert any(getattr(route, 'path', None) == '/api/health/live' for route in app.routes); "
         "from apps.api.app.services.bootstrap import _migration_dir; "
-        "assert list(_migration_dir().glob('*.sql'))"
+        "assert list(_migration_dir().glob('*.sql')); "
+        "from apps.api.app.routers.ctrader import ctrader_discovery_worker; "
+        "assert ctrader_discovery_worker.__file__.endswith('ctrader_discovery_worker.py')"
     )
     result = subprocess.run(
         [sys.executable, "-c", command],
@@ -219,6 +221,21 @@ def _ctrader_env(monkeypatch):
     monkeypatch.setenv("CTRADER_ENVIRONMENT", "demo")
 
 
+def test_ctrader_token_encryption_uses_server_secret(monkeypatch):
+    from apps.api.app.core.security import decrypt_ctrader_token, encrypt_ctrader_token, is_encrypted_ctrader_token
+
+    monkeypatch.setenv("CTRADER_CLIENT_SECRET", "server-only-test-secret")
+    encrypted = encrypt_ctrader_token("token-value-that-must-not-be-stored-plaintext")
+
+    assert is_encrypted_ctrader_token(encrypted)
+    assert "token-value-that-must-not-be-stored-plaintext" not in encrypted
+    assert decrypt_ctrader_token(encrypted) == "token-value-that-must-not-be-stored-plaintext"
+
+    monkeypatch.setenv("CTRADER_CLIENT_SECRET", "rotated-server-secret")
+    with pytest.raises(ValueError, match="cannot be decrypted"):
+        decrypt_ctrader_token(encrypted)
+
+
 def test_ctrader_callback_route_exists_and_rejects_bad_requests(client, monkeypatch):
     r = client.get("/api/connections/ctrader/callback", params={"code": "x", "state": "y"}, follow_redirects=False)
     assert r.status_code == 303
@@ -244,7 +261,22 @@ def test_ctrader_authorize_and_callback_store_tokens_server_side(client, monkeyp
         return {"accessToken": "ACCESS-TOKEN-XYZ", "refreshToken": "REFRESH-TOKEN-XYZ", "tokenType": "bearer", "expiresIn": 2628000}
 
     monkeypatch.setattr(ctrader, "_exchange", fake_exchange)
-    user = client.post("/api/auth/login", json=ADMIN).json()["user"]
+    monkeypatch.setattr(
+        ctrader,
+        "_discover_accounts",
+        lambda access: [
+            {
+                "ctid_trader_account_id": "123456789",
+                "trader_login": "7654321",
+                "broker_name": "IC Markets",
+                "account_type": "HEDGED",
+                "currency_code": "USD",
+                "environment": "demo",
+            }
+        ] if access == "ACCESS-TOKEN-XYZ" else [],
+    )
+    login = client.post("/api/auth/login", json=ADMIN).json()
+    user = login["user"]
     tenant_id = user["memberships"][0]["tenant_id"]
 
     status = client.get("/api/connections/ctrader/status", params={"tenant_id": tenant_id})
@@ -255,11 +287,15 @@ def test_ctrader_authorize_and_callback_store_tokens_server_side(client, monkeyp
     assert auth.status_code == 200, auth.text
     url = auth.json()["authorize_url"]
     assert "client-secret-test" not in url
-    state = parse_qs(urlparse(url).query)["state"][0]
+    query = parse_qs(urlparse(url).query)
+    assert query["scope"] == ["accounts"]
+    assert query["redirect_uri"] == ["https://cacsms-traders.vercel.app/api/connections/ctrader/callback"]
+    state = query["state"][0]
 
     cb = client.get("/api/connections/ctrader/callback", params={"code": "AUTH-CODE", "state": state}, follow_redirects=False)
     assert cb.status_code == 303
     assert "ctrader=connected" in cb.headers["location"]
+    assert "#/system-control/mt5" in cb.headers["location"]
     assert seen["code"] == "AUTH-CODE"
 
     replay = client.get("/api/connections/ctrader/callback", params={"code": "AUTH-CODE", "state": state}, follow_redirects=False)
@@ -268,4 +304,277 @@ def test_ctrader_authorize_and_callback_store_tokens_server_side(client, monkeyp
     status = client.get("/api/connections/ctrader/status", params={"tenant_id": tenant_id})
     body = status.text
     assert status.json()["connected"] is True
+    assert status.json()["accounts"] == [
+        {
+            "account": "****4321",
+            "broker": "IC Markets",
+            "account_type": "HEDGED",
+            "environment": "demo",
+            "currency": "USD",
+            "authorization": "AUTHORIZED",
+            "last_sync_at": status.json()["accounts"][0]["last_sync_at"],
+        }
+    ]
     assert "ACCESS-TOKEN-XYZ" not in body and "REFRESH-TOKEN-XYZ" not in body and "client-secret-test" not in body
+    from apps.api.app.core.database import db
+
+    with db() as conn:
+        stored = conn.execute("SELECT access_token,refresh_token,token_key_version FROM ctrader_connections WHERE tenant_id=?", (tenant_id,)).fetchone()
+        audit_actions = {row["action"] for row in conn.execute("SELECT action FROM audit_events WHERE tenant_id=?", (tenant_id,)).fetchall()}
+        audit_payloads = " ".join(row["new_json"] or "" for row in conn.execute("SELECT new_json FROM audit_events WHERE tenant_id=?", (tenant_id,)).fetchall())
+        account = conn.execute("SELECT broker_name,environment,authorization_status FROM ctrader_accounts WHERE tenant_id=?", (tenant_id,)).fetchone()
+    assert stored["access_token"].startswith("fernet:v1:")
+    assert stored["refresh_token"].startswith("fernet:v1:")
+    assert stored["token_key_version"] == 1
+    assert {"CTRADER_OAUTH_STARTED", "CTRADER_OAUTH_COMPLETED", "CTRADER_ACCOUNT_DISCOVERED"} <= audit_actions
+    assert "ACCESS-TOKEN-XYZ" not in audit_payloads and "REFRESH-TOKEN-XYZ" not in audit_payloads
+    assert dict(account) == {"broker_name": "IC Markets", "environment": "demo", "authorization_status": "AUTHORIZED"}
+
+    logout = client.post("/api/auth/logout", headers=CLIENT_HEADER)
+    assert logout.status_code == 200
+    relogin = client.post("/api/auth/login", json=ADMIN)
+    assert relogin.status_code == 200
+    persistent_status = client.get("/api/connections/ctrader/status", params={"tenant_id": tenant_id})
+    assert persistent_status.status_code == 200
+    assert persistent_status.json()["connected"] is True
+    assert persistent_status.json()["accounts"][0]["broker"] == "IC Markets"
+
+
+def test_ctrader_refresh_and_disconnect_preserve_account_audit(client, monkeypatch):
+    from datetime import timedelta
+
+    _ctrader_env(monkeypatch)
+    from apps.api.app.core.database import db
+    from apps.api.app.core.security import decrypt_ctrader_token, iso, now
+    from apps.api.app.routers import ctrader
+
+    monkeypatch.setattr(
+        ctrader,
+        "_exchange",
+        lambda cfg, code: {"accessToken": "OLD-ACCESS", "refreshToken": "OLD-REFRESH", "tokenType": "bearer", "expiresIn": 2628000},
+    )
+    monkeypatch.setattr(
+        ctrader,
+        "_discover_accounts",
+        lambda access: [{
+            "ctid_trader_account_id": "987654321",
+            "trader_login": "11223344",
+            "broker_name": "IC Markets",
+            "account_type": "HEDGED",
+            "currency_code": "USD",
+            "environment": "demo",
+        }],
+    )
+    refreshed = {}
+
+    def fake_refresh(cfg, token):
+        refreshed["token"] = token
+        return {"accessToken": "NEW-ACCESS", "refreshToken": "NEW-REFRESH", "tokenType": "bearer", "expiresIn": 2628000}
+
+    monkeypatch.setattr(ctrader, "_refresh", fake_refresh)
+    login = client.post("/api/auth/login", json=ADMIN).json()
+    headers = {**CLIENT_HEADER, "Authorization": f"Bearer {login['access_token']}"}
+    tenant_id = login["user"]["memberships"][0]["tenant_id"]
+    start = client.post("/api/connections/ctrader/authorize", headers=headers, json={"tenant_id": tenant_id})
+    state = parse_qs(urlparse(start.json()["authorize_url"]).query)["state"][0]
+    callback = client.get("/api/connections/ctrader/callback", params={"code": "test-code", "state": state}, follow_redirects=False)
+    assert "ctrader=connected" in callback.headers["location"]
+
+    with db() as conn:
+        conn.execute("UPDATE ctrader_connections SET expires_at=? WHERE tenant_id=?", (iso(now() - timedelta(seconds=1)), tenant_id))
+    status = client.get("/api/connections/ctrader/status", params={"tenant_id": tenant_id}, headers=headers).json()
+
+    assert refreshed["token"] == "OLD-REFRESH"
+    assert status["connected"] is True
+    disconnected = client.post("/api/connections/ctrader/disconnect", headers=headers, json={"tenant_id": tenant_id})
+    assert disconnected.status_code == 200
+    status_after = client.get("/api/connections/ctrader/status", params={"tenant_id": tenant_id}, headers=headers).json()
+    assert status_after["connected"] is False
+    assert status_after["authorization_status"] == "REVOKED"
+    assert status_after["accounts"][0]["authorization"] == "REVOKED"
+
+    with db() as conn:
+        token_row = conn.execute("SELECT access_token,refresh_token FROM ctrader_connections WHERE tenant_id=?", (tenant_id,)).fetchone()
+        account_count = conn.execute("SELECT count(*) n FROM ctrader_accounts WHERE tenant_id=?", (tenant_id,)).fetchone()["n"]
+        audit_actions = {row["action"] for row in conn.execute("SELECT action FROM audit_events WHERE tenant_id=?", (tenant_id,)).fetchall()}
+    assert token_row["access_token"] == ""
+    assert token_row["refresh_token"] is None
+    assert account_count == 1
+    assert "CTRADER_TOKEN_REFRESHED" in audit_actions
+    assert "CTRADER_DISCONNECTED" in audit_actions
+
+
+def test_ctrader_status_does_not_cross_tenant(client, monkeypatch):
+    _ctrader_env(monkeypatch)
+    from apps.api.app.core.database import db
+
+    login = client.post("/api/auth/login", json=ADMIN).json()
+    headers = {"Authorization": f"Bearer {login['access_token']}"}
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO tenants(id,name,slug,status,reporting_currency,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+            ("tenant-isolated", "Isolated", "isolated", "ACTIVE", "USD", "2026-01-01", "2026-01-01"),
+        )
+        conn.execute(
+            """INSERT INTO ctrader_connections(id,tenant_id,environment,access_token,refresh_token,token_type,expires_at,created_at,updated_at,
+                 authorization_status,connection_status,token_key_version,permission_scope)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            ("connection-other", "tenant-cacsms", "demo", "", None, None, None, "2026-01-01", "2026-01-01", "REVOKED", "DISCONNECTED", 0, "accounts"),
+        )
+        conn.execute(
+            """INSERT INTO ctrader_accounts(tenant_id,ctid_trader_account_id,broker_name,environment,authorization_status,last_synced_at,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?,?)""",
+            ("tenant-cacsms", "sensitive-id", "IC Markets", "demo", "AUTHORIZED", "2026-01-01", "2026-01-01", "2026-01-01"),
+        )
+
+    status = client.get("/api/connections/ctrader/status", params={"tenant_id": "tenant-isolated"}, headers=headers)
+    assert status.status_code == 200
+    assert status.json()["accounts"] == []
+    assert status.json()["connected"] is False
+
+
+def test_ctrader_configuration_rejects_live_and_callback_mismatch(monkeypatch):
+    from apps.api.app.routers.ctrader import ctrader_config
+
+    _ctrader_env(monkeypatch)
+    monkeypatch.setenv("CTRADER_ENVIRONMENT", "live")
+    assert ctrader_config() is None
+    monkeypatch.setenv("CTRADER_ENVIRONMENT", "demo")
+    monkeypatch.setenv("CTRADER_REDIRECT_URI", "https://example.invalid/api/connections/ctrader/callback")
+    assert ctrader_config() is None
+
+
+def test_ctrader_discovery_failure_never_reports_connected(client, monkeypatch):
+    _ctrader_env(monkeypatch)
+    from apps.api.app.core.database import db
+    from apps.api.app.routers import ctrader
+
+    monkeypatch.setattr(
+        ctrader,
+        "_exchange",
+        lambda cfg, code: {"accessToken": "ACCESS-FAILURE", "refreshToken": "REFRESH-FAILURE", "tokenType": "bearer", "expiresIn": 3600},
+    )
+
+    def fail_discovery(_access):
+        raise ctrader.CTraderProviderError("provider_unavailable")
+
+    monkeypatch.setattr(ctrader, "_discover_accounts", fail_discovery)
+    login = client.post("/api/auth/login", json=ADMIN).json()
+    tenant_id = login["user"]["memberships"][0]["tenant_id"]
+    auth = client.post("/api/connections/ctrader/authorize", headers=CLIENT_HEADER, json={"tenant_id": tenant_id})
+    state = parse_qs(urlparse(auth.json()["authorize_url"]).query)["state"][0]
+
+    callback = client.get("/api/connections/ctrader/callback", params={"code": "test-code", "state": state}, follow_redirects=False)
+    status = client.get("/api/connections/ctrader/status", params={"tenant_id": tenant_id}).json()
+
+    assert "ctrader=discovery_failed" in callback.headers["location"]
+    assert status["connected"] is False
+    assert status["connection_status"] == "DISCOVERY_FAILED"
+    assert status["authorization_status"] == "AUTHORIZED"
+    assert status["accounts"] == []
+    with db() as conn:
+        row = conn.execute("SELECT access_token,refresh_token FROM ctrader_connections WHERE tenant_id=?", (tenant_id,)).fetchone()
+    assert row["access_token"].startswith("fernet:v1:")
+    assert "ACCESS-FAILURE" not in row["access_token"]
+
+
+def test_ctrader_expired_oauth_state_is_rejected(client, monkeypatch):
+    from apps.api.app.core.database import db
+
+    _ctrader_env(monkeypatch)
+    login = client.post("/api/auth/login", json=ADMIN).json()
+    tenant_id = login["user"]["memberships"][0]["tenant_id"]
+    authorize = client.post("/api/connections/ctrader/authorize", headers=CLIENT_HEADER, json={"tenant_id": tenant_id})
+    state = parse_qs(urlparse(authorize.json()["authorize_url"]).query)["state"][0]
+    with db() as conn:
+        conn.execute("UPDATE ctrader_oauth_states SET expires_at=? WHERE state_hash=?", ("2000-01-01T00:00:00+00:00", __import__("hashlib").sha256(state.encode()).hexdigest()))
+
+    callback = client.get("/api/connections/ctrader/callback", params={"code": "unused", "state": state}, follow_redirects=False)
+    assert "ctrader=invalid_state" in callback.headers["location"]
+
+
+def test_ctrader_status_fails_closed_after_encryption_key_rotation(client, monkeypatch):
+    from datetime import timedelta
+
+    _ctrader_env(monkeypatch)
+    from apps.api.app.core.security import encrypt_ctrader_token, iso, now
+    from apps.api.app.core.database import db
+
+    login = client.post("/api/auth/login", json=ADMIN).json()
+    tenant_id = login["user"]["memberships"][0]["tenant_id"]
+    with db() as conn:
+        conn.execute(
+            """INSERT INTO ctrader_connections(id,tenant_id,environment,access_token,refresh_token,token_type,expires_at,connected_by,created_at,updated_at,
+                 authorization_status,connection_status,token_key_version,permission_scope,last_successful_connection_at,last_sync_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                "rotation-test", tenant_id, "demo", encrypt_ctrader_token("access-before-rotation"),
+                encrypt_ctrader_token("refresh-before-rotation"), "bearer", iso(now() + timedelta(days=1)),
+                login["user"]["id"], iso(), iso(), "AUTHORIZED", "CONNECTED", 1, "accounts", iso(), iso(),
+            ),
+        )
+        conn.execute(
+            """INSERT INTO ctrader_accounts(tenant_id,ctid_trader_account_id,trader_login,broker_name,environment,currency_code,
+                 authorization_status,last_synced_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (tenant_id, "rotation-account", "99887766", "IC Markets", "demo", "USD", "AUTHORIZED", iso(), iso(), iso()),
+        )
+
+    monkeypatch.setenv("CTRADER_CLIENT_SECRET", "rotated-test-secret")
+    status = client.get("/api/connections/ctrader/status", params={"tenant_id": tenant_id}).json()
+
+    assert status["connected"] is False
+    assert status["authorization_status"] == "REAUTH_REQUIRED"
+    assert status["accounts"][0]["authorization"] == "REAUTH_REQUIRED"
+
+
+def test_ctrader_management_is_tenant_scoped(client):
+    from apps.api.app.core.database import db
+    from apps.api.app.core.security import hash_password, iso
+
+    admin = client.post("/api/auth/login", json=ADMIN).json()
+    admin_headers = {"Authorization": f"Bearer {admin['access_token']}"}
+    tenant_response = client.post(
+        "/api/tenants",
+        headers=admin_headers,
+        json={"name": "cTrader Tenant B", "slug": "ctrader-tenant-b", "reporting_currency": "USD"},
+    )
+    other_tenant = tenant_response.json()["id"]
+    timestamp = iso()
+    user_id = "ctrader-tenant-b-user"
+    role_id = "ctrader-tenant-b-role"
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO roles(id,tenant_id,name,description,created_at) VALUES(?,?,?,?,?)",
+            (role_id, other_tenant, "Connection Manager", "Tenant cTrader manager", timestamp),
+        )
+        for code in ("connections.read", "connections.manage"):
+            conn.execute(
+                "INSERT INTO role_permissions(role_id,permission_id) VALUES(?,?)",
+                (role_id, f"perm-{code}"),
+            )
+        conn.execute(
+            """INSERT INTO users(id,username,email,password_hash,first_name,last_name,display_name,status,is_platform_admin,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (user_id, "tenantb-ctrader", "tenantb@example.test", hash_password("TenantBPass!123"), "Tenant", "B", "Tenant B", "ACTIVE", 0, timestamp, timestamp),
+        )
+        conn.execute(
+            "INSERT INTO tenant_memberships(id,tenant_id,user_id,role_id,status,created_at) VALUES(?,?,?,?,?,?)",
+            ("tenant-b-membership", other_tenant, user_id, role_id, "ACTIVE", timestamp),
+        )
+        conn.execute(
+            """INSERT INTO ctrader_connections(id,tenant_id,environment,access_token,refresh_token,token_type,created_at,updated_at,
+                 authorization_status,connection_status,token_key_version,permission_scope)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            ("tenant-a-connection", "tenant-cacsms", "demo", "", None, None, timestamp, timestamp, "REVOKED", "DISCONNECTED", 0, "accounts"),
+        )
+
+    tenant_b = client.post("/api/auth/login", json={"username": "tenantb-ctrader", "password": "TenantBPass!123"}).json()
+    headers = {"Authorization": f"Bearer {tenant_b['access_token']}"}
+    own_status = client.get("/api/connections/ctrader/status", params={"tenant_id": other_tenant}, headers=headers)
+    status = client.get("/api/connections/ctrader/status", params={"tenant_id": "tenant-cacsms"}, headers=headers)
+    disconnect = client.post("/api/connections/ctrader/disconnect", headers=headers, json={"tenant_id": "tenant-cacsms"})
+
+    assert own_status.status_code == 200
+    assert own_status.json()["can_manage"] is True
+    assert status.status_code == 403
+    assert disconnect.status_code == 403

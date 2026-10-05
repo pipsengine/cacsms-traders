@@ -11,10 +11,11 @@ import { writeHashRoute } from '../../lib/routes';
 import { Status } from '../../components/Ui';
 import { SystemControlHubHeader } from './SystemControlHubHeader';
 import { SystemControlMT5Panel } from './SystemControlMT5Panel';
+import { SystemControlCTraderPanel } from './SystemControlCTraderPanel';
 
 const TABS = [
   { id: 'health', label: 'System Health', icon: Activity },
-  { id: 'mt5', label: 'MT5 Connections', icon: Cable },
+  { id: 'mt5', label: 'Market & Trading Connections', icon: Cable },
   { id: 'mode', label: 'Operating Mode', icon: Play },
   { id: 'engines', label: 'Engine Control', icon: Settings },
   { id: 'config', label: 'Configuration', icon: SlidersHorizontal },
@@ -71,7 +72,7 @@ export function SystemControl({
   const [tab, setTab] = useState(TABS.some((t) => t.id === initialTab) ? initialTab : 'health');
   const [configSub, setConfigSub] = useState('system');
   const [auditSub, setAuditSub] = useState('all');
-  const [mt5Sub, setMt5Sub] = useState('local');
+  const [mt5Sub, setMt5Sub] = useState(() => new URLSearchParams(window.location.search).has('ctrader') ? 'ctrader' : 'local');
 
   const pickTab = (id: string) => {
     setTab(id);
@@ -140,6 +141,13 @@ export function SystemControl({
           </button>
           <button
             type="button"
+            className={mt5Sub === 'ctrader' ? 'sc-btnPrimary sc-btnSmall' : 'sc-btnSecondary sc-btnSmall'}
+            onClick={() => setMt5Sub('ctrader')}
+          >
+            cTrader Direct
+          </button>
+          <button
+            type="button"
             className={mt5Sub === 'remote' ? 'sc-btnPrimary sc-btnSmall' : 'sc-btnSecondary sc-btnSmall'}
             onClick={() => setMt5Sub('remote')}
           >
@@ -148,6 +156,9 @@ export function SystemControl({
         </div>
         <TabPanel active={mt5Sub} id="local">
           <SystemControlMT5Panel tenantId={tenantId} onRefreshGlobal={onChanged} />
+        </TabPanel>
+        <TabPanel active={mt5Sub} id="ctrader">
+          <SystemControlCTraderPanel tenantId={tenantId} onRefreshGlobal={onChanged} />
         </TabPanel>
         <TabPanel active={mt5Sub} id="remote">
           <EnginePlaceholder
