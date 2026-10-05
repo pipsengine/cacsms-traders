@@ -157,9 +157,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_mi_worker: MarketIntelligenceWorker | None = None
-
-
 LOOPBACK = ("127.0.0.1", "::1", "localhost", "testclient")
 FORWARDED_HEADERS = ("x-forwarded-for", "cf-connecting-ip", "x-real-ip")
 

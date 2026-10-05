@@ -1,4 +1,8 @@
 """Production API path: /api routing, cookie sessions, health, DB guard, proxy secret and cTrader callback."""
+import os
+import subprocess
+import sys
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from contextlib import contextmanager
 from threading import Event
@@ -8,6 +12,26 @@ from fastapi.testclient import TestClient
 
 ADMIN = {"username": "Admin", "password": "P@882w0rd"}
 CLIENT_HEADER = {"X-CT-Client": "web"}
+
+
+def test_main_imports_under_vercel_without_database_url():
+    env = os.environ.copy()
+    env["VERCEL"] = "1"
+    env["APP_ENV"] = "production"
+    env.pop("DATABASE_URL", None)
+    command = (
+        "from apps.api.app.main import app; "
+        "assert any(getattr(route, 'path', None) == '/api/health/live' for route in app.routes)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", command],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.fixture()
