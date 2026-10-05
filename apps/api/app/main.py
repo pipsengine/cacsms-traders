@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from .core.config import APP_NAME, app_env, cors_origins
+from .core.config import APP_NAME, SESSION_COOKIE, app_env, cors_origins
 from .core.database import DatabaseUnavailable, database_url
 from .core.env_loader import load_env_file
 from .routers import auth, ctrader, market_intelligence, platform, tenant_admin
@@ -57,6 +57,17 @@ def _initialize_database(app: FastAPI) -> None:
         app.state.database_bootstrap_status = "ready"
         app.state.database_bootstrap_error = None
         log.info("Database bootstrap completed; provider=%s", "PostgreSQL/Neon" if app_env() == "production" else "SQLite")
+
+
+async def _ensure_database_bootstrap(app: FastAPI) -> None:
+    status = getattr(app.state, "database_bootstrap_status", "not_started")
+    if status in ("ready", "failed"):
+        return
+    task = getattr(app.state, "database_bootstrap_task", None)
+    if task is None:
+        task = asyncio.create_task(asyncio.to_thread(_initialize_database, app))
+        app.state.database_bootstrap_task = task
+    await asyncio.shield(task)
 
 
 async def _mi_cycle_async():
@@ -112,7 +123,7 @@ async def lifespan(app: FastAPI):
     app.state.database_bootstrap_error = None
     app.state.mi_worker = None
     if _is_vercel():
-        app.state.database_bootstrap_task = asyncio.create_task(asyncio.to_thread(_initialize_database, app))
+        app.state.database_bootstrap_task = None
         log.info("Vercel runtime initialized; DATABASE_URL configured=%s", bool(database_url()))
     else:
         _initialize_database(app)
@@ -175,6 +186,19 @@ async def require_proxy_secret(request: Request, call_next):
         sent = request.headers.get("x-ct-proxy-secret", "")
         if not direct_local and not hmac.compare_digest(sent, secret):
             return JSONResponse({"detail": "Forbidden"}, status_code=403)
+
+    path = request.url.path
+    liveness = path == "/api/health/live"
+    unauthenticated_me = path == "/api/auth/me" and not (
+        request.headers.get("authorization") or request.cookies.get(SESSION_COOKIE)
+    )
+    if path.startswith("/api/") and not liveness and not unauthenticated_me:
+        await _ensure_database_bootstrap(request.app)
+        if (
+            getattr(request.app.state, "database_bootstrap_status", "not_started") != "ready"
+            and path not in ("/api/health/ready", "/api/health")
+        ):
+            return JSONResponse({"detail": "Database unavailable"}, status_code=503)
     return await call_next(request)
 
 

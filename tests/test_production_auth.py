@@ -89,14 +89,20 @@ def test_vercel_liveness_survives_database_bootstrap_failure(monkeypatch, caplog
     monkeypatch.setattr(platform_module, "db", unavailable_database)
 
     with TestClient(main_module.app) as client:
-        assert bootstrap_started.wait(timeout=5)
         live = client.get("/api/health/live")
+        assert not bootstrap_started.is_set()
         ready = client.get("/api/health/ready")
+        me = client.get("/api/auth/me")
+        login = client.post("/api/auth/login", json={"username": "missing", "password": "wrong"})
 
     assert live.status_code == 200
     assert live.json()["status"] == "ok"
     assert ready.status_code == 503
     assert ready.json()["database"] == "unavailable"
+    assert bootstrap_started.is_set()
+    assert me.status_code == 401
+    assert login.status_code == 503
+    assert login.json()["detail"] == "Database unavailable"
     assert database_url not in live.text + ready.text + caplog.text
 
 
