@@ -208,3 +208,6 @@ app.include_router(platform.router, prefix="/api")
 app.include_router(tenant_admin.router, prefix="/api")
 app.include_router(ctrader.router, prefix="/api")
 app.include_router(market_intelligence.router)
+
+from .routers import providers
+app.include_router(providers.router)

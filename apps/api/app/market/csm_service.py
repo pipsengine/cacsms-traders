@@ -167,7 +167,7 @@ class CurrencyStrengthMatrixService:
                 len(FX_PAIRS_28),
                 len(CSM_CURRENCIES),
                 None if result.historical_ok else "MISSING_HISTORY",
-                json.dumps({"engine": "csm", "historical_ok": result.historical_ok}),
+                json.dumps({"engine": "csm", "historical_ok": result.historical_ok, "source_provider": self.repo.provider, "snapshot_id": self.repo.snapshot_id}),
             ),
         )
         self.repo.conn.commit()

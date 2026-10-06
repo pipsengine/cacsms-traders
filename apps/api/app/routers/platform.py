@@ -117,6 +117,7 @@ def set_mode(x:SystemModeUpdate,user=Depends(current_user)):
  if not user['is_platform_admin']: raise HTTPException(403,'Platform administrator required')
  allowed={'ANALYSIS_ONLY','SHADOW','DEMO_AUTONOMOUS','LIVE_AUTONOMOUS','PAUSED','EMERGENCY_STOP'}
  if x.mode not in allowed: raise HTTPException(400,'Invalid mode')
+ if app_env() == 'production' and x.mode not in {'ANALYSIS_ONLY','PAUSED','EMERGENCY_STOP'}: raise HTTPException(403,'Production execution remains disabled; ANALYSIS_ONLY is required')
  with db() as c:
   old=json.loads(c.execute("SELECT value_json FROM system_settings WHERE key='system.mode'").fetchone()['value_json']); c.execute("UPDATE system_settings SET value_json=?,updated_at=? WHERE key='system.mode'",(json.dumps(x.mode),iso())); write_audit(c,None,user['id'],'SYSTEM_MODE_CHANGED','System','system',before={'mode':old},after={'mode':x.mode},reason=x.reason)
  return {'mode':x.mode}

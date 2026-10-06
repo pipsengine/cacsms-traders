@@ -1,33 +1,25 @@
-"""Shared MT5 / market-data context (same source as /health + tenant gateway)."""
+"""Passive MT5 status: never initialize IPC, discover terminals, or reconnect on reads."""
 from __future__ import annotations
-
-import sqlite3
-
-from ..domain.gateway import LocalMT5Gateway
-from ..domain.mt5_connection import _active_tenant_id
+import importlib.util
+import os
 from ..domain.mt5_terminal_account import read_terminal_account
-from ..market import mt5_session
+from . import mt5_session
 
 
-def get_mt5_market_context(conn: sqlite3.Connection) -> dict:
-    active = _active_tenant_id(conn)
-    gw = LocalMT5Gateway(active) if active else LocalMT5Gateway()
-    # Read persisted session only — do not block on MT5 re-init during analysis requests.
-    mt5 = gw.health(conn=conn, allow_reconnect=False)
-    status = (mt5.get("status") or "").upper()
-    session = (mt5.get("session_status") or "").upper()
-    ipc = mt5_session.is_initialized()
-    connected = status == "CONNECTED" or session == "CONNECTED" or ipc
-    terminal = read_terminal_account()
-    server = ""
-    if terminal and terminal.get("available"):
-        server = (terminal.get("server") or "").strip()
-    if not server:
-        server = (mt5.get("message") or "").strip()
+def get_mt5_market_context(conn):
+    info = mt5_session.terminal_info()
+    terminal = read_terminal_account() or {}
+    ipc = info is not None
+    connected = bool(info and getattr(info, 'connected', False))
+    authorized = bool(terminal.get('available'))
     return {
-        "mt5_connected": connected and ipc,
-        "mt5_session_persisted": session == "CONNECTED",
-        "mt5_ipc": ipc,
-        "mt5_server": server or "MetaTrader 5",
-        "market_data_ready": ipc,
+        'configured': importlib.util.find_spec('MetaTrader5') is not None and os.getenv('MT5_MODE', 'local').lower() not in ('off','disabled','null'),
+        'mt5_connected': connected,
+        'mt5_session_persisted': False,
+        'mt5_ipc': ipc,
+        'mt5_server': terminal.get('server') or 'MetaTrader 5',
+        'authorized': authorized,
+        'account_id': f"{terminal.get('server')}/{terminal.get('login')}" if authorized else None,
+        'environment': terminal.get('trade_mode', 'UNKNOWN'),
+        'market_data_ready': connected and authorized,
     }

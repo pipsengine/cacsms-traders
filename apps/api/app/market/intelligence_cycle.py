@@ -53,6 +53,8 @@ def run_intelligence_cycle(*, ingest: bool = True, candle_count: int = 400) -> d
     run_id = str(uuid.uuid4())
     started = datetime.now(timezone.utc)
     with db() as conn:
+        from .provider_manager import ProviderManager
+        ProviderManager(conn).refresh_health()
         context = market_context(conn)
         if not context["market_data_ready"]:
             return {"market_data": context, "analysis_only": True}

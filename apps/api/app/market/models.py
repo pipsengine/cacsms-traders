@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Optional
 @dataclass(frozen=True)
 class Candle:
- symbol:str; timeframe:str; open_time:datetime; close_time:datetime; open:float; high:float; low:float; close:float; tick_volume:int=0; spread:float=0.0; source:str="UNKNOWN"; is_closed:bool=True
+ symbol:str; timeframe:str; open_time:datetime; close_time:datetime; open:float; high:float; low:float; close:float; tick_volume:int=0; spread:float|None=0.0; source:str="UNKNOWN"; is_closed:bool=True; account_id:str=""
 @dataclass(frozen=True)
 class DataQuality:
  symbol:str; timeframe:str; state:str; last_closed_at:Optional[datetime]; age_seconds:Optional[float]; missing_bars:int=0; reason:str=""

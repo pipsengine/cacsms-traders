@@ -11,13 +11,13 @@ def configuration(conn):
         cfg = {'provider': cfg}
     if not isinstance(cfg, dict):
         cfg = {}
-    return {'provider': cfg.get('provider', os.getenv('MARKET_DATA_PROVIDER', 'ctrader' if os.getenv('APP_ENV') == 'production' else 'none')).lower(),
+    return {'selection_mode': cfg.get('selection_mode', os.getenv('MARKET_DATA_SELECTION_MODE', 'AUTO')).upper(),
+            'provider': cfg.get('provider', os.getenv('MARKET_DATA_PROVIDER', 'auto')).lower(),
             'tenant_id': cfg.get('tenant_id', os.getenv('MARKET_DATA_TENANT_ID', '')),
             'account_id': str(cfg.get('account_id', os.getenv('MARKET_DATA_ACCOUNT_ID', '')))}
 
 
-def market_context(conn):
-    cfg = configuration(conn)
+def provider_context(conn, cfg):
     provider = cfg['provider']
     out = dict(active_provider=provider, provider_status='NOT CONFIGURED', authorization_status='NOT_AUTHORIZED',
                account_status='NOT_SELECTED', symbols_resolved=0, required_symbols=28,
@@ -29,7 +29,7 @@ def market_context(conn):
         from .mt5_platform_status import get_mt5_market_context
         legacy = get_mt5_market_context(conn)
         out.update(provider_status='CONNECTED' if legacy['market_data_ready'] and legacy['mt5_connected'] else 'DISCONNECTED',
-                   authorization_status='AUTHORIZED', account_status='SELECTED', market_data_ready=bool(legacy['market_data_ready'] and legacy['mt5_connected']))
+                   authorization_status='AUTHORIZED' if legacy.get('authorized', legacy['market_data_ready']) else 'NOT_AUTHORIZED', account_status='SELECTED' if legacy.get('account_id') else 'NOT_SELECTED', configured=legacy.get('configured', True), connected=legacy.get('mt5_connected', False), account_id=legacy.get('account_id'), environment=legacy.get('environment', 'UNKNOWN'), error_code=None if legacy['market_data_ready'] else 'MT5_CONNECTION_FAILED', market_data_ready=bool(legacy['market_data_ready'] and legacy['mt5_connected']))
     elif provider == 'ctrader':
         from ..routers.ctrader import ctrader_config
         if ctrader_config() is None:
@@ -65,22 +65,59 @@ def market_context(conn):
         out['account_status'] = 'SELECTED' if account and account['authorization_status'] == 'AUTHORIZED' else 'NOT_SELECTED'
         out['provider_status'] = 'DEGRADED'
         out['error_code'] = row['last_error_code'] or 'ctrader_account_selection_required'
+        out['connected'] = row['connection_status'] == 'CONNECTED'
         if out['account_status'] == 'SELECTED' and row['connection_status'] == 'CONNECTED':
             out.update(provider_status='CONNECTING', market_data_ready=True, error_code=None)
     return out
 
 
-def create_market_data_gateway(conn=None):
+def create_market_data_gateway(conn=None, context=None):
     from ..core.database import db
     if conn is None:
         with db() as connection:
-            return create_market_data_gateway(connection)
-    cfg = configuration(conn)
-    if cfg['provider'] == 'mt5':
-        from .mt5_gateway import create_market_data_gateway as mt5_adapter
-        return mt5_adapter()
-    if cfg['provider'] == 'ctrader' and market_context(conn)['market_data_ready']:
-        from .ctrader_gateway import CTraderGateway
-        return CTraderGateway(conn, cfg)
+            gateway = create_market_data_gateway(connection)
+            gateway.observer = None
+            return gateway
+    context = context or market_context(conn)
+    cfg = {**configuration(conn), **context.get('market_data_scope', {}), 'provider': context['active_provider']}
     from .provider_contract import MarketDataUnavailable
-    raise MarketDataUnavailable('market_data_unavailable')
+    if context.get('selection_mode'):
+        current = market_context(conn)
+        if current.get('active_provider') != context.get('active_provider') or current.get('market_data_scope') != context.get('market_data_scope'):
+            raise MarketDataUnavailable('analytical_scope_changed')
+    if not context['market_data_ready']:
+        from .provider_contract import MarketDataUnavailable
+        raise MarketDataUnavailable('market_data_unavailable')
+    from .normalized_provider import NormalizedProvider
+    from .provider_manager import ProviderManager
+    manager = ProviderManager(conn)
+    try:
+        if cfg['provider'] == 'mt5':
+            from .mt5_gateway import create_market_data_gateway as mt5_adapter
+            adapter = mt5_adapter()
+            if not hasattr(adapter, 'get_account_context'):
+                raise MarketDataUnavailable('MT5_CONNECTION_FAILED')
+        elif cfg['provider'] == 'ctrader':
+            from .ctrader_gateway import CTraderGateway
+            adapter = CTraderGateway(conn, cfg)
+        else:
+            raise MarketDataUnavailable('market_data_unavailable')
+    except (RuntimeError, OSError, ValueError):
+        manager.observe(cfg['provider'],success=False,error='MT5_CONNECTION_FAILED' if cfg['provider']=='mt5' else 'provider_connection_failed')
+        conn.commit()
+        raise MarketDataUnavailable('provider_connection_failed') from None
+    gateway = NormalizedProvider(adapter, cfg['provider'], adapter.get_account_context(), observer=lambda **status: _observe_request(manager, cfg['provider'], status))
+    gateway.snapshot_id = manager.bind_snapshot(cfg['provider'], (gateway.get_account_context() or {}).get('account_id', ''))
+    return gateway
+
+
+def market_context(conn):
+    from .provider_manager import ProviderManager
+    return ProviderManager(conn).context()
+
+
+def _observe_request(manager, provider, status):
+    manager.observe(provider, **status)
+    if not status.get('success', True):
+        # Keep failure telemetry even when the caller rolls back a failed analytical cycle.
+        manager.conn.commit()

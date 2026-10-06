@@ -26,9 +26,10 @@ def aggregate_h8_from_h1(h1: list[Candle]) -> list[Candle]:
     out: list[Candle] = []
     for key in sorted(buckets):
         bars = sorted(buckets[key], key=lambda x: x.open_time)
-        if len(bars) < 8:
+        if len(bars) != 8 or len({(b.source.lower(),b.account_id) for b in bars}) != 1:
             continue
-        bars = bars[-8:]
+        if any(int(_epoch_seconds(b.open_time)) != key * bucket_sec + i * 3600 for i, b in enumerate(bars)):
+            continue
         out.append(
             Candle(
                 symbol=bars[0].symbol,
@@ -42,6 +43,7 @@ def aggregate_h8_from_h1(h1: list[Candle]) -> list[Candle]:
                 tick_volume=sum(b.tick_volume for b in bars),
                 spread=bars[-1].spread,
                 source=bars[0].source,
+                account_id=bars[0].account_id,
                 is_closed=True,
             )
         )

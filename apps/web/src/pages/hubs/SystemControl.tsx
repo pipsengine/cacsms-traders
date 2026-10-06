@@ -11,6 +11,7 @@ import { writeHashRoute } from '../../lib/routes';
 import { Status } from '../../components/Ui';
 import { SystemControlHubHeader } from './SystemControlHubHeader';
 import { SystemControlMT5Panel } from './SystemControlMT5Panel';
+import { SystemControlProviderOverview } from './SystemControlProviderOverview';
 import { SystemControlCTraderPanel } from './SystemControlCTraderPanel';
 
 const TABS = [
@@ -72,7 +73,7 @@ export function SystemControl({
   const [tab, setTab] = useState(TABS.some((t) => t.id === initialTab) ? initialTab : 'health');
   const [configSub, setConfigSub] = useState('system');
   const [auditSub, setAuditSub] = useState('all');
-  const [mt5Sub, setMt5Sub] = useState(() => new URLSearchParams(window.location.search).has('ctrader') ? 'ctrader' : 'local');
+  const [mt5Sub, setMt5Sub] = useState(() => new URLSearchParams(window.location.search).has('ctrader') ? 'ctrader' : 'overview');
 
   const pickTab = (id: string) => {
     setTab(id);
@@ -83,7 +84,7 @@ export function SystemControl({
     if (row.key === 'api') return health?.api ?? 'OFFLINE';
     if (row.key === 'database') return health?.database ?? 'OFFLINE';
     if (row.custom === 'MT5') return health?.mt5?.status ?? 'DISCONNECTED';
-    if (row.custom === 'MARKET') return health?.mt5?.market_data_connected ? 'CONNECTED' : 'DISCONNECTED';
+    if (row.custom === 'MARKET') return health?.market_data?.market_data_ready ? 'AVAILABLE' : 'MARKET DATA UNAVAILABLE';
     return 'PAUSED';
   }
 
@@ -132,12 +133,13 @@ export function SystemControl({
 
       <TabPanel active={tab} id="mt5">
         <div className="sc-subtabs">
+          <button type="button" className={mt5Sub === 'overview' ? 'sc-btnPrimary sc-btnSmall' : 'sc-btnSecondary sc-btnSmall'} onClick={() => setMt5Sub('overview')}>Overview</button>
           <button
             type="button"
             className={mt5Sub === 'local' ? 'sc-btnPrimary sc-btnSmall' : 'sc-btnSecondary sc-btnSmall'}
             onClick={() => setMt5Sub('local')}
           >
-            Local MT5
+            MT5
           </button>
           <button
             type="button"
@@ -154,6 +156,9 @@ export function SystemControl({
             Remote Connections (Future)
           </button>
         </div>
+        <TabPanel active={mt5Sub} id="overview">
+          <SystemControlProviderOverview tenantId={tenantId} isPlatformAdmin={isPlatformAdmin} onChanged={onChanged} />
+        </TabPanel>
         <TabPanel active={mt5Sub} id="local">
           <SystemControlMT5Panel tenantId={tenantId} onRefreshGlobal={onChanged} />
         </TabPanel>

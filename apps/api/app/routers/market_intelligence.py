@@ -55,8 +55,7 @@ def matrix(
     except ValueError as exc:
         raise HTTPException(400, f"Unknown calculation mode: {calculation_mode}") from exc
     engine = get_strength_engine()
-    if not engine.running or not engine._ctx.get("active_provider"):
-        engine.seed_from_db()
+    engine.seed_from_db()
     payload = engine.payload(sort_by, mode)
     if payload is None:
         engine.seed_from_db()
@@ -78,7 +77,8 @@ def matrix_compute(
         ctx = market_context(conn)
         if not ctx["market_data_ready"]:
             return {"market_data": ctx, "matrix": [], "analysis_only": True}
-        svc = CurrencyStrengthMatrixService(MarketRepository(conn))
+        gw = create_market_data_gateway(conn, context=ctx)
+        svc = CurrencyStrengthMatrixService(MarketRepository(conn, provider=gw.provider_id, snapshot_id=gw.snapshot_id))
         result = svc.calculate(calculation_mode=mode, bars_difference=bars_difference)
         svc.persist(result)
         return svc.to_api_payload(
@@ -98,7 +98,8 @@ def mi_status():
     engine = get_strength_engine()
     if not engine.running:
         engine.seed_from_db()
-    return {"market_data": {**context, **(engine.engine_meta() or {})}}
+    meta = engine.engine_meta() or {}
+    return {"market_data": {**context, **(meta if meta.get('active_provider') == context.get('active_provider') else {})}}
 
 
 @router.post("/ingest")

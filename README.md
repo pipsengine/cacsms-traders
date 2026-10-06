@@ -105,3 +105,13 @@ Apply migrations after pull: `python scripts/init_db.py`
 
 ## Safety boundary
 Platform mode remains ANALYSIS_ONLY for trading. Market intelligence provides strength and relationship inspection only—no BUY/SELL signals or order execution. AI reasoning, opportunity contracts, risk authorization and execution are later layers.
+
+## Multi-provider architecture
+
+MT5 and cTrader Direct share centralized market-data selection and a normalized
+closed-bar contract. System Control → Market & Trading Connections → Overview
+offers AUTO, MT5 Preferred and cTrader Preferred, provider health and authorized
+cTrader market-data account selection. Execution remains separately bound and disabled.
+
+See [Multi-provider architecture](docs/MULTI_PROVIDER_ARCHITECTURE.md) for configuration,
+provider/account-isolated storage, analytical snapshots, migrations, backfill and tests.

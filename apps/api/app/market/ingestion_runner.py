@@ -42,8 +42,11 @@ class MarketIngestionRunner:
             accepted += int(self.repo.upsert_candle(row))
         self.repo.conn.commit()
         last = h8[-1].close_time if h8 else None
-        self._save_quality(store, "H8", last)
-        return {"symbol": store, "timeframe": "H8", "accepted": accepted, "rejected": 0}
+        from .ingestion import missing_candles
+        missing = missing_candles(h1)
+        self._save_quality(store, "H8", last, missing_bars=missing)
+        error = 'missing_candles' if missing else 'stale_candles' if assess(store, 'H8', last).state == 'STALE' else 'missing_candles' if not h8 else None
+        return {"symbol": store, "timeframe": "H8", "accepted": accepted, "rejected": 0, **({'error': error} if error else {})}
 
     def sync_pair_timeframe(self, pair: str, timeframe: str) -> dict:
         if timeframe == "H8":
@@ -51,7 +54,7 @@ class MarketIngestionRunner:
         try:
             result = self.ingestion.sync(pair, timeframe, self.candle_count, store_as=pair)
             q = result.get("quality") or {}
-            self._save_quality(pair, timeframe, q.get("last_closed_at"))
+            self._save_quality(pair, timeframe, q.get("last_closed_at"), missing_bars=q.get('missing_bars', 0))
             return result
         except MarketDataUnavailable as e:
             self._save_quality(pair, timeframe, None, missing_bars=1, reason=str(e))

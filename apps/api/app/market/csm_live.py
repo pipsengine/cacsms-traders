@@ -1,30 +1,23 @@
-"""Live EarnForex CSM inputs read straight from MT5 rates.
-
-Mirrors the MQL5 indicator: for each pair/timeframe the cell compares iClose(pair, tf, BarsDifference)
-with iClose(pair, tf, 0) — the current (forming) bar's close, i.e. the latest price. Set
-STRENGTH_BAR_BASIS=closed to compare the last two closed bars instead (shift BarsDifference+1 → 1).
-"""
+"""Provider-neutral closed-bar inputs for EarnForex indicator calculations."""
 from __future__ import annotations
 
-import os
 import time
 from datetime import datetime
 
 from .constants import FX_PAIRS_28, MATRIX_TIMEFRAMES, SYNTHETIC_MATRIX_TIMEFRAMES
 from .csm_indicators import mode_series
 from .csm_windows import rolling_quarter_start, window_closes, year_start
-from .mt5_contract import MarketDataUnavailable
+from .provider_contract import MarketDataUnavailable
 
 D1_HISTORY_BARS = 400
-# Enough bars for MT5's EMA/RSI recursion to converge to the terminal's values at 4 decimals.
-# Oversized requests on short-history timeframes block inside the MT5 library, so W/MN are capped.
+# Indicator warmup history; long timeframes use smaller bounded windows.
 INDICATOR_BARS = {"MN": 100, "W": 250}
 DEFAULT_INDICATOR_BARS = 300
 D1_REFRESH_SECONDS = 60.0
 
 
 def bar_basis() -> str:
-    return "closed" if os.getenv("STRENGTH_BAR_BASIS", "earnforex").strip().lower() == "closed" else "earnforex"
+    return "closed"
 
 
 class LiveCsmSource:
@@ -39,7 +32,7 @@ class LiveCsmSource:
         d1: dict[str, list[tuple[datetime, float]]] = {}
         for pair in FX_PAIRS_28:
             try:
-                d1[pair] = self.gw.current_closes(pair, "D1", D1_HISTORY_BARS)
+                d1[pair] = [(c.open_time, c.close) for c in self.gw.get_closed_candles(pair, "D1", count=D1_HISTORY_BARS)]
             except MarketDataUnavailable:
                 continue
         self._d1 = d1
@@ -52,7 +45,7 @@ class LiveCsmSource:
     def inputs_by_mode(
         self, as_of: datetime, modes: tuple[str, ...], bars_difference: int = 1
     ) -> dict[str, dict[str, dict[str, list[float]]]]:
-        """{mode: {timeframe: {pair: [value@BarsDifference, ..., value@0]}}} from one MT5 read per pair/tf."""
+        """{mode: {timeframe: {pair: [value@BarsDifference, ..., value@0]}}} from one normalized history read per pair/timeframe."""
         closed = bar_basis() == "closed"
         need = bars_difference + 1
         indicator_modes = [m for m in modes if m != "CLOSE_CLOSE"]
@@ -64,12 +57,10 @@ class LiveCsmSource:
             count = history + (1 if closed else 0)
             for pair in FX_PAIRS_28:
                 try:
-                    rows = self.gw.current_closes(pair, tf, count)
+                    rows = [(c.open_time, c.close) for c in self.gw.get_closed_candles(pair, tf, count=count)]
                 except MarketDataUnavailable:
                     continue
                 closes = [c for _, c in rows]
-                if closed:
-                    closes = closes[:-1]
                 if len(closes) < need:
                     continue
                 if "CLOSE_CLOSE" in out:
@@ -89,7 +80,7 @@ class LiveCsmSource:
         self._refresh_d1()
         ys, qs = year_start(as_of), rolling_quarter_start(as_of)
         for pair, rows in self._d1.items():
-            series = rows[:-1] if closed else rows
+            series = rows
             for tf, start in (("YTD", ys), ("Q", qs)):
                 s, e = window_closes(series, start)
                 if s is not None and e is not None:

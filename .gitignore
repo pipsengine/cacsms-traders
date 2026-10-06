@@ -11,3 +11,5 @@ database/backups/*.db
 .test-tmp-strength/
 .test-tmp-ctrader-inactive/
 .deploy-ctrader-state/
+
+.test-tmp-multi-provider/

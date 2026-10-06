@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from itertools import combinations
 
 from .constants import CSM_CURRENCIES
+from .provenance import scoped_query, values
 from .csm_windows import year_start
 from .strength_classification import classify
 from .strength_intel_config import HistoryThresholds, history_thresholds
@@ -52,14 +53,15 @@ def load_score_series(
     names = TIMEFRAME_STORAGE.get(timeframe, (timeframe,))
     marks = ",".join("?" * len(names))
     cmarks = ",".join("?" * len(currencies))
-    rows = conn.execute(
+    rows = scoped_query(conn,
         f"""SELECT currency, as_of, score FROM mi_strength_snapshot
             WHERE timeframe IN ({marks}) AND currency IN ({cmarks}) AND as_of >= ? AND score IS NOT NULL
             ORDER BY as_of""",
         (*names, *currencies, start.isoformat()),
     ).fetchall()
     out: dict[str, list[Point]] = {c: [] for c in currencies}
-    for currency, as_of, score in rows:
+    for row in rows:
+        currency, as_of, score = values(row)
         series = out[str(currency)]
         at = _dt(str(as_of))
         if series and series[-1][0] == at:
@@ -72,10 +74,10 @@ def load_score_series(
 def first_snapshot_at(conn: sqlite3.Connection, timeframe: str = "AVG") -> datetime | None:
     names = TIMEFRAME_STORAGE.get(timeframe, (timeframe,))
     marks = ",".join("?" * len(names))
-    row = conn.execute(
+    row = scoped_query(conn,
         f"SELECT MIN(as_of) FROM mi_strength_snapshot WHERE timeframe IN ({marks}) AND score IS NOT NULL", names
     ).fetchone()
-    return _dt(str(row[0])) if row and row[0] else None
+    return _dt(str(values(row)[0])) if row and values(row)[0] else None
 
 
 def append_live(series: dict[str, list[Point]], live: dict[str, float], as_of: datetime | None) -> None:

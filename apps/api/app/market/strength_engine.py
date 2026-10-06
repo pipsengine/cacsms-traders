@@ -123,7 +123,11 @@ class StrengthEngine:
             return None
 
     def _sync_closed_bars(self, repo: MarketRepository, svc: CurrencyStrengthMatrixService) -> bool:
-        gw = create_market_data_gateway(repo.conn)
+        gw = create_market_data_gateway(repo.conn, context=self._ctx)
+        repo.provider = gw.provider_id
+        repo.snapshot_id = gw.snapshot_id
+        repo.account_id = (gw.get_account_context() or {}).get("account_id", "")
+        self._ctx["snapshot_id"] = gw.snapshot_id
         if not hasattr(gw, "latest_closed_open_time"):
             return False
         if not self._bootstrapped:
@@ -153,13 +157,17 @@ class StrengthEngine:
                 self._bootstrap_retry_at = time.monotonic() + BOOTSTRAP_RETRY_SECONDS
                 raise
             self._last_bar = {tf: t for tf in PROBE_TIMEFRAMES if (t := self._probe(gw, tf)) is not None}
-            self._bootstrapped = True
-            return True
+            self._bootstrapped = len(self._last_bar) == len(PROBE_TIMEFRAMES)
+            return self._bootstrapped
 
         changed = []
         for tf in PROBE_TIMEFRAMES:
             t = self._probe(gw, tf)
-            if t is not None and t != self._last_bar.get(tf):
+            if t is None:
+                self._bootstrapped = False
+                self._ctx.update(closed_bar_status='INCOMPLETE',error_code='stale_or_missing_candles')
+                return False
+            if t != self._last_bar.get(tf):
                 self._last_bar[tf] = t
                 changed.append(tf)
         if not changed:
@@ -187,10 +195,14 @@ class StrengthEngine:
 
     def _tick(self) -> None:
         with db() as conn:
+            from .provider_manager import ProviderManager
+            ProviderManager(conn).refresh_health()
             ctx = market_context(conn)
+            for provider, status in ctx.get('providers', {}).items():
+                ProviderManager(conn).record_health(provider, status)
             from .market_data import configuration
             cfg = configuration(conn)
-            key = (cfg["provider"], cfg["tenant_id"], cfg["account_id"])
+            key = (ctx.get("active_provider"), cfg["tenant_id"], ctx.get("providers", {}).get(ctx.get("active_provider"), {}).get("account_id", cfg["account_id"]))
             if key != self._provider_key:
                 self._ctx = {}
                 self._provider_key = key
@@ -202,7 +214,14 @@ class StrengthEngine:
                     self._scores = {}
                     self._pairs = []
                     self._reference = None
-            repo = MarketRepository(conn)
+                    self._histories = {}
+                    self._last_persisted_sig = None
+                    self._last_persist_mono = 0.0
+                    self._last_sig = None
+                    self._scores_sig = None
+                    self._mode_results = {}
+                    self._last_persisted_at = None
+            repo = MarketRepository(conn, provider=ctx.get("active_provider") or "__unavailable__")
             svc = CurrencyStrengthMatrixService(repo)
             connected = bool(ctx["market_data_ready"])
             with self._lock:
@@ -212,6 +231,8 @@ class StrengthEngine:
                 self._ctx = ctx
 
             if not connected:
+                if ctx.get("providers"):
+                    ProviderManager(conn).finalize_snapshot()
                 with self._lock:
                     self._state = ctx["provider_status"]
                     self._result = None
@@ -275,7 +296,7 @@ class StrengthEngine:
             self._error = None
 
     def _refresh_reference(self, conn, now: datetime, now_mono: float) -> None:
-        ref = reference_scores(conn, now - timedelta(minutes=dynamics_lookback_minutes()))
+        ref = reference_scores(conn, now - timedelta(minutes=dynamics_lookback_minutes()), snapshot_id=self._ctx.get("snapshot_id"))
         with self._lock:
             self._reference = ref
             self._reference_mono = now_mono
@@ -320,16 +341,32 @@ class StrengthEngine:
                 self._refresh_reference(conn, datetime.now(timezone.utc), time.monotonic())
 
     def seed_from_db(self) -> None:
-        """Refresh diagnostics; request handling never calculates unverified stored candles."""
+        """Refresh passive diagnostics and invalidate results when the selected scope changes."""
         with db() as conn:
             ctx = market_context(conn)
+            from .provenance import active_snapshot
+            scope = active_snapshot(conn)
         with self._lock:
-            self._ctx = ctx
-            if not ctx["market_data_ready"]:
+            same_scope = self._ctx.get('active_provider') == ctx.get('active_provider') and self._ctx.get('market_data_scope') == ctx.get('market_data_scope') and self._ctx.get('snapshot_id') == (scope['id'] if scope else None)
+            if not same_scope:
                 self._result = None
-                self._state = ctx["provider_status"]
+                self._scores = {}
+                self._pairs = []
+                self._reference = None
+                self._histories = {}
+                self._bootstrapped = False
+            else:
+                for field in ('snapshot_id','symbols_resolved','missing_pairs','failed_symbol_mappings','failed_candle_requests','last_successful_sync','closed_bar_status'):
+                    if field in self._ctx:
+                        ctx[field] = self._ctx[field]
+            self._ctx = ctx
+            if not ctx['market_data_ready']:
+                self._result = None
+                self._state = ctx['provider_status']
             elif not self.running:
-                self._state = "WORKER_UNAVAILABLE"
+                self._state = 'WORKER_UNAVAILABLE'
+            elif not same_scope:
+                self._state = 'SYNCING'
 
     def engine_meta(self) -> dict | None:
         """Connection / freshness / basket state shared by every Strength Intelligence payload."""

@@ -29,7 +29,7 @@ export function MatrixStatusBar({ meta }: { meta: MatrixMeta }) {
       </span>
       <span className="si-footer-item">
         <Database size={14} aria-hidden />
-        Source: <strong>{meta.active_provider || 'No provider'}</strong>
+        Source: <strong>{meta.active_provider === 'mt5' ? 'MT5' : meta.active_provider === 'ctrader' ? 'cTrader' : meta.active_provider || 'No provider'}</strong>
       </span>
       <span className={`si-footer-item ${loaded >= total ? 'mi-ok' : 'mi-warn'}`}>
         <Layers size={14} aria-hidden />

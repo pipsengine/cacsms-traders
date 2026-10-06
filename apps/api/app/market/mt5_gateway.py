@@ -82,6 +82,70 @@ class NullMarketDataGateway:
 
 
 class Mt5MarketDataGateway:
+    provider_id = 'mt5'
+
+    def get_symbols(self):
+        from .constants import FX_PAIRS_28
+        rows = []
+        for symbol in (*FX_PAIRS_28, 'XAUUSD'):
+            item = self.get_symbol(symbol)
+            if item:
+                rows.append(item)
+        return rows
+
+    @_locked
+    def get_symbol(self, symbol):
+        name = _select_symbol(self._mt5, symbol)
+        info = self._mt5.symbol_info(name)
+        if info is None:
+            return None
+        tick = float(info.point)
+        return dict(canonical_symbol=symbol.upper().replace('/', ''), provider_symbol=name,
+                    digits=int(info.digits), tick_size=float(getattr(info, 'trade_tick_size', tick)),
+                    pip_size=tick * (10 if info.digits in (3, 5) else 1), spread=float(info.spread) * tick, provider='mt5')
+
+    def get_latest_price(self, symbol):
+        row = self.latest_tick(symbol)
+        metadata=self.get_symbol(symbol) or {}
+        row.update(digits=metadata.get('digits'), tick_size=metadata.get('tick_size'), pip_size=metadata.get('pip_size'), provider='mt5', timestamp=datetime.fromtimestamp(row['time'], timezone.utc).isoformat(), spread=row['ask']-row['bid'])
+        return row
+
+    def get_provider_health(self):
+        info = self._mt5.terminal_info()
+        account = self._mt5.account_info()
+        connected = bool(info and getattr(info, 'connected', False))
+        return dict(configured=True, authorized=bool(account), connected=connected, healthy=connected,
+                    market_data_available=connected, execution_available=False)
+
+    def get_account_context(self):
+        account = self._mt5.account_info()
+        if account is None:
+            return None
+        return dict(provider='mt5', account_id=f'{account.server}/{account.login}', account_number=str(account.login), server=account.server,
+                    environment='demo' if account.trade_mode == 0 else 'live', currency=account.currency)
+
+    def get_candles(self, symbol, timeframe, *, start=None, end=None, count=400):
+        return self.get_closed_candles(symbol, timeframe, start=start, end=end, count=count)
+
+    @_locked
+    def get_closed_candles(self, symbol, timeframe, *, start=None, end=None, count=400):
+        if start is None and end is None:
+            return self.closed_candles(symbol, timeframe, count)
+        sym = _select_symbol(self._mt5, symbol)
+        rates = self._mt5.copy_rates_range(sym, self._tf_const(timeframe), start or datetime(1970, 1, 1, tzinfo=timezone.utc), end or datetime.now(timezone.utc))
+        if rates is None:
+            raise MarketDataUnavailable('mt5_history_unavailable')
+        from .normalized_provider import candle_close
+        now = datetime.now(timezone.utc)
+        info=self._mt5.symbol_info(sym)
+        point=float(info.point) if info is not None else None
+        result = []
+        for rate in rates:
+            opened = datetime.fromtimestamp(int(rate['time']), timezone.utc)
+            closed = candle_close(opened, timeframe)
+            if closed <= now:
+                result.append(Candle(symbol, timeframe, opened, closed, float(rate['open']), float(rate['high']), float(rate['low']), float(rate['close']), int(rate['tick_volume']), spread=float(rate['spread'])*point if point is not None and 'spread' in rate.dtype.names else None, source='mt5'))
+        return result[-count:]
     def __init__(self):
         try:
             import MetaTrader5 as mt5  # type: ignore
@@ -132,11 +196,14 @@ class Mt5MarketDataGateway:
                 rates = mt5.copy_rates_from_pos(sym, tf, 1, smaller)
         if rates is None or len(rates) == 0:
             raise MarketDataUnavailable(f"No rates for {sym} {timeframe}")
+        info = mt5.symbol_info(sym)
+        point = float(info.point) if info is not None else None
         out: list[Candle] = []
         for r in rates:
             open_time = datetime.fromtimestamp(int(r["time"]), tz=timezone.utc)
             # MT5 time is open time; approximate close as next bar open for storage consistency.
-            close_time = open_time
+            from .normalized_provider import candle_close
+            close_time = candle_close(open_time, timeframe)
             out.append(
                 Candle(
                     symbol=sym,
@@ -148,7 +215,7 @@ class Mt5MarketDataGateway:
                     low=float(r["low"]),
                     close=float(r["close"]),
                     tick_volume=int(r["tick_volume"]),
-                    spread=int(r["spread"]) if "spread" in r.dtype.names else 0,
+                    spread=float(r["spread"]) * point if point is not None and "spread" in r.dtype.names else None,
                     source="MT5",
                     is_closed=True,
                 )
@@ -189,7 +256,7 @@ class Mt5MarketDataGateway:
 
     @_locked
     def latest_tick(self, symbol: str) -> dict:
-        sym = symbol if len(symbol) > 6 else _broker_symbol(symbol)
+        sym = symbol if len(symbol) > 6 else _select_symbol(self._mt5, symbol)
         tick = self._mt5.symbol_info_tick(sym)
         if tick is None:
             raise MarketDataUnavailable(f"No tick for {sym}")

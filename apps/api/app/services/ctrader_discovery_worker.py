@@ -14,13 +14,14 @@ _TIMEFRAME_SECONDS = {
     "M15": 900,
     "M30": 1_800,
     "H1": 3_600,
+    "H4": 14_400,
     "D1": 86_400,
     "W": 604_800,
     "W1": 604_800,
     "MN": 2_592_000,
     "MN1": 2_592_000,
 }
-_PERIODS = {"M1": 1, "M5": 5, "M15": 7, "M30": 8, "H1": 9, "D1": 12, "W": 13, "W1": 13, "MN": 14, "MN1": 14}
+_PERIODS = {"M1": 1, "M5": 5, "M15": 7, "M30": 8, "H1": 9, "H4": 10, "D1": 12, "W": 13, "W1": 13, "MN": 14, "MN1": 14}
 
 
 def decode_response(message, extract):
@@ -42,7 +43,7 @@ def main() -> int:
         print("CTRADER_RESULT:{\"error\":\"demo_only\"}", flush=True)
         return 1
     action = request_data.get("action", "discover")
-    if action not in ("discover", "symbols", "history"):
+    if action not in ("discover", "symbols", "history", "quote"):
         print("CTRADER_RESULT:{\"error\":\"unsupported_action\"}", flush=True)
         return 1
 
@@ -55,6 +56,9 @@ def main() -> int:
             ProtoOAGetAccountListByAccessTokenReq,
             ProtoOAGetTrendbarsReq,
             ProtoOASymbolsListReq,
+            ProtoOASymbolByIdReq,
+            ProtoOASubscribeSpotsReq,
+            ProtoOASpotEvent,
             ProtoOATraderReq,
         )
         from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOATrendbarPeriod
@@ -128,10 +132,10 @@ def main() -> int:
             finish()
 
     def on_account_authorized(account_id: str, _response) -> None:
-        if action == "symbols":
+        if action in ("symbols", "quote"):
             symbols_req = ProtoOASymbolsListReq()
             symbols_req.ctidTraderAccountId = int(account_id)
-            send(symbols_req).addCallbacks(on_symbols, failed)
+            send(symbols_req).addCallbacks(lambda response: on_symbols(account_id, response), failed)
             return
         if action == "history":
             symbols_req = ProtoOASymbolsListReq()
@@ -166,9 +170,9 @@ def main() -> int:
         if exact:
             return exact[0]
         candidates = [symbol for symbol in expected_symbols if symbol in normalized]
-        return max(candidates, key=len) if candidates else None
+        return candidates[0] if len(candidates) == 1 else None
 
-    def on_symbols(response) -> None:
+    def on_symbols(account_id, response) -> None:
         result["symbols"] = [
             {
                 "provider_symbol": item.symbolName,
@@ -177,8 +181,55 @@ def main() -> int:
                 "environment": "demo",
             }
             for item in response.symbol
+            if canonical_symbol(item.symbolName)
         ]
-        finish()
+        if not result['symbols']:
+            finish('symbols_unavailable')
+            return
+        details = ProtoOASymbolByIdReq()
+        details.ctidTraderAccountId = int(account_id)
+        details.symbolId.extend(int(s['symbol_id']) for s in result['symbols'])
+        send(details).addCallbacks(lambda response: on_symbol_details(account_id, response), failed)
+
+    def on_symbol_details(account_id, response):
+        for item in response.symbol:
+            symbol = next((s for s in result['symbols'] if s['symbol_id'] == str(item.symbolId)), None)
+            if symbol:
+                symbol.update(digits=item.digits, tick_size=10 ** -item.digits,
+                              pip_size=10 ** -item.pipPosition, provider='ctrader', spread=None)
+        if action == 'symbols':
+            finish()
+            return
+        if not all('digits' in symbol for symbol in result['symbols']):
+            finish('symbol_metadata_unavailable')
+            return
+        spots = ProtoOASubscribeSpotsReq()
+        spots.ctidTraderAccountId = int(account_id)
+        spots.symbolId.append(int(result['symbols'][0]['symbol_id']))
+        spots.subscribeToSpotTimestamp = True
+        send(spots).addErrback(failed)
+
+    spot_prices = {}
+
+    def on_message(_client, message):
+        if action != 'quote' or message.payloadType != ProtoOASpotEvent().payloadType:
+            return
+        event = Protobuf.extract(message)
+        symbol = next((s for s in result['symbols'] if s['symbol_id'] == str(event.symbolId)), None)
+        if not symbol:
+            return
+        for field in ('bid', 'ask'):
+            if event.HasField(field):
+                spot_prices[field] = round(getattr(event, field) / _PRICE_SCALE, symbol['digits'])
+        if 'bid' in spot_prices and 'ask' in spot_prices:
+            timestamp = datetime.fromtimestamp(event.timestamp / 1000, timezone.utc) if event.HasField('timestamp') else datetime.now(timezone.utc)
+            result['quote'] = dict(symbol=symbol['canonical_symbol'], provider='ctrader',
+                                  bid=spot_prices['bid'], ask=spot_prices['ask'],
+                                  spread=spot_prices['ask'] - spot_prices['bid'],
+                                  point=symbol['tick_size'], tick_size=symbol['tick_size'], pip_size=symbol['pip_size'], digits=symbol['digits'],
+                                  spread_points=(spot_prices['ask']-spot_prices['bid'])/symbol['tick_size'],
+                                  timestamp=timestamp.isoformat())
+            finish()
 
     def on_history_symbols(account_id: str, response) -> None:
         nonlocal pending_candles
@@ -249,7 +300,7 @@ def main() -> int:
                     "low": low,
                     "close": (float(bar.low) + float(bar.deltaClose)) / _PRICE_SCALE,
                     "tick_volume": int(bar.volume),
-                    "spread": 0,
+                    "spread": None,
                     "source": "CTRADER",
                     "is_closed": True,
                 }
@@ -266,7 +317,7 @@ def main() -> int:
         if not demo_accounts:
             finish("no_demo_accounts")
             return
-        if action in ("symbols", "history"):
+        if action in ("symbols", "history", "quote"):
             selected = demo_accounts[0]
             account_id = str(selected.ctidTraderAccountId)
             auth_req = ProtoOAAccountAuthReq()
@@ -296,6 +347,7 @@ def main() -> int:
         send(app_auth).addCallbacks(on_app_authorized, failed)
 
     client.setConnectedCallback(on_connected)
+    client.setMessageReceivedCallback(on_message)
     timeout_call = reactor_instance.callLater(18, finish, "provider_timeout")
     client.startService()
     reactor_instance.run()

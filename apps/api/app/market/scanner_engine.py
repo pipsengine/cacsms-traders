@@ -1,6 +1,6 @@
 """Autonomous Market Scanner engine.
 
-Background thread on the shared MT5 session: keeps XAUUSD candles ingested (the 28 FX pairs are
+Background thread on the selected normalized market-data provider: keeps XAUUSD candles ingested (the 28 FX pairs are
 already maintained by the Strength Engine), re-analyses closed candles every analysis interval,
 refreshes live quotes every few seconds and merges both with the Strength Engine's pair intelligence.
 API requests only read the cached result.
@@ -16,8 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 from ..core.database import db, execute_retry
 from .ingestion_runner import MarketIngestionRunner
-from .mt5_gateway import create_market_data_gateway
-from .mt5_platform_status import get_mt5_market_context
+from .market_data import create_market_data_gateway, market_context
 from .repository import MarketRepository
 from .scanner_analytics import (
     Bar,
@@ -160,10 +159,21 @@ class MarketScannerEngine:
             if len(d1) < s.min_d1_bars:
                 why = f"Insufficient D1 history ({len(d1)}/{s.min_d1_bars} closed bars)"
                 if sym == GOLD and self._gold_error:
-                    why = f"Not available from MT5 ({self._gold_error.split(';')[0]})"
+                    why = f"Not available from market-data provider ({self._gold_error.split(';')[0]})"
                 elif not d1 and not connected:
-                    why = "No stored history — awaiting MT5 connection to ingest candles"
+                    why = "No stored history — awaiting market-data connection to ingest candles"
                 out[sym] = {"excluded": why}
+                continue
+            from .normalized_provider import candle_close
+            from .quality import assess
+            from .ingestion import missing_between
+            invalid = []
+            for tf in STRUCTURE_TIMEFRAMES:
+                history = bars[tf]
+                if len(history) < 2 or assess(sym,tf,candle_close(history[-1].t,tf) if history else None).state == 'STALE' or any(missing_between(a.t,b.t,tf) for a,b in zip(history,history[1:])):
+                    invalid.append(tf)
+            if invalid:
+                out[sym] = {'excluded': 'Missing or stale closed history: ' + ', '.join(invalid)}
                 continue
             structures = {tf: market_structure(bars[tf], s.swing_strength) for tf in STRUCTURE_TIMEFRAMES}
             primary_tf = next(
@@ -206,15 +216,28 @@ class MarketScannerEngine:
     def _tick(self) -> None:
         s = settings()
         with db() as conn:
-            ctx = get_mt5_market_context(conn)
-            connected = bool(ctx.get("mt5_connected") and ctx.get("market_data_ready"))
-            repo = MarketRepository(conn)
+            ctx = market_context(conn)
+            from .provider_manager import ProviderManager
+            for provider, status in ctx.get('providers', {}).items():
+                ProviderManager(conn).record_health(provider, status)
+            connected = bool(ctx.get("market_data_ready"))
+            key = (ctx.get('active_provider'), ctx.get('providers', {}).get(ctx.get('active_provider'), {}).get('account_id'))
+            previous = (self._ctx.get('active_provider'), self._ctx.get('providers', {}).get(self._ctx.get('active_provider'), {}).get('account_id'))
+            if key != previous:
+                with self._lock:
+                    self._analysis = {}
+                    self._rows = []
+                    self._quotes = {}
+                    self._gold_bootstrapped = False
+                    self._cycle_mono = 0.0
+            gw = create_market_data_gateway(conn, context=ctx) if connected else None
+            ctx["snapshot_id"] = getattr(gw, "snapshot_id", None)
+            repo = MarketRepository(conn, provider=ctx.get('active_provider') or '__unavailable__', snapshot_id=getattr(gw,'snapshot_id',None))
             now = datetime.now(timezone.utc)
             with self._lock:
                 self._ctx = ctx
                 if not self._analysis:
-                    self._state = "SYNCING" if connected else "MT5_DISCONNECTED"
-            gw = create_market_data_gateway() if connected else None
+                    self._state = "SYNCING" if connected else "MARKET_DATA_UNAVAILABLE"
             due = time.monotonic() - self._cycle_mono >= s.analysis_seconds or not self._analysis
             if due:
                 if gw is not None:
@@ -230,15 +253,20 @@ class MarketScannerEngine:
             rows = self._compose(now)
             with self._lock:
                 self._rows = rows
-                self._state = "READY" if connected else "MT5_DISCONNECTED"
+                self._state = "READY" if connected else "MARKET_DATA_UNAVAILABLE"
                 self._error = None
             if due and time.monotonic() - self._persist_mono >= s.persist_seconds:
+                for kind in ("scanner", "range_structure", "structure_overview", "h8_bos_btl", "trend_structure", "channels"):
+                    repo.record_provenance(kind, self._cycle_at or now)
                 self._persist(conn, rows)
                 self._persist_mono = time.monotonic()
 
     def _compose(self, now: datetime) -> list[dict]:
         s = settings()
         intel = get_strength_engine().intelligence() or {}
+        strength_meta = get_strength_engine().engine_meta() or {}
+        if strength_meta.get('snapshot_id') != self._ctx.get('snapshot_id'):
+            intel = {}
         pairs = {r["pair"]: r for r in intel.get("pairs", [])}
         scores = intel.get("scores", {})
         with self._lock:
@@ -247,7 +275,7 @@ class MarketScannerEngine:
         for sym in SCANNER_UNIVERSE:
             a = analysis.get(sym)
             base, quote = sym[:3], sym[3:6]
-            row: dict = {"symbol": sym, "base": base, "quote": quote, "name": instrument_name(sym)}
+            row: dict = {"source_provider": self._ctx.get("active_provider"), "snapshot_id": self._ctx.get("snapshot_id"), "symbol": sym, "base": base, "quote": quote, "name": instrument_name(sym)}
             if a is None or "excluded" in a:
                 row.update(
                     status={"key": "EXCLUDED", "label": "Excluded"},
@@ -269,7 +297,7 @@ class MarketScannerEngine:
             usd_only = scores.get(quote, {}).get("AVG") if pr is None and quote in scores else None
             primary_tf = a["primary_tf"]
             structure = a["structures"][primary_tf]
-            channel = regression_channel(a["d1"], s.channel_period, s.channel_width_sd, price)
+            channel = regression_channel(a["d1"], s.channel_period, s.channel_width_sd, last_c)
             vol = a["volatility"]
             agrees = structure_agrees(structure["key"], diff)
             sc = inspection_score(
@@ -504,11 +532,11 @@ class MarketScannerEngine:
             cycle_id, cycle_at, quotes_at = self._cycle_id, self._cycle_at, self._quotes_at
             rows = list(self._rows)
         strength = get_strength_engine().engine_meta() or {}
-        connected = bool(ctx.get("mt5_connected") and ctx.get("market_data_ready"))
+        connected = bool(ctx.get("market_data_ready"))
         now = datetime.now(timezone.utc)
         stale_reason = None
         if not connected:
-            stale_reason = "MT5_DISCONNECTED"
+            stale_reason = "MARKET_DATA_UNAVAILABLE"
         elif cycle_at is None or (now - cycle_at).total_seconds() > max(STALE_AFTER_SECONDS, settings().analysis_seconds * 3):
             stale_reason = "SCANNER_STALLED" if cycle_at else None
         scanned = sum(1 for r in rows if r["status"]["key"] != "EXCLUDED")
@@ -517,6 +545,8 @@ class MarketScannerEngine:
             "engine_error": error,
             "mt5_connected": connected,
             "mt5_server": ctx.get("mt5_server"),
+            "active_provider": ctx.get("active_provider"),
+            "snapshot_id": ctx.get("snapshot_id"),
             "cycle_id": cycle_id,
             "last_cycle_at": _iso(cycle_at),
             "quotes_at": _iso(quotes_at),

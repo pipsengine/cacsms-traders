@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from ..core.database import execute_retry
 from .market_data import configuration
+from .provenance import scoped_query, values
 from .constants import normalize_matrix_timeframe
 from .pair_relationships import Scores, split_pair
 from .relationship_analysis import Point, diff_series
@@ -21,19 +22,20 @@ def active_scope(conn: sqlite3.Connection) -> tuple[str, str]:
     return cfg["tenant_id"], cfg["account_id"]
 
 
-def reference_scores(conn: sqlite3.Connection, at_or_before: datetime) -> tuple[datetime, Scores] | None:
+def reference_scores(conn: sqlite3.Connection, at_or_before: datetime, snapshot_id=None) -> tuple[datetime, Scores] | None:
     """Most recent persisted score snapshot at or before ``at_or_before`` (None if history is shorter)."""
-    row = conn.execute(
+    row = scoped_query(conn,
         "SELECT MAX(as_of) FROM mi_strength_snapshot WHERE timeframe='AVG' AND score IS NOT NULL AND as_of <= ?",
-        (at_or_before.isoformat(),),
+        (at_or_before.isoformat(),), snapshot_id=snapshot_id,
     ).fetchone()
-    if not row or not row[0]:
+    if not row or not values(row)[0]:
         return None
-    as_of = str(row[0])
+    as_of = str(values(row)[0])
     scores: Scores = {}
-    for currency, tf, score in conn.execute(
-        "SELECT currency, timeframe, score FROM mi_strength_snapshot WHERE as_of=? AND score IS NOT NULL", (as_of,)
+    for record in scoped_query(conn,
+        "SELECT currency, timeframe, score FROM mi_strength_snapshot WHERE as_of=? AND score IS NOT NULL", (as_of,), snapshot_id=snapshot_id
     ).fetchall():
+        currency, tf, score = values(record)
         scores.setdefault(str(currency), {})[normalize_matrix_timeframe(str(tf))] = float(score)
     at = datetime.fromisoformat(as_of)
     return (at if at.tzinfo else at.replace(tzinfo=timezone.utc)), scores
@@ -91,7 +93,7 @@ def save_pair_snapshot(conn: sqlite3.Connection, scope: tuple[str, str], as_of: 
 def latest_pair_snapshot(conn: sqlite3.Connection, scope: tuple[str, str]) -> list[dict]:
     """Latest persisted pair intelligence for one tenant/account (for Market Scanner / pipeline consumers)."""
     tenant, account = scope
-    rows = conn.execute(
+    rows = scoped_query(conn,
         """SELECT * FROM mi_pair_intel_snapshot WHERE tenant_id=? AND trading_account_id=? AND as_of=(
              SELECT MAX(as_of) FROM mi_pair_intel_snapshot WHERE tenant_id=? AND trading_account_id=?)
            ORDER BY abs_differential DESC""",
