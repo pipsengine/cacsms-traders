@@ -9,6 +9,7 @@ from ..core.database import db, execute_retry
 from ..core.security import iso
 from ..market import mt5_session
 from .mt5_diagnostics import mt5_python_package_status
+from .mt5_terminal_launcher import launch_terminal, terminal_launch_capability
 from .mt5_terminal_account import environment_from_terminal, read_terminal_account
 from .mt5_terminal_discovery import (
     auto_detect_terminal_path,
@@ -557,14 +558,22 @@ class LocalMT5Gateway:
     ) -> dict[str, Any]:
         def _run(c: sqlite3.Connection) -> dict[str, Any]:
             settings = self._load_settings(c)
+            if not terminal_launch_capability()['terminal_launch_supported']:
+                return {'ok':False,'code':'MT5_DESKTOP_COMPANION_REQUIRED','error':'Use the Windows launcher to open MT5 on this PC. This hosted API needs a Windows market-data gateway to connect to it.','settings':settings}
             path = normalize_terminal_exe((terminal_path or settings.get("terminal_path") or "").strip())
             if not path:
-                detected, _src = auto_detect_terminal_path(use_env=False)
+                detected, _src = auto_detect_terminal_path(use_env=False, allow_probe=False)
                 path = normalize_terminal_exe(detected)
             if path:
                 settings["terminal_path"] = path
                 self._save_settings(c, settings)
 
+            launch = launch_terminal(path)
+            if not launch['ok']:
+                settings['last_error'] = launch['error']
+                settings['session_status'] = 'DISCONNECTED'
+                self._save_settings(c, settings)
+                return {**launch,'settings':settings}
             pkg = mt5_python_package_status()
             if pkg["python_package"] == "missing":
                 settings["last_error"] = (
@@ -579,6 +588,7 @@ class LocalMT5Gateway:
                     "settings": settings,
                     "gateway": self._health(c),
                     "code": "MT5_PACKAGE_MISSING",
+                    "terminal_launch": launch,
                 }
 
             try:
@@ -621,7 +631,7 @@ class LocalMT5Gateway:
                 if terminal and terminal.get("available"):
                     persist_terminal_account_snapshot(c, self.tenant_id, terminal)
                     sync_trading_registry_from_terminal(c, self.tenant_id, force_attach=False)
-                return {"ok": True, "settings": settings, "gateway": self._health(c)}
+                return {"ok": True, "settings": settings, "gateway": self._health(c), "terminal_launch": launch}
             except Exception as exc:
                 settings["last_error"] = str(exc)
                 settings["session_status"] = "DISCONNECTED"

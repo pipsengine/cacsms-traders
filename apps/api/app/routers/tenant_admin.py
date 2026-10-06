@@ -86,7 +86,8 @@ def connections(tenant_id:str,user=Depends(current_user)):
   gateway=gw_svc.health(conn=c, allow_reconnect=(session == 'CONNECTED' and not live))
  if reconnect and reconnect.get('restored'):
   diag_reconnect=reconnect
- diag=mt5_python_package_status()
+ from ..domain.mt5_terminal_launcher import terminal_launch_capability
+ diag={**mt5_python_package_status(),**terminal_launch_capability()}
  diag['database_path']=str(db_path())
  diag['terminal_candidates']=filesystem_terminal_candidates()[:8]
  diag['terminal_running_processes']=running_terminal64_processes()
@@ -121,7 +122,7 @@ def gateway_connect(tenant_id:str,x:Mt5ConnectRequest,user=Depends(current_user)
   result=gw.connect(x.terminal_path, conn=c)
   if result.get('ok'):
     sync_trading_registry_from_terminal(c, tenant_id)
-  write_audit(c,tenant_id,user['id'],'MT5_CONNECT','TenantSettings',f'{tenant_id}/mt5.local',after={'ok':result.get('ok'),'error':result.get('error')})
+  write_audit(c,tenant_id,user['id'],'MT5_CONNECT','TenantSettings',f'{tenant_id}/mt5.local',after={'ok':result.get('ok'),'error':result.get('error'),'terminal_launch':result.get('terminal_launch')})
   return result
 @router.post('/connections/gateway/disconnect')
 def gateway_disconnect(tenant_id:str,user=Depends(current_user)):

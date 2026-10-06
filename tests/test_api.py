@@ -107,6 +107,8 @@ def test_super_admin_login(client):
 
 
 def test_mt5_disconnect_reports_disconnected(client, monkeypatch):
+    monkeypatch.setattr('apps.api.app.domain.mt5_connection.terminal_launch_capability', lambda: {'terminal_launch_supported':True})
+    monkeypatch.setattr('apps.api.app.domain.mt5_connection.launch_terminal', lambda path: {'ok':True,'launched':False,'path':path,'code':'MT5_TERMINAL_ALREADY_RUNNING'})
     from apps.api.app.market import mt5_session
 
     live = {"on": False}
@@ -175,6 +177,8 @@ def test_mt5_disconnect_reports_disconnected(client, monkeypatch):
 
 
 def test_mt5_auto_link_terminal(client, monkeypatch):
+    monkeypatch.setattr('apps.api.app.domain.mt5_connection.terminal_launch_capability', lambda: {'terminal_launch_supported':True})
+    monkeypatch.setattr('apps.api.app.domain.mt5_connection.launch_terminal', lambda path: {'ok':True,'launched':False,'path':path,'code':'MT5_TERMINAL_ALREADY_RUNNING'})
     from apps.api.app.market import mt5_session
 
     live = {"on": False}
@@ -250,6 +254,8 @@ def test_mt5_auto_link_terminal(client, monkeypatch):
 
 
 def test_mt5_registry_sync_backfills_account(client, monkeypatch):
+    monkeypatch.setattr('apps.api.app.domain.mt5_connection.terminal_launch_capability', lambda: {'terminal_launch_supported':True})
+    monkeypatch.setattr('apps.api.app.domain.mt5_connection.launch_terminal', lambda path: {'ok':True,'launched':False,'path':path,'code':'MT5_TERMINAL_ALREADY_RUNNING'})
     from apps.api.app.market import mt5_session
 
     live = {"on": False}
