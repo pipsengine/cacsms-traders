@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Card, Status } from '../../components/Ui';
 import { get, put } from '../../lib/api';
-import { openLocalMT5 } from '../../lib/mt5Local';
+import { connectLocalMT5 } from '../../lib/mt5Local';
 
 type Mode = 'AUTO' | 'MT5_PREFERRED' | 'CTRADER_PREFERRED';
 type ProviderHealth = {
@@ -39,10 +39,11 @@ export function SystemControlProviderOverview({ tenantId, isPlatformAdmin, onCha
     setSaving(true);
     try { setState(await put<Overview>('/providers/selection', { selection_mode, ...(account_id !== undefined ? { tenant_id: tenantId, account_id } : {}) })); setError(''); onChanged();
       if (selection_mode === 'MT5_PREFERRED' && account_id === undefined) {
-        setTerminalStatus('Opening MT5 on this PC...');
+        setTerminalStatus('Connecting MT5 on this PC...');
         try {
-          setTerminalStatus(await openLocalMT5());
-        } catch (err) { setTerminalStatus('MT5 preference saved. Could not reach or open MT5 through this PC\u2019s gateway. Check browser local-network permission and the running gateway.'); }
+          setTerminalStatus(await connectLocalMT5(tenantId));
+          onChanged();
+        } catch (err) { setTerminalStatus(err instanceof Error ? err.message : 'MT5 connection failed'); }
       }
     }
     catch (err) { setError(err instanceof Error ? err.message : 'Provider policy update failed'); }

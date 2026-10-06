@@ -36,3 +36,13 @@ def test_pairing_cannot_select_arbitrary_upload_destination():
     with pytest.raises(ValueError):
         worker.connect('tenant','a'*64,'https://unrelated.example')
     worker.sdk.initialize.assert_not_called()
+
+
+def test_connect_requires_cloud_acknowledgement(monkeypatch):
+    worker = WindowsBridge('broker/terminal64.exe',sdk=sdk())
+    worker.upload = Mock(side_effect=RuntimeError('Cloud did not accept heartbeat'))
+    with pytest.raises(RuntimeError,match='did not accept'):
+        worker.connect('tenant','a'*64,'https://cacsms-traders.vercel.app')
+    assert worker.session is None
+    assert worker.thread is None
+    worker.sdk.initialize.assert_not_called()

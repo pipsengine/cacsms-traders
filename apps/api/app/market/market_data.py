@@ -12,6 +12,7 @@ def configuration(conn):
     if not isinstance(cfg, dict):
         cfg = {}
     return {'selection_mode': cfg.get('selection_mode', os.getenv('MARKET_DATA_SELECTION_MODE', 'AUTO')).upper(),
+            'mt5_tenant_id': cfg.get('mt5_tenant_id', ''),
             'provider': cfg.get('provider', os.getenv('MARKET_DATA_PROVIDER', 'auto')).lower(),
             'tenant_id': cfg.get('tenant_id', os.getenv('MARKET_DATA_TENANT_ID', '')),
             'account_id': str(cfg.get('account_id', os.getenv('MARKET_DATA_ACCOUNT_ID', '')))}
@@ -26,6 +27,14 @@ def provider_context(conn, cfg):
                last_successful_sync=None, last_calculation=None, error_code=None,
                market_data_ready=False, analysis_only=True)
     if provider == 'mt5':
+        from ..domain.mt5_bridge import status
+        bridge = status(conn,cfg.get('mt5_tenant_id','')) if cfg.get('mt5_tenant_id') else None
+        if bridge:
+            from datetime import datetime, timezone
+            fresh_quotes = any(0 <= datetime.now(timezone.utc).timestamp()-q['time'] <= 120 for q in bridge['quotes'])
+            ready = bridge['connected'] and fresh_quotes
+            out.update(provider_status='CONNECTED' if bridge['connected'] else 'DISCONNECTED',authorization_status='AUTHORIZED',account_status='SELECTED',configured=True,connected=bridge['connected'],account_id=bridge['account_id'],environment=bridge['account']['trade_mode'].lower(),market_data_ready=ready,last_heartbeat=bridge['received_at'],error_code=None if ready else 'mt5_bridge_stale',bridge_tenant_id=cfg['mt5_tenant_id'])
+            return out
         from .mt5_platform_status import get_mt5_market_context
         legacy = get_mt5_market_context(conn)
         out.update(provider_status='CONNECTED' if legacy['market_data_ready'] and legacy['mt5_connected'] else 'DISCONNECTED',
@@ -93,8 +102,12 @@ def create_market_data_gateway(conn=None, context=None):
     manager = ProviderManager(conn)
     try:
         if cfg['provider'] == 'mt5':
-            from .mt5_gateway import create_market_data_gateway as mt5_adapter
-            adapter = mt5_adapter()
+            if context.get('bridge_tenant_id'):
+                from .mt5_bridge_gateway import MT5BridgeGateway
+                adapter = MT5BridgeGateway(conn,context['bridge_tenant_id'])
+            else:
+                from .mt5_gateway import create_market_data_gateway as mt5_adapter
+                adapter = mt5_adapter()
             if not hasattr(adapter, 'get_account_context'):
                 raise MarketDataUnavailable('MT5_CONNECTION_FAILED')
         elif cfg['provider'] == 'ctrader':

@@ -6,3 +6,4 @@ database/*.db-*
 .env.*
 .test-tmp-ctrader-inactive/
 .deploy-ctrader-state/
+.test-tmp-multi-provider/

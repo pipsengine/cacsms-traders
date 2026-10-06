@@ -13,7 +13,7 @@ import {
   Info,
 } from 'lucide-react';
 import { del, get, patch, post } from '../../lib/api';
-import { openLocalMT5 } from '../../lib/mt5Local';
+import { connectLocalMT5 } from '../../lib/mt5Local';
 import type { ConnectionsPayload, TradingAccount } from '../../types';
 
 function fmtTs(v?: string | null) {
@@ -57,13 +57,9 @@ export function SystemControlMT5Panel({
   const hostedGateway = data?.diagnostics?.terminal_launch_mode === 'WINDOWS_GATEWAY_REQUIRED';
   const automaticLaunchRequested = React.useRef(false);
   React.useEffect(() => {
-    if (!hostedGateway || !tenantId || automaticLaunchRequested.current) return;
+    if (!hostedGateway || !tenantId || automaticLaunchRequested.current || data?.diagnostics?.bridge_connected) return;
     automaticLaunchRequested.current = true;
-    setSuccess('Opening MT5 on this PC...');
-    void openLocalMT5().then(setSuccess).catch(() => {
-      setSuccess('');
-      setError('Could not open MT5 through the local gateway. Allow local-network access in the browser and ensure the Windows gateway is running.');
-    });
+    void connect();
   }, [hostedGateway, tenantId]);
 
   const closeModals = () => {
@@ -106,6 +102,8 @@ export function SystemControlMT5Panel({
 
   React.useEffect(() => {
     void load();
+    const timer = window.setInterval(() => void load(), 15000);
+    return () => window.clearInterval(timer);
   }, [load]);
 
   const gw = data?.gateway;
@@ -144,6 +142,19 @@ export function SystemControlMT5Panel({
     setSuccess(`${label}…`);
     setActing(true);
     try {
+      if (hostedGateway && path === '/connections/gateway/disconnect') {
+        await post(`/tenants/${tenantId}/mt5-bridge/disconnect`, {});
+        setSuccess('MT5 bridge disconnected. The terminal remains open.');
+        await load();
+        onRefreshGlobal();
+        return;
+      }
+      if (hostedGateway && path === '/connections/gateway/restart') {
+        setSuccess(await connectLocalMT5(tenantId));
+        await load();
+        onRefreshGlobal();
+        return;
+      }
       const res = await post<GatewayActionResult>(`/tenants/${tenantId}${path}`, {});
       applyGatewayResult(res);
       if (res.ok === false && res.error) {
@@ -219,7 +230,9 @@ export function SystemControlMT5Panel({
     try {
       const diagnostic = data?.diagnostics;
       if (diagnostic?.terminal_launch_mode === 'WINDOWS_GATEWAY_REQUIRED') {
-        setSuccess(await openLocalMT5());
+        setSuccess(await connectLocalMT5(tenantId));
+        await load();
+        onRefreshGlobal();
         return;
       }
       const res = await post<GatewayActionResult>(`/tenants/${tenantId}/connections/gateway/connect`, {
@@ -276,7 +289,7 @@ export function SystemControlMT5Panel({
 
   async function syncRegistry() {
     if (!tenantId) return;
-    if (hostedGateway) {
+    if (hostedGateway && !data?.diagnostics?.bridge_connected) {
       setSuccess('');
       setError('Registry sync is unavailable until the Windows market-data bridge is connected.');
       return;
@@ -389,9 +402,9 @@ export function SystemControlMT5Panel({
 
   return (
     <>
-      {hostedGateway ? (
+      {hostedGateway && !data?.diagnostics?.bridge_connected ? (
         <p className="sc-notice" role="status">
-          <b>MT5 market data is not connected to the hosted platform.</b> The local launcher opens MT5 on this PC. An authenticated Windows market-data bridge is still required to send prices and account status to the platform.
+          <b>MT5 is not connected.</b> Connect attaches the Windows gateway to your broker terminal and sends read-only account status and market data to the platform. Allow local-network access if Chrome asks.
         </p>
       ) : data?.diagnostics?.python_package === 'missing' ? (
         <p className="sc-notice" style={{ borderColor: '#ffc9c9', background: '#fff5f5', color: '#c92a2a' }}>
@@ -431,7 +444,7 @@ export function SystemControlMT5Panel({
             <b>Select tenant</b> — use the tenant switcher in the header (each tenant has its own MT5 settings).
           </li>
           <li>
-            <b>Select MT5 Preferred or click Connect</b> to open or restore your configured broker terminal on this PC. Log in when MT5 opens.
+            <b>Select MT5 Preferred or click Connect</b> to attach to your broker terminal. If MT5 is closed, it starts automatically. Log in when prompted.
           </li>
           {!hostedGateway && <li>
             <b>Connect in this UI</b> — IC Markets is detected from the running terminal; click <em>Connect</em>, then{' '}
@@ -484,7 +497,7 @@ export function SystemControlMT5Panel({
             </div>
             <div>
               <span>Last Error</span>
-              <b>{hostedGateway ? 'Windows market-data bridge is not connected.' : gw?.last_error ?? '—'}</b>
+              <b>{gw?.last_error ?? '—'}</b>
             </div>
           </div>
           {!hostedGateway && <p className="sc-muted" style={{ margin: '8px 0 0', textAlign: 'center' }}>
@@ -508,8 +521,8 @@ export function SystemControlMT5Panel({
               type="button"
               className="sc-btnSecondary"
               onClick={() => void syncRegistry()}
-              disabled={acting || !tenantId || hostedGateway}
-              title={hostedGateway ? 'Requires a connected Windows market-data bridge' : 'Read login and server from MetaTrader 5 into the registry'}
+              disabled={acting || !tenantId || (hostedGateway && !data?.diagnostics?.bridge_connected)}
+              title={hostedGateway && !data?.diagnostics?.bridge_connected ? 'Use Connect first' : 'Sync the attached account into the registry'}
             >
               <RefreshCcw size={17} />
               Sync from MT5

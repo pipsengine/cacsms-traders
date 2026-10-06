@@ -29,7 +29,7 @@ class ProviderManager:
                 provider=provider, configured=ctx.get('configured', ctx['provider_status'] != 'NOT CONFIGURED' and ctx.get('error_code') != 'ctrader_not_configured'),
                 authorized=ctx['authorization_status'] == 'AUTHORIZED', connected=ctx.get('connected', ready),
                 healthy=ready, market_data_available=ready, execution_available=False,
-                last_heartbeat=None, last_market_data=None, last_error=ctx.get('error_code'),
+                last_heartbeat=ctx.get('last_heartbeat'), last_market_data=None, last_error=ctx.get('error_code'),
                 environment='demo' if provider == 'ctrader' else 'terminal',
                 account_id=self.cfg['account_id'] if provider == 'ctrader' else ctx.get('account_id'),
                 context=ctx,
@@ -41,7 +41,7 @@ class ProviderManager:
                 observed = json.loads(row['state_json']) if row else {}
                 if observed.get('account_id') != state.get('account_id'):
                     observed = {}
-                state.update(last_heartbeat=observed.get('last_heartbeat'), last_market_data=observed.get('last_market_data'))
+                state.update(last_heartbeat=ctx.get('last_heartbeat') or observed.get('last_heartbeat'), last_market_data=observed.get('last_market_data'))
                 if provider == 'ctrader':
                     heartbeat = observed.get('last_heartbeat')
                     fresh_heartbeat = heartbeat and (datetime.now(timezone.utc)-datetime.fromisoformat(heartbeat)).total_seconds() <= 120

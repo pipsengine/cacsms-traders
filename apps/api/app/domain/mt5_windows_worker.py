@@ -45,7 +45,8 @@ class WindowsBridge:
         if self.session and self.session.get('identity') != identity:
             raise RuntimeError('MT5 account changed. Reconnect from the platform to authorize it.')
         tf = ('H1','M1','M5','M15','M30','H4','D1','W1','MN')[self.frame % 9]
-        self.frame += 1
+        if history:
+            self.frame += 1
         quotes, candles = [], []
         names = {s.name for s in (self.sdk.symbols_get() or ())}
         from ..market.mt5_gateway import symbol_candidates
@@ -90,6 +91,11 @@ class WindowsBridge:
     def connect(self, tenant_id, token, origin):
         if origin not in CLOUD_ORIGINS or not isinstance(tenant_id,str) or not 1 <= len(tenant_id) <= 128 or not isinstance(token,str) or not 32 <= len(token) <= 128:
             raise ValueError('Invalid bridge pairing request')
+        self.stop.set()
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=35)
+            if self.thread.is_alive():
+                raise RuntimeError('Previous bridge request is still finishing. Retry Connect shortly.')
         with self.lock:
             account = self.attach()
             self.session = dict(tenant_id=tenant_id,token=token,origin=origin,identity=f'{account.server}/{account.login}')
@@ -114,5 +120,7 @@ class WindowsBridge:
                     self.error = None
                 except Exception as exc:
                     self.error = str(exc)
+        with self.lock:
+            self.session = None
         # Credential remains in memory only; never write credentials or broker passwords.
 

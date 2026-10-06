@@ -19,6 +19,10 @@ def handler_for(terminal, bridge=None):
     bridge = bridge or WindowsBridge(terminal)
 
     class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            if sys.stderr is not None:
+                super().log_message(format,*args)
+
         def allowed(self):
             return self.headers.get('Host') == '127.0.0.1:8917' and self.headers.get('Origin') in ORIGINS
 
@@ -35,7 +39,7 @@ def handler_for(terminal, bridge=None):
 
         def do_GET(self):
             if self.path == '/health' and self.headers.get('Host') == '127.0.0.1:8917':
-                self.reply(200, {'ok': True, 'service': 'cacsms-mt5-local'})
+                self.reply(200, {'ok': True, 'service': 'cacsms-mt5-local', 'bridge_supported': True})
             else:
                 self.reply(403, {'ok': False})
 

@@ -74,6 +74,11 @@ def connections(tenant_id:str,user=Depends(current_user)):
    FROM trading_connections c JOIN trading_accounts a ON a.id=c.trading_account_id
    WHERE c.tenant_id=? ORDER BY c.updated_at DESC""",(tenant_id,)).fetchall()
   connection_rows=[dict(r) for r in rows]
+  from ..domain.mt5_bridge import status as bridge_status, gateway as bridge_gateway
+  bridge=bridge_status(c,tenant_id)
+  if bridge:
+   settings={**settings,'session_status':'CONNECTED' if bridge['connected'] else 'DISCONNECTED','terminal_path':bridge['terminal_path'],'last_heartbeat_at':bridge['received_at'],'last_error':None if bridge['connected'] else 'Windows bridge heartbeat expired.'}
+   return {'gateway':bridge_gateway(bridge,tenant_id),'settings':settings,'connections':connection_rows,'diagnostics':{'python_package':'remote','terminal_launch_mode':'WINDOWS_GATEWAY_REQUIRED','terminal_launch_supported':False,'bridge_connected':bridge['connected'],'terminal_account':{**bridge['account'],'available':bridge['connected']}}}
  reconnect=None
  diag_reconnect=None
  if session == 'CONNECTED' and not mt5_session.is_initialized():
@@ -217,6 +222,11 @@ def add_connection(tenant_id:str,x:ConnectionCreate,user=Depends(current_user)):
 def auto_link_terminal_account(tenant_id:str,user=Depends(current_user)):
  with db() as c:
   require_permission(c,user,tenant_id,'connections.manage')
+  from ..domain.mt5_bridge import status as bridge_status, sync_registry as bridge_sync
+  bridge=bridge_status(c,tenant_id)
+  if bridge and bridge['connected']:
+   aid=bridge_sync(c,tenant_id,bridge)
+   return {'ok':True,'trading_account_id':aid,'terminal_account':{**bridge['account'],'available':True}}
   gw=LocalMT5Gateway(tenant_id)
   ensure_gateway_session(c, tenant_id)
   terminal_account=read_terminal_account_for_tenant(c, tenant_id, force_attach=True)
@@ -262,10 +272,16 @@ def auto_link_terminal_account(tenant_id:str,user=Depends(current_user)):
 def sync_connection_registry(tenant_id:str,user=Depends(current_user)):
  with db() as c:
   require_permission(c,user,tenant_id,'connections.manage')
-  if not terminal_launch_capability()['terminal_launch_supported']:
-    raise HTTPException(409, 'MT5 registry sync requires a connected Windows market-data bridge. Opening the local terminal does not connect its account data to this hosted API.')
-  ensure_gateway_session(c, tenant_id)
-  result=sync_trading_registry_from_terminal(c, tenant_id, force_attach=True)
+  from ..domain.mt5_bridge import status as bridge_status, sync_registry as bridge_sync
+  bridge=bridge_status(c,tenant_id)
+  if bridge and bridge['connected']:
+    bridge_sync(c,tenant_id,bridge)
+    result={'synced':True}
+  else:
+    if not terminal_launch_capability()['terminal_launch_supported']:
+      raise HTTPException(409, 'MT5 registry sync requires a connected Windows market-data bridge. Use Connect first.')
+    ensure_gateway_session(c, tenant_id)
+    result=sync_trading_registry_from_terminal(c, tenant_id, force_attach=True)
   if not result.get('synced'):
     msg=result.get('error') or result.get('reason') or 'Registry sync failed.'
     raise HTTPException(400, f'{msg} Open IC Markets MT5, log in, then retry Sync from MT5.')

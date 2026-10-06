@@ -79,7 +79,7 @@ def selection(body: Selection, user=Depends(admin)):
             cfg['tenant_id'] = body.tenant_id
         if body.account_id is not None:
             cfg['account_id'] = body.account_id
-        if cfg['account_id']:
+        if cfg['account_id'] and (body.tenant_id is not None or body.account_id is not None):
             account = conn.execute("SELECT 1 FROM ctrader_accounts WHERE tenant_id=? AND ctid_trader_account_id=? AND environment='demo' AND authorization_status='AUTHORIZED'", (cfg['tenant_id'], cfg['account_id'])).fetchone()
             if not account:
                 raise HTTPException(400, 'Select an OAuth-authorized cTrader demo account within the selected tenant')

@@ -80,7 +80,7 @@ def credential(tenant_id: str, user=Depends(current_user)):
         require_permission(conn,user,tenant_id,'connections.manage')
         token = new_token()
         expiry = iso(datetime.now(timezone.utc)+timedelta(hours=8))
-        bridge.save(conn,tenant_id,'credential',dict(hash=token_hash(token),generation=secrets.token_hex(16),expires_at=expiry))
+        bridge.save(conn,tenant_id,'credential',dict(hash=token_hash(token),generation=secrets.token_hex(16),expires_at=expiry,user_id=user['id']))
         if user.get('is_platform_admin'):
             from ..market.market_data import configuration
             import json
@@ -98,10 +98,15 @@ def heartbeat(tenant_id: str, body: Heartbeat, x_mt5_bridge_token: str = Header(
         cred = bridge.read(conn,tenant_id,'credential')
         if not cred.get('hash') or not secrets.compare_digest(cred['hash'],token_hash(x_mt5_bridge_token)) or datetime.fromisoformat(cred['expires_at']) <= datetime.now(timezone.utc):
             raise HTTPException(401,'MT5 bridge credential expired or revoked; reconnect from the platform.')
+        owner = conn.execute('SELECT * FROM users WHERE id=?', (cred['user_id'],)).fetchone()
+        if not owner or owner['status'] != 'ACTIVE':
+            raise HTTPException(403,'MT5 bridge owner is inactive.')
+        require_permission(conn,dict(owner),tenant_id,'connections.manage')
         account_id = f'{tenant_id}/{body.account.server}/{body.account.login}'
-        if cred.get('account_id') and cred['account_id'] != account_id:
+        if cred.get('account_id') and (cred['account_id'] != account_id or cred.get('environment') != body.account.trade_mode):
             raise HTTPException(409,'MT5 account changed; reconnect to authorize the new account.')
         cred['account_id'] = account_id
+        cred['environment'] = body.account.trade_mode
         bridge.save(conn,tenant_id,'credential',cred)
         stamp = iso()
         old = bridge.read(conn,tenant_id,'state')
@@ -109,13 +114,16 @@ def heartbeat(tenant_id: str, body: Heartbeat, x_mt5_bridge_token: str = Header(
                      received_at=stamp,connected=True,generation=cred['generation'],quotes=[q.model_dump() for q in body.quotes])
         bridge.save(conn,tenant_id,'state',state)
         bridge.sync_registry(conn,tenant_id,state)
-        from ..market.models import Candle
-        from ..market.repository import MarketRepository
-        repo = MarketRepository(conn,provider='mt5')
-        repo.account_id = account_id
+        # Bounded batches avoid one Neon round-trip per bar.
+        bars = {}
         for bar in body.candles:
             opened = datetime.fromtimestamp(bar.time,timezone.utc)
-            repo.upsert_candle(Candle(bar.symbol,bar.timeframe,opened,candle_close(opened,bar.timeframe),bar.open,bar.high,bar.low,bar.close,bar.tick_volume,bar.spread,'mt5',True,account_id))
+            bars[(bar.symbol,bar.timeframe,bar.time)] = (bar.symbol,bar.timeframe,opened.isoformat(),candle_close(opened,bar.timeframe).isoformat(),bar.open,bar.high,bar.low,bar.close,bar.tick_volume,bar.spread,'mt5',account_id,1)
+        values = list(bars.values())
+        for offset in range(0,len(values),200):
+            batch = values[offset:offset+200]
+            placeholders = ','.join(['('+','.join(['?']*13)+')']*len(batch))
+            conn.execute('INSERT INTO mi_provider_candle(symbol,timeframe,open_time,close_time,open,high,low,close,tick_volume,spread,source,account_id,is_closed) VALUES '+placeholders+' ON CONFLICT(source,account_id,symbol,timeframe,open_time) DO UPDATE SET close_time=excluded.close_time,open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,tick_volume=excluded.tick_volume,spread=excluded.spread', tuple(v for row in batch for v in row))
         if old.get('generation') != state['generation'] or not old.get('connected'):
             write_audit(conn,tenant_id,None,'MT5_BRIDGE_CONNECTED','WindowsGateway',tenant_id,after={'account_id':account_id,'execution_available':False})
         return dict(ok=True,received_at=stamp,account_id=account_id,execution_available=False)
@@ -126,5 +134,7 @@ def disconnect(tenant_id: str, user=Depends(current_user)):
     with db() as conn:
         require_permission(conn,user,tenant_id,'connections.manage')
         bridge.save(conn,tenant_id,'credential',{})
+        conn.execute("UPDATE trading_connections SET status='DISCONNECTED',updated_at=? WHERE tenant_id=? AND adapter_type='LOCAL_MT5'", (iso(),tenant_id))
+        conn.execute("UPDATE trading_accounts SET connection_status='DISCONNECTED',updated_at=? WHERE tenant_id=? AND connection_type='LOCAL_MT5'", (iso(),tenant_id))
         write_audit(conn,tenant_id,user['id'],'MT5_BRIDGE_DISCONNECTED','WindowsGateway',tenant_id)
     return {'ok':True}
