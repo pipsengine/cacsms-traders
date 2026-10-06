@@ -16,6 +16,7 @@ def test_visible_terminal_launch_uses_exact_executable_without_shell(tmp_path, m
     assert spawn.call_args.args == ([str(terminal.resolve())],)
     assert spawn.call_args.kwargs['cwd'] == str(terminal.parent.resolve())
     assert spawn.call_args.kwargs['startupinfo'].wShowWindow == 1
+    assert spawn.call_args.kwargs['startupinfo'].lpDesktop == 'winsta0\\default'
 
 
 def test_already_running_terminal_is_not_duplicated(tmp_path, monkeypatch):

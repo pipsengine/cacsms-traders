@@ -82,6 +82,7 @@ def launch_terminal(path):
         startup = subprocess.STARTUPINFO()
         startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         startup.wShowWindow = 1
+        startup.lpDesktop = 'winsta0\\default'
         subprocess.Popen([executable], cwd=str(Path(executable).parent), close_fds=True, startupinfo=startup)
     except OSError:
         return dict(ok=False, code='MT5_TERMINAL_LAUNCH_FAILED', error='Windows could not open the configured MT5 terminal. Check the installation and gateway user permissions.')

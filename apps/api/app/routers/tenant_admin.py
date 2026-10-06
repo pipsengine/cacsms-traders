@@ -10,6 +10,7 @@ from ..schemas.admin import UserCreate,UserPatch,AccountCreate,AccountPatch,Conn
 from ..schemas.mt5 import Mt5ConnectRequest, Mt5SettingsPatch
 from ..domain.gateway import LocalMT5Gateway
 from ..domain.mt5_diagnostics import mt5_python_package_status
+from ..domain.mt5_terminal_launcher import terminal_launch_capability
 from ..market import mt5_session
 from ..domain.mt5_connection import (
     ensure_autodetected_terminal_path,
@@ -261,6 +262,8 @@ def auto_link_terminal_account(tenant_id:str,user=Depends(current_user)):
 def sync_connection_registry(tenant_id:str,user=Depends(current_user)):
  with db() as c:
   require_permission(c,user,tenant_id,'connections.manage')
+  if not terminal_launch_capability()['terminal_launch_supported']:
+    raise HTTPException(409, 'MT5 registry sync requires a connected Windows market-data bridge. Opening the local terminal does not connect its account data to this hosted API.')
   ensure_gateway_session(c, tenant_id)
   result=sync_trading_registry_from_terminal(c, tenant_id, force_attach=True)
   if not result.get('synced'):

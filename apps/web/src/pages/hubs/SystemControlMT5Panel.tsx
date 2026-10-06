@@ -276,6 +276,11 @@ export function SystemControlMT5Panel({
 
   async function syncRegistry() {
     if (!tenantId) return;
+    if (hostedGateway) {
+      setSuccess('');
+      setError('Registry sync is unavailable until the Windows market-data bridge is connected.');
+      return;
+    }
     setError('');
     setSuccess('Syncing registry from MT5…');
     setActing(true);
@@ -503,8 +508,8 @@ export function SystemControlMT5Panel({
               type="button"
               className="sc-btnSecondary"
               onClick={() => void syncRegistry()}
-              disabled={acting || !tenantId}
-              title="Read login and server from MetaTrader 5 into the registry"
+              disabled={acting || !tenantId || hostedGateway}
+              title={hostedGateway ? 'Requires a connected Windows market-data bridge' : 'Read login and server from MetaTrader 5 into the registry'}
             >
               <RefreshCcw size={17} />
               Sync from MT5
