@@ -19,6 +19,7 @@ export function SystemControlProviderOverview({ tenantId, isPlatformAdmin, onCha
   const [state, setState] = useState<Overview | null>(null);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [terminalStatus, setTerminalStatus] = useState('');
   const [accounts, setAccounts] = useState<{ account_id: string; broker: string | null; environment: string }[]>([]);
   useEffect(() => {
     if (!isPlatformAdmin) return;
@@ -35,7 +36,17 @@ export function SystemControlProviderOverview({ tenantId, isPlatformAdmin, onCha
   }, [isPlatformAdmin, tenantId]);
   async function select(selection_mode: Mode, account_id?: string) {
     setSaving(true);
-    try { setState(await put<Overview>('/providers/selection', { selection_mode, ...(account_id !== undefined ? { tenant_id: tenantId, account_id } : {}) })); setError(''); onChanged(); }
+    try { setState(await put<Overview>('/providers/selection', { selection_mode, ...(account_id !== undefined ? { tenant_id: tenantId, account_id } : {}) })); setError(''); onChanged();
+      if (selection_mode === 'MT5_PREFERRED' && account_id === undefined) {
+        setTerminalStatus('Opening MT5 on this PC...');
+        try {
+          const response = await fetch('http://127.0.0.1:8917/terminal/open', { method: 'POST', headers: { 'X-Cacsms-MT5': 'open' }, signal: AbortSignal.timeout(15000) });
+          const result = await response.json();
+          if (!response.ok || !result.ok) throw new Error(result.error || 'MT5 could not open');
+          setTerminalStatus(result.launched ? 'MT5 opened on this PC.' : 'MT5 is already running on this PC.');
+        } catch (err) { setTerminalStatus('MT5 preference saved. Could not reach or open MT5 through this PC\u2019s gateway. Check browser local-network permission and the running gateway.'); }
+      }
+    }
     catch (err) { setError(err instanceof Error ? err.message : 'Provider policy update failed'); }
     finally { setSaving(false); }
   }
@@ -44,6 +55,7 @@ export function SystemControlProviderOverview({ tenantId, isPlatformAdmin, onCha
     <h2>Market &amp; Trading Connections</h2>
     <p>Operating Mode: <strong>ANALYSIS ONLY</strong></p>
     {error && <p role="alert">{error}</p>}
+    {terminalStatus && <p role="status">{terminalStatus}</p>}
     {!state && !error && <p role="status">Loading provider health…</p>}
     {state && <>
       <div className="health-row"><span>Active Market Data Provider</span><strong>{name(state.active_provider)}</strong></div>
@@ -70,3 +82,4 @@ export function SystemControlProviderOverview({ tenantId, isPlatformAdmin, onCha
     </>}
   </Card>;
 }
+

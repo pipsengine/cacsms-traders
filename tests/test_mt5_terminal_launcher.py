@@ -48,12 +48,12 @@ def test_process_launch_failure_is_explicit(tmp_path, monkeypatch):
     assert not result['ok'] and result['code'] == 'MT5_TERMINAL_LAUNCH_FAILED'
 
 
-def test_hosted_api_requires_desktop_companion_without_launching(monkeypatch):
+def test_hosted_api_requires_windows_gateway_without_launching(monkeypatch):
     monkeypatch.setenv('VERCEL', '1')
     spawn = Mock()
     monkeypatch.setattr(launcher.subprocess, 'Popen', spawn)
-    assert launcher.terminal_launch_capability()['terminal_launch_mode'] == 'DESKTOP_COMPANION'
-    assert launcher.launch_terminal('terminal64.exe')['code'] == 'MT5_DESKTOP_COMPANION_REQUIRED'
+    assert launcher.terminal_launch_capability()['terminal_launch_mode'] == 'WINDOWS_GATEWAY_REQUIRED'
+    assert launcher.launch_terminal('terminal64.exe')['code'] == 'MT5_WINDOWS_GATEWAY_REQUIRED'
     spawn.assert_not_called()
 
 
@@ -87,5 +87,5 @@ def test_hosted_connect_does_not_discover_or_initialize_a_desktop(monkeypatch):
     discover = Mock(side_effect=AssertionError('Hosted API cannot discover the client PC'))
     monkeypatch.setattr(mt5_connection, 'auto_detect_terminal_path', discover)
     result = gateway.connect(conn=Mock())
-    assert result['code'] == 'MT5_DESKTOP_COMPANION_REQUIRED'
+    assert result['code'] == 'MT5_WINDOWS_GATEWAY_REQUIRED'
     discover.assert_not_called()

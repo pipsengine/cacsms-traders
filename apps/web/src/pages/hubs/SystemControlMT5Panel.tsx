@@ -96,7 +96,6 @@ export function SystemControlMT5Panel({
     void load();
   }, [load]);
 
-  const desktopLauncherRequired = data?.diagnostics?.terminal_launch_mode === 'DESKTOP_COMPANION';
   const gw = data?.gateway;
   const sessionSaved = data?.settings?.session_status === 'CONNECTED';
   const connected = gw?.status === 'CONNECTED' || sessionSaved;
@@ -194,21 +193,6 @@ export function SystemControlMT5Panel({
     } finally {
       setActing(false);
     }
-  }
-
-  function openDesktopTerminal() {
-    if (!/Windows/i.test(navigator.userAgent)) {
-      setError('The MT5 desktop launcher requires a Windows PC with MetaTrader 5 installed.');
-      return;
-    }
-    setError('');
-    const frame = document.createElement('iframe');
-    frame.hidden = true;
-    frame.title = 'Open MT5 desktop terminal';
-    frame.src = 'cacsms-mt5://open';
-    document.body.appendChild(frame);
-    window.setTimeout(() => frame.remove(), 3000);
-    setSuccess('MT5 opening requested. Accept the browser prompt. If it does not open, install the Windows launcher below. Opening MT5 does not connect cloud market data or enable trading.');
   }
 
   async function connect() {
@@ -383,23 +367,13 @@ export function SystemControlMT5Panel({
 
   return (
     <>
-      {!desktopLauncherRequired && data?.diagnostics?.python_package === 'missing' ? (
+      {data?.diagnostics?.python_package === 'missing' ? (
         <p className="sc-notice" style={{ borderColor: '#ffc9c9', background: '#fff5f5', color: '#c92a2a' }}>
           <b>API cannot load MetaTrader5.</b> {data.diagnostics.hint ?? 'Install MetaTrader5 and restart the API.'}
         </p>
       ) : null}
       {statusBanner}
-      {desktopLauncherRequired && <section className="sc-notice" aria-label="MT5 desktop launcher">
-        <div>
-          <b>Open MT5 automatically on this Windows PC</b>
-          <p>Install the launcher once and choose your broker terminal. Connect will then ask Windows to open MT5. Accept the browser's application-opening prompt.</p>
-          <a href="/downloads/install-mt5-launcher.ps1" download="install-mt5-launcher.ps1">Download Windows launcher</a>
-          <p>Run the downloaded installer in Windows PowerShell:</p>
-          <code>powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\Downloads\install-mt5-launcher.ps1"</code>
-          <p>A Windows market-data gateway is still required to connect the opened terminal to the hosted platform. Operating Mode remains ANALYSIS ONLY.</p>
-          <button type="button" className="sc-btnPrimary sc-btnSmall" onClick={openDesktopTerminal}>Open MT5 on this PC</button>
-        </div>
-      </section>}
+
 
       {(data?.diagnostics?.terminal_running_processes?.length ?? 0) > 0 ? (
         <p className="sc-notice sc-notice-ok" role="status">
@@ -667,7 +641,7 @@ export function SystemControlMT5Panel({
               <Play />
               <span>
                 <b>Connect</b>
-                <small>{desktopLauncherRequired ? 'Open MT5 on this PC' : 'Open terminal and connect'}</small>
+                <small>Open terminal and connect</small>
               </span>
             </button>
             <button

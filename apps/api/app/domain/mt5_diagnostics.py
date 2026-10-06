@@ -9,4 +9,4 @@ def mt5_python_package_status() -> dict:
     except (ImportError,OSError):
         local = os.name == 'nt' and not os.getenv('VERCEL')
         return {'python_package':'missing','version':None,
-                'hint':'Run: py -m pip install MetaTrader5, then restart the Windows gateway API.' if local else 'This hosted API cannot run a local MT5 desktop terminal. Use a Windows launcher to open it and a Windows gateway to supply market data.'}
+                'hint':'Run: py -m pip install MetaTrader5, then restart the Windows gateway API.' if local else 'No Windows MT5 gateway is connected. The hosted API cannot open a terminal on another machine.'}

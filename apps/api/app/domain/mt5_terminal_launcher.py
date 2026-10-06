@@ -7,15 +7,12 @@ from .mt5_terminal_discovery import normalize_terminal_exe, running_terminal64_p
 
 def terminal_launch_capability():
     local = os.name == 'nt' and not os.getenv('VERCEL')
-    return {'terminal_launch_mode': 'WINDOWS_GATEWAY' if local else 'DESKTOP_COMPANION',
-            'terminal_launch_supported': local,
-            'desktop_launcher_uri': 'cacsms-mt5://open',
-            'desktop_launcher_download': '/downloads/install-mt5-launcher.ps1'}
+    return {'terminal_launch_mode': 'WINDOWS_GATEWAY' if local else 'WINDOWS_GATEWAY_REQUIRED', 'terminal_launch_supported': local}
 
 
 def launch_terminal(path):
     if not terminal_launch_capability()['terminal_launch_supported']:
-        return dict(ok=False, code='MT5_DESKTOP_COMPANION_REQUIRED', error='This API cannot open a desktop terminal. Install the Windows launcher and open MT5 on this PC.')
+        return dict(ok=False, code='MT5_WINDOWS_GATEWAY_REQUIRED', error='No Windows MT5 gateway is connected. This API cannot open the terminal on another machine.')
     executable = normalize_terminal_exe(path or '')
     if not executable or Path(executable).name.lower() != 'terminal64.exe':
         return dict(ok=False, code='MT5_TERMINAL_PATH_REQUIRED', error='Select the installed broker terminal64.exe in MT5 settings.')

@@ -559,7 +559,7 @@ class LocalMT5Gateway:
         def _run(c: sqlite3.Connection) -> dict[str, Any]:
             settings = self._load_settings(c)
             if not terminal_launch_capability()['terminal_launch_supported']:
-                return {'ok':False,'code':'MT5_DESKTOP_COMPANION_REQUIRED','error':'Use the Windows launcher to open MT5 on this PC. This hosted API needs a Windows market-data gateway to connect to it.','settings':settings}
+                return {'ok':False,'code':'MT5_WINDOWS_GATEWAY_REQUIRED','error':'No Windows MT5 gateway is connected. The hosted API cannot open the terminal on another machine.','settings':settings}
             path = normalize_terminal_exe((terminal_path or settings.get("terminal_path") or "").strip())
             if not path:
                 detected, _src = auto_detect_terminal_path(use_env=False, allow_probe=False)

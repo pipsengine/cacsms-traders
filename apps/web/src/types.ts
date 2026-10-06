@@ -38,8 +38,7 @@ export type ConnectionsPayload={
  settings?:Mt5LocalSettings;
  diagnostics?:{
   python_package:string;version?:string|null;hint?:string|null;
-  terminal_launch_mode?:'WINDOWS_GATEWAY'|'DESKTOP_COMPANION';terminal_launch_supported?:boolean;
-  desktop_launcher_uri?:string;desktop_launcher_download?:string;
+  terminal_launch_mode?:'WINDOWS_GATEWAY'|'WINDOWS_GATEWAY_REQUIRED';terminal_launch_supported?:boolean;
   terminal_auto_detect_path?:string|null;terminal_auto_detect_source?:string|null;
   terminal_candidates?:string[];terminal_running_processes?:string[];database_path?:string;
   terminal_auto_saved?:{path?:string;source?:string;persisted?:boolean};
