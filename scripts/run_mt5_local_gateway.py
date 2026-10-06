@@ -9,12 +9,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'apps' / 'api'))
 from app.domain.mt5_terminal_launcher import launch_terminal
 from app.domain.mt5_terminal_discovery import normalize_terminal_exe
+from app.domain.mt5_windows_worker import WindowsBridge
 
 ORIGINS = {'https://cacsms-traders.vercel.app', 'http://localhost:5173', 'http://127.0.0.1:5173'}
 
 
-def handler_for(terminal):
+def handler_for(terminal, bridge=None):
     lock = threading.Lock()
+    bridge = bridge or WindowsBridge(terminal)
 
     class Handler(BaseHTTPRequestHandler):
         def allowed(self):
@@ -38,18 +40,34 @@ def handler_for(terminal):
                 self.reply(403, {'ok': False})
 
         def do_OPTIONS(self):
-            if not self.allowed() or self.path != '/terminal/open':
+            if not self.allowed() or self.path not in ('/terminal/open','/bridge/connect'):
                 self.reply(403, {'ok': False})
                 return
             self.send_response(204)
             self.send_header('Access-Control-Allow-Origin', self.headers['Origin'])
             self.send_header('Vary', 'Origin')
             self.send_header('Access-Control-Allow-Methods', 'POST')
-            self.send_header('Access-Control-Allow-Headers', 'X-Cacsms-MT5')
+            self.send_header('Access-Control-Allow-Headers', 'X-Cacsms-MT5, Content-Type')
             self.send_header('Access-Control-Allow-Private-Network', 'true')
             self.end_headers()
 
         def do_POST(self):
+            if self.path == '/bridge/connect' and self.allowed() and self.headers.get('X-Cacsms-MT5') == 'connect':
+                try:
+                    length = int(self.headers.get('Content-Length','0'))
+                    if not 0 < length <= 1024 or self.headers.get('Transfer-Encoding'):
+                        raise ValueError('Invalid pairing request size')
+                    body = json.loads(self.rfile.read(length))
+                    if body.get('origin') not in ('https://cacsms-traders.vercel.app', 'http://localhost:8000', 'http://127.0.0.1:8000'):
+                        raise ValueError('Invalid cloud origin')
+                    if self.headers['Origin'] == 'https://cacsms-traders.vercel.app' and body['origin'] != self.headers['Origin']:
+                        raise ValueError('Cloud origin does not match website')
+                    with lock:
+                        result = bridge.connect(body['tenant_id'],body['token'],body['origin'])
+                    self.reply(200,result)
+                except (ValueError,KeyError,RuntimeError,ImportError) as exc:
+                    self.reply(503,{'ok':False,'error':str(exc)})
+                return
             if not self.allowed() or self.path != '/terminal/open' or self.headers.get('X-Cacsms-MT5') != 'open' or self.headers.get('Content-Length', '0') != '0':
                 self.reply(403, {'ok': False, 'error': 'Request refused'})
                 return

@@ -14,6 +14,7 @@ from .core.config import APP_NAME, SESSION_COOKIE, app_env, cors_origins
 from .core.database import DatabaseUnavailable, database_url
 from .core.env_loader import load_env_file
 from .routers import auth, ctrader, market_intelligence, platform, tenant_admin
+from .routers import mt5_bridge
 from .services.bootstrap import bootstrap
 
 log = logging.getLogger(__name__)
@@ -206,6 +207,7 @@ async def require_proxy_secret(request: Request, call_next):
 app.include_router(auth.router, prefix="/api")
 app.include_router(platform.router, prefix="/api")
 app.include_router(tenant_admin.router, prefix="/api")
+app.include_router(mt5_bridge.router)
 app.include_router(ctrader.router, prefix="/api")
 app.include_router(market_intelligence.router)
 
