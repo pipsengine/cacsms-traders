@@ -54,6 +54,7 @@ export function SystemControlMT5Panel({
   const [linkAccountId, setLinkAccountId] = React.useState('');
   const [error, setError] = React.useState('');
   const [success, setSuccess] = React.useState('');
+  const hostedGateway = data?.diagnostics?.terminal_launch_mode === 'WINDOWS_GATEWAY_REQUIRED';
 
   const closeModals = () => {
     setEditOpen(false);
@@ -373,7 +374,11 @@ export function SystemControlMT5Panel({
 
   return (
     <>
-      {data?.diagnostics?.python_package === 'missing' ? (
+      {hostedGateway ? (
+        <p className="sc-notice" role="status">
+          <b>MT5 market data is not connected to the hosted platform.</b> The local launcher opens MT5 on this PC. An authenticated Windows market-data bridge is still required to send prices and account status to the platform.
+        </p>
+      ) : data?.diagnostics?.python_package === 'missing' ? (
         <p className="sc-notice" style={{ borderColor: '#ffc9c9', background: '#fff5f5', color: '#c92a2a' }}>
           <b>API cannot load MetaTrader5.</b> {data.diagnostics.hint ?? 'Install MetaTrader5 and restart the API.'}
         </p>
@@ -411,17 +416,16 @@ export function SystemControlMT5Panel({
             <b>Select tenant</b> — use the tenant switcher in the header (each tenant has its own MT5 settings).
           </li>
           <li>
-            <b>MT5 opens automatically when you select MT5 Preferred or click Connect</b> — e.g. IC Markets MT5 from the taskbar (not a different MetaTrader 5
-            install). Log in and leave it running.
+            <b>Select MT5 Preferred or click Connect</b> to open or restore your configured broker terminal on this PC. Log in when MT5 opens.
           </li>
-          <li>
+          {!hostedGateway && <li>
             <b>Connect in this UI</b> — IC Markets is detected from the running terminal; click <em>Connect</em>, then{' '}
             <em>Import from MT5 terminal</em>. Use <em>Edit Settings</em> only if auto-detect picks the wrong install.
-          </li>
-          <li>
+          </li>}
+          {!hostedGateway && <li>
             <b>Link trading account</b> — after <em>Connect</em>, use <em>Import from MT5 terminal</em> or link an existing
             Administration account.
-          </li>
+          </li>}
         </ol>
       </section>
 
@@ -432,8 +436,8 @@ export function SystemControlMT5Panel({
               <Monitor />
             </div>
             <div>
-              <h3>Local MT5 Gateway</h3>
-              <p>Phase 1 adapter (Local Terminal)</p>
+              <h3>{hostedGateway ? 'MT5 Market-data Connection' : 'Local MT5 Gateway'}</h3>
+              <p>{hostedGateway ? 'Connection status reported by the hosted API' : 'Phase 1 adapter (Local Terminal)'}</p>
             </div>
             <span className={`sc-pill ${connected ? 'ok' : 'danger'}`}>
               <i className={`sc-dot ${connected ? 'green' : 'red'}`} />
@@ -465,15 +469,15 @@ export function SystemControlMT5Panel({
             </div>
             <div>
               <span>Last Error</span>
-              <b>{gw?.last_error ?? '—'}</b>
+              <b>{hostedGateway ? 'Windows market-data bridge is not connected.' : gw?.last_error ?? '—'}</b>
             </div>
           </div>
-          <p className="sc-muted" style={{ margin: '8px 0 0', textAlign: 'center' }}>
+          {!hostedGateway && <p className="sc-muted" style={{ margin: '8px 0 0', textAlign: 'center' }}>
             Terminal path is auto-detected from your taskbar MT5. Wrong install?{' '}
             <button type="button" className="sc-linkBtn" onClick={openTerminalSettings}>
               Edit terminal path
             </button>
-          </p>
+          </p>}
         </section>
 
         <section className="sc-card registry">
