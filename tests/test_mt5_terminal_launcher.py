@@ -13,7 +13,9 @@ def test_visible_terminal_launch_uses_exact_executable_without_shell(tmp_path, m
     monkeypatch.setattr(launcher.subprocess, 'Popen', spawn)
     result = launcher.launch_terminal(str(terminal))
     assert result['ok'] and result['launched']
-    spawn.assert_called_once_with([str(terminal.resolve())], cwd=str(terminal.parent.resolve()), close_fds=True)
+    assert spawn.call_args.args == ([str(terminal.resolve())],)
+    assert spawn.call_args.kwargs['cwd'] == str(terminal.parent.resolve())
+    assert spawn.call_args.kwargs['startupinfo'].wShowWindow == 1
 
 
 def test_already_running_terminal_is_not_duplicated(tmp_path, monkeypatch):

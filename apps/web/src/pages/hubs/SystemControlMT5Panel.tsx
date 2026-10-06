@@ -55,6 +55,16 @@ export function SystemControlMT5Panel({
   const [error, setError] = React.useState('');
   const [success, setSuccess] = React.useState('');
   const hostedGateway = data?.diagnostics?.terminal_launch_mode === 'WINDOWS_GATEWAY_REQUIRED';
+  const automaticLaunchRequested = React.useRef(false);
+  React.useEffect(() => {
+    if (!hostedGateway || !tenantId || automaticLaunchRequested.current) return;
+    automaticLaunchRequested.current = true;
+    setSuccess('Opening MT5 on this PC...');
+    void openLocalMT5().then(setSuccess).catch(() => {
+      setSuccess('');
+      setError('Could not open MT5 through the local gateway. Allow local-network access in the browser and ensure the Windows gateway is running.');
+    });
+  }, [hostedGateway, tenantId]);
 
   const closeModals = () => {
     setEditOpen(false);

@@ -18,7 +18,11 @@ def restore_terminal_window(executable):
     user.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
     user.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
     user.SetForegroundWindow.argtypes = [wintypes.HWND]
+    user.GetForegroundWindow.restype = wintypes.HWND
+    user.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
     user.IsWindowVisible.argtypes = [wintypes.HWND]
+    user.IsIconic.argtypes = [wintypes.HWND]
+    user.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
     callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     user.EnumWindows.argtypes = [callback_type, wintypes.LPARAM]
     restored = []
@@ -35,12 +39,25 @@ def restore_terminal_window(executable):
                 path = ctypes.create_unicode_buffer(size.value)
                 if kernel.QueryFullProcessImageNameW(process, 0, path, ctypes.byref(size)) and os.path.normcase(path.value) == os.path.normcase(executable):
                     user.ShowWindow(hwnd, 9)  # SW_RESTORE
-                    restored.append(bool(user.SetForegroundWindow(hwnd)))
+                    current_thread = kernel.GetCurrentThreadId()
+                    foreground = user.GetForegroundWindow()
+                    foreground_thread = user.GetWindowThreadProcessId(foreground, None) if foreground else 0
+                    attached = foreground_thread != current_thread and foreground_thread != 0 and user.AttachThreadInput(current_thread, foreground_thread, True)
+                    try:
+                        # Raise the restored window without synthetic keyboard input.
+                        # Remove topmost immediately so MT5 does not remain pinned.
+                        user.SetWindowPos(hwnd, wintypes.HWND(-1), 0, 0, 0, 0, 0x0003)
+                        user.SetWindowPos(hwnd, wintypes.HWND(-2), 0, 0, 0, 0, 0x0003)
+                        user.SetForegroundWindow(hwnd)
+                        restored.append(user.GetForegroundWindow() == hwnd)
+                    finally:
+                        if attached:
+                            user.AttachThreadInput(current_thread, foreground_thread, False)
             finally:
                 kernel.CloseHandle(process)
         return True
     user.EnumWindows(visit, 0)
-    return bool(restored)
+    return any(restored)
 
 
 def terminal_launch_capability():
@@ -56,10 +73,16 @@ def launch_terminal(path):
         return dict(ok=False, code='MT5_TERMINAL_PATH_REQUIRED', error='Select the installed broker terminal64.exe in MT5 settings.')
     if any(os.path.normcase(p) == os.path.normcase(executable) for p in running_terminal64_processes()):
         restored = restore_terminal_window(executable)
-        return dict(ok=True, code='MT5_TERMINAL_ALREADY_RUNNING', path=executable, launched=False, restored=restored)
+        if restored:
+            return dict(ok=True, code='MT5_TERMINAL_ALREADY_RUNNING', path=executable, launched=False, restored=True)
+        # A running background process does not prove that a desktop window opened.
+        # Ask the installed terminal itself to handle activation/startup.
     try:
         # The user explicitly requests a visible terminal. No shell or command interpolation.
-        subprocess.Popen([executable], cwd=str(Path(executable).parent), close_fds=True)
+        startup = subprocess.STARTUPINFO()
+        startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startup.wShowWindow = 1
+        subprocess.Popen([executable], cwd=str(Path(executable).parent), close_fds=True, startupinfo=startup)
     except OSError:
         return dict(ok=False, code='MT5_TERMINAL_LAUNCH_FAILED', error='Windows could not open the configured MT5 terminal. Check the installation and gateway user permissions.')
     return dict(ok=True, code='MT5_TERMINAL_STARTED', path=executable, launched=True)
