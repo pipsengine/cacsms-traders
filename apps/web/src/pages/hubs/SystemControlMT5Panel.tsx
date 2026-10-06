@@ -13,6 +13,7 @@ import {
   Info,
 } from 'lucide-react';
 import { del, get, patch, post } from '../../lib/api';
+import { openLocalMT5 } from '../../lib/mt5Local';
 import type { ConnectionsPayload, TradingAccount } from '../../types';
 
 function fmtTs(v?: string | null) {
@@ -205,6 +206,11 @@ export function SystemControlMT5Panel({
     setSuccess('Connecting…');
     setActing(true);
     try {
+      const diagnostic = data?.diagnostics;
+      if (diagnostic?.terminal_launch_mode === 'WINDOWS_GATEWAY_REQUIRED') {
+        setSuccess(await openLocalMT5());
+        return;
+      }
       const res = await post<GatewayActionResult>(`/tenants/${tenantId}/connections/gateway/connect`, {
         terminal_path: terminalPath?.trim() || undefined,
       });
@@ -405,7 +411,7 @@ export function SystemControlMT5Panel({
             <b>Select tenant</b> — use the tenant switcher in the header (each tenant has its own MT5 settings).
           </li>
           <li>
-            <b>Open your broker terminal</b> — e.g. IC Markets MT5 from the taskbar (not a different MetaTrader 5
+            <b>MT5 opens automatically when you select MT5 Preferred or click Connect</b> — e.g. IC Markets MT5 from the taskbar (not a different MetaTrader 5
             install). Log in and leave it running.
           </li>
           <li>
@@ -774,3 +780,5 @@ export function SystemControlMT5Panel({
     </>
   );
 }
+
+

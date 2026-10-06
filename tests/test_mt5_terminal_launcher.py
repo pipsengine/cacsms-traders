@@ -21,10 +21,14 @@ def test_already_running_terminal_is_not_duplicated(tmp_path, monkeypatch):
     terminal.write_bytes(b'')
     monkeypatch.setattr(launcher, 'terminal_launch_capability', lambda: {'terminal_launch_supported': True})
     monkeypatch.setattr(launcher, 'running_terminal64_processes', lambda: [str(terminal.resolve())])
+    restore = Mock(return_value=True)
+    monkeypatch.setattr(launcher, 'restore_terminal_window', restore)
     spawn = Mock()
     monkeypatch.setattr(launcher.subprocess, 'Popen', spawn)
     result = launcher.launch_terminal(str(terminal))
     assert result['ok'] and not result['launched']
+    assert result['restored']
+    restore.assert_called_once_with(str(terminal.resolve()))
     spawn.assert_not_called()
 
 

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Card, Status } from '../../components/Ui';
 import { get, put } from '../../lib/api';
+import { openLocalMT5 } from '../../lib/mt5Local';
 
 type Mode = 'AUTO' | 'MT5_PREFERRED' | 'CTRADER_PREFERRED';
 type ProviderHealth = {
@@ -40,10 +41,7 @@ export function SystemControlProviderOverview({ tenantId, isPlatformAdmin, onCha
       if (selection_mode === 'MT5_PREFERRED' && account_id === undefined) {
         setTerminalStatus('Opening MT5 on this PC...');
         try {
-          const response = await fetch('http://127.0.0.1:8917/terminal/open', { method: 'POST', headers: { 'X-Cacsms-MT5': 'open' }, signal: AbortSignal.timeout(15000) });
-          const result = await response.json();
-          if (!response.ok || !result.ok) throw new Error(result.error || 'MT5 could not open');
-          setTerminalStatus(result.launched ? 'MT5 opened on this PC.' : 'MT5 is already running on this PC.');
+          setTerminalStatus(await openLocalMT5());
         } catch (err) { setTerminalStatus('MT5 preference saved. Could not reach or open MT5 through this PC\u2019s gateway. Check browser local-network permission and the running gateway.'); }
       }
     }
@@ -82,4 +80,5 @@ export function SystemControlProviderOverview({ tenantId, isPlatformAdmin, onCha
     </>}
   </Card>;
 }
+
 
