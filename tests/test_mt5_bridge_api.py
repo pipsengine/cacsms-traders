@@ -76,3 +76,25 @@ def test_bridge_rejects_live_bar_and_stale_heartbeat_fails_closed(client):
     assert client.get(f'/api/tenants/{tenant}/connections',headers=headers).json()['gateway']['status']=='DISCONNECTED'
     with db() as conn:
         assert market_context(conn)['active_provider'] is None
+
+
+def test_bridge_accepts_normalized_broker_time_and_preserves_month_boundary(client):
+    tenant,headers,bridge_headers=pairing(client)
+    body=payload()
+    body['broker_utc_offset_seconds']=10800
+    for item in [*body['quotes'],*body['candles']]:
+        item['broker_time']=item['time']+10800
+    now=datetime.now(timezone.utc)
+    local_month_start=datetime(now.year,now.month,1,tzinfo=timezone.utc)
+    previous_month=datetime(now.year-(now.month==1),12 if now.month==1 else now.month-1,1,tzinfo=timezone.utc)
+    bar={**body['candles'][0],'timeframe':'MN','time':int((previous_month-timedelta(hours=3)).timestamp()),'broker_time':int(previous_month.timestamp())}
+    body['candles'].append(bar)
+    response=client.post(f'/api/tenants/{tenant}/mt5-bridge/heartbeat',headers=bridge_headers,json=body)
+    assert response.status_code==200,response.text
+    from apps.api.app.core.database import db
+    from apps.api.app.market.market_data import create_market_data_gateway
+    with db() as conn:
+        rows=create_market_data_gateway(conn).get_closed_candles('EURUSD','MN',count=1)
+        assert rows[0].close_time==local_month_start-timedelta(hours=3)
+    body['quotes'][0]['time']+=10800
+    assert client.post(f'/api/tenants/{tenant}/mt5-bridge/heartbeat',headers=bridge_headers,json=body).status_code==422

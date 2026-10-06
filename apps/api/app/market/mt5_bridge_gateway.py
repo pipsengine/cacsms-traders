@@ -18,7 +18,7 @@ class MT5BridgeGateway:
     def get_account_context(self):
         state = self.state()
         account = state['account']
-        return dict(provider='mt5',account_id=state['account_id'],account_number=account['login'],server=account['server'],environment=account['trade_mode'].lower(),currency=account['currency'])
+        return dict(provider='mt5',account_id=state['account_id'],account_number=account['login'],server=account['server'],environment=account['trade_mode'].lower(),currency=account['currency'],broker_utc_offset_seconds=state.get('broker_utc_offset_seconds',0))
 
     def get_symbols(self):
         return [{**q,'canonical_symbol':q['symbol'],'provider':'mt5','spread':q['ask']-q['bid']} for q in self.state()['quotes']]

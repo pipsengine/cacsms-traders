@@ -6,10 +6,11 @@ from .models import Candle
 from .provider_contract import MarketDataUnavailable
 
 
-def candle_close(opened, timeframe):
+def candle_close(opened, timeframe, broker_utc_offset_seconds=0):
     tf = timeframe.upper()
     if tf in ('MN', 'MN1'):
-        return datetime(opened.year + (opened.month == 12), 1 if opened.month == 12 else opened.month + 1, 1, tzinfo=timezone.utc)
+        local = opened + timedelta(seconds=broker_utc_offset_seconds)
+        return datetime(local.year + (local.month == 12), 1 if local.month == 12 else local.month + 1, 1, tzinfo=timezone.utc) - timedelta(seconds=broker_utc_offset_seconds)
     seconds = {'M1': 60, 'M5': 300, 'M15': 900, 'M30': 1800, 'H1': 3600, 'H4': 14400, 'H8': 28800, 'D1': 86400, 'W': 604800, 'W1': 604800}
     if tf not in seconds:
         raise MarketDataUnavailable('unsupported_timeframe')
@@ -78,7 +79,7 @@ class NormalizedProvider:
         normalized = {}
         for c in rows:
             opened = c.open_time.astimezone(timezone.utc) if c.open_time.tzinfo else c.open_time.replace(tzinfo=timezone.utc)
-            closed = candle_close(opened, tf)
+            closed = candle_close(opened, tf, (self.account_context or {}).get('broker_utc_offset_seconds', 0))
             if not c.is_closed or closed > now:
                 continue
             if not all(math.isfinite(v) and v > 0 for v in (c.open, c.high, c.low, c.close)):

@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import Mock
 import pytest
+from datetime import datetime, timezone
 from apps.api.app.domain.mt5_windows_worker import WindowsBridge
 
 
@@ -46,3 +47,29 @@ def test_connect_requires_cloud_acknowledgement(monkeypatch):
     assert worker.session is None
     assert worker.thread is None
     worker.sdk.initialize.assert_not_called()
+
+
+def test_broker_three_hour_clock_is_normalized_without_refreshing_stale_ticks():
+    terminal = sdk()
+    terminal.symbols_get.return_value = [SimpleNamespace(name='EURUSD')]
+    terminal.symbol_select.return_value = True
+    terminal.symbol_info.return_value = SimpleNamespace(digits=5,trade_tick_size=.00001,point=.00001)
+    stamp=int(datetime.now(timezone.utc).timestamp())
+    terminal.symbol_info_tick.return_value = SimpleNamespace(time=stamp+10800,bid=1.1,ask=1.1001)
+    worker=WindowsBridge('broker/terminal64.exe',sdk=terminal)
+    body=worker.sample(history=False)
+    assert body['broker_utc_offset_seconds']==10800
+    assert body['quotes'][0]['time']==stamp
+    assert body['quotes'][0]['broker_time']==stamp+10800
+    terminal.symbol_info_tick.return_value.time=stamp+10800-300
+    assert worker.sample(history=False)['quotes'][0]['time']==stamp-300
+
+
+def test_weekend_ticks_are_never_shifted_to_the_present():
+    terminal = sdk()
+    terminal.symbols_get.return_value=[SimpleNamespace(name='EURUSD')]
+    terminal.symbol_info.return_value=SimpleNamespace(digits=5,trade_tick_size=.00001,point=.00001)
+    stamp=int(datetime.now(timezone.utc).timestamp())-172800
+    terminal.symbol_info_tick.return_value=SimpleNamespace(time=stamp,bid=1.1,ask=1.1001)
+    body=WindowsBridge('broker/terminal64.exe',sdk=terminal).sample(history=False)
+    assert body['quotes'][0]['time']==stamp

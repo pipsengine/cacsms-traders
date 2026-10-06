@@ -37,6 +37,7 @@ class Quote(BaseModel):
     bid: float = Field(gt=0)
     ask: float = Field(gt=0)
     time: int = Field(gt=0)
+    broker_time: int | None = Field(default=None,gt=0)
     digits: int = Field(ge=0,le=12)
     tick_size: float = Field(gt=0)
     pip_size: float = Field(gt=0)
@@ -52,6 +53,7 @@ class Bar(BaseModel):
     symbol: str
     timeframe: Literal['M1','M5','M15','M30','H1','H4','D1','W1','MN']
     time: int = Field(gt=0)
+    broker_time: int | None = Field(default=None,gt=0)
     open: float = Field(gt=0)
     high: float = Field(gt=0)
     low: float = Field(gt=0)
@@ -61,7 +63,7 @@ class Bar(BaseModel):
     @model_validator(mode='after')
     def valid(self):
         opened = datetime.fromtimestamp(self.time,timezone.utc)
-        if self.symbol not in (*FX_PAIRS_28,'XAUUSD') or candle_close(opened,self.timeframe) > datetime.now(timezone.utc) or self.high < max(self.open,self.close,self.low) or self.low > min(self.open,self.close,self.high):
+        if self.symbol not in (*FX_PAIRS_28,'XAUUSD') or self.high < max(self.open,self.close,self.low) or self.low > min(self.open,self.close,self.high):
             raise ValueError('Only valid closed candles are accepted')
         return self
 
@@ -72,6 +74,20 @@ class Heartbeat(BaseModel):
     terminal_path: str = Field(min_length=1,max_length=512)
     quotes: list[Quote] = Field(max_length=29)
     candles: list[Bar] = Field(default_factory=list,max_length=12000)
+    broker_utc_offset_seconds: int = Field(default=0,ge=-50400,le=50400)
+    @model_validator(mode='after')
+    def valid_times(self):
+        offset = self.broker_utc_offset_seconds
+        if offset % 900:
+            raise ValueError('Broker clock offset must use quarter-hour increments')
+        for item in [*self.quotes,*self.candles]:
+            if (offset and item.broker_time is None) or (item.broker_time is not None and item.broker_time-item.time != offset):
+                raise ValueError('Broker timestamp does not match its UTC offset')
+        now = datetime.now(timezone.utc)
+        for bar in self.candles:
+            if candle_close(datetime.fromtimestamp(bar.time,timezone.utc),bar.timeframe,offset)>now:
+                raise ValueError('Only closed candles are accepted')
+        return self
 
 
 @router.post('/credential')
@@ -111,14 +127,14 @@ def heartbeat(tenant_id: str, body: Heartbeat, x_mt5_bridge_token: str = Header(
         stamp = iso()
         old = bridge.read(conn,tenant_id,'state')
         state = dict(account=body.account.model_dump(),account_id=account_id,terminal_path=body.terminal_path,
-                     received_at=stamp,connected=True,generation=cred['generation'],quotes=[q.model_dump() for q in body.quotes])
+                     received_at=stamp,connected=True,generation=cred['generation'],quotes=[q.model_dump() for q in body.quotes],broker_utc_offset_seconds=body.broker_utc_offset_seconds)
         bridge.save(conn,tenant_id,'state',state)
         bridge.sync_registry(conn,tenant_id,state)
         # Bounded batches avoid one Neon round-trip per bar.
         bars = {}
         for bar in body.candles:
             opened = datetime.fromtimestamp(bar.time,timezone.utc)
-            bars[(bar.symbol,bar.timeframe,bar.time)] = (bar.symbol,bar.timeframe,opened.isoformat(),candle_close(opened,bar.timeframe).isoformat(),bar.open,bar.high,bar.low,bar.close,bar.tick_volume,bar.spread,'mt5',account_id,1)
+            bars[(bar.symbol,bar.timeframe,bar.time)] = (bar.symbol,bar.timeframe,opened.isoformat(),candle_close(opened,bar.timeframe,body.broker_utc_offset_seconds).isoformat(),bar.open,bar.high,bar.low,bar.close,bar.tick_volume,bar.spread,'mt5',account_id,1)
         values = list(bars.values())
         for offset in range(0,len(values),200):
             batch = values[offset:offset+200]

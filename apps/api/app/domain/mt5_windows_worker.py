@@ -25,6 +25,7 @@ class WindowsBridge:
         self.session = None
         self.error = None
         self.frame = 0
+        self.broker_utc_offset_seconds = None
 
     def attach(self):
         if self.sdk is None:
@@ -68,8 +69,19 @@ class WindowsBridge:
         after = self.sdk.account_info()
         if after is None or f'{after.server}/{after.login}' != identity:
             raise RuntimeError('MT5 account changed during sampling. Reconnect from the platform.')
+        if self.broker_utc_offset_seconds is None and quotes:
+            delta = max(q['time'] for q in quotes)-datetime.now(timezone.utc).timestamp()
+            # Infer only a clearly future broker clock. Old/weekend ticks stay old.
+            offset = round(delta/900)*900 if delta > 90 else 0
+            if offset > 50400 or (offset and abs(delta-offset)>90):
+                raise RuntimeError('Broker clock could not be normalized. Check the Windows clock and gateway configuration.')
+            self.broker_utc_offset_seconds = offset
+        offset = self.broker_utc_offset_seconds or 0
+        for item in [*quotes,*candles]:
+            item['broker_time'] = item['time']
+            item['time'] -= offset
         return dict(account=dict(login=str(account.login),server=account.server,company=account.company,currency=account.currency,
-                                trade_mode={0:'DEMO',1:'PROP_FIRM',2:'LIVE'}.get(account.trade_mode,'LIVE'),balance=float(account.balance),equity=float(account.equity),margin=float(account.margin),free_margin=float(account.margin_free),leverage=int(account.leverage)),terminal_path=self.terminal,quotes=quotes,candles=candles)
+                                trade_mode={0:'DEMO',1:'PROP_FIRM',2:'LIVE'}.get(account.trade_mode,'LIVE'),balance=float(account.balance),equity=float(account.equity),margin=float(account.margin),free_margin=float(account.margin_free),leverage=int(account.leverage)),terminal_path=self.terminal,quotes=quotes,candles=candles,broker_utc_offset_seconds=offset)
 
     def upload(self, payload):
         session = self.session
@@ -84,6 +96,13 @@ class WindowsBridge:
         except urllib.error.HTTPError as exc:
             if exc.code in (401,403,409):
                 self.stop.set()
+            if exc.code == 422:
+                try:
+                    detail = json.loads(exc.read(65536)).get('detail',[])
+                    fields = ', '.join('.'.join(str(part) for part in error.get('loc',[])) for error in detail[:3]) if isinstance(detail,list) else ''
+                except (ValueError,TypeError):
+                    fields = ''
+                raise RuntimeError('Cloud rejected MT5 data validation'+(f' at {fields}' if fields else '')+'. Check the gateway clock and data format.') from None
             raise RuntimeError(f'Cloud bridge rejected the connection (HTTP {exc.code}). Reconnect from the platform.') from None
         except urllib.error.URLError:
             raise RuntimeError('Windows gateway cannot reach the hosted API. Check the network and retry Connect.') from None
@@ -98,6 +117,7 @@ class WindowsBridge:
                 raise RuntimeError('Previous bridge request is still finishing. Retry Connect shortly.')
         with self.lock:
             account = self.attach()
+            self.broker_utc_offset_seconds = None
             self.session = dict(tenant_id=tenant_id,token=token,origin=origin,identity=f'{account.server}/{account.login}')
             self.stop.clear()
             try:
