@@ -23,7 +23,6 @@ CREATE TABLE IF NOT EXISTS ai_outlook_symbol (
  UNIQUE(run_id, symbol)
 );
 CREATE INDEX IF NOT EXISTS ix_ai_outlook_symbol_scope ON ai_outlook_symbol(tenant_id, trading_account_id, symbol, analysis_date DESC);
-CREATE OR REPLACE RULE ai_outlook_symbol_no_update AS ON UPDATE TO ai_outlook_symbol DO INSTEAD NOTHING;
 CREATE TABLE IF NOT EXISTS ai_outlook_revision (
  id TEXT PRIMARY KEY, outlook_id TEXT NOT NULL, run_id TEXT NOT NULL, symbol TEXT NOT NULL, observed_at TEXT NOT NULL,
  status TEXT NOT NULL, previous_status TEXT, price DOUBLE PRECISION, detail_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL

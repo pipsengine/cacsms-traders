@@ -35,6 +35,7 @@ LOCK = "ai-outlook-daily"
 ACTIVE_STATES = ("SNAPSHOTTING", "VALIDATING_DATA", "ANALYSING", "GENERATING_HYPOTHESES", "SCORING", "PROJECTING",
                  "RANKING_OPPORTUNITIES", "PUBLISHING")
 STRENGTH_MAX_AGE = timedelta(hours=36)
+FAILED_RECOVERY_MINUTES = 30
 
 
 def utcnow() -> datetime:
@@ -177,6 +178,8 @@ class OutlookService:
 
     def stop(self) -> None:
         self._stop.set()
+        if self._thread and self._thread.is_alive() and self._thread is not threading.current_thread():
+            self._thread.join(timeout=10)
 
     @staticmethod
     def target_day(now: datetime, s: OutlookSettings) -> date:
@@ -195,7 +198,9 @@ class OutlookService:
             self._audit(conn, store, "AI_OUTLOOK_RUN_SCHEDULED", run["id"], {"analysis_date": run["analysis_date"]})
         retry_due = run["state"] in ("RETRY", "INSUFFICIENT_DATA", "SCHEDULED") and (not run["next_retry_at"] or run["next_retry_at"] <= now.isoformat())
         stale = run["state"] in ACTIVE_STATES and run["updated_at"] < (now - timedelta(seconds=s.lock_seconds)).isoformat()
-        if retry_due or stale:
+        recover = (run["state"] == "FAILED" and run["updated_at"] < (now - timedelta(minutes=FAILED_RECOVERY_MINUTES)).isoformat()
+                   and now < cal.close_time(cal.next_trading_day(day)))
+        if retry_due or stale or recover:
             self.execute(conn, store, store.run_by_id(run["id"]), now, s)  # type: ignore[arg-type]
             run = store.run_by_id(run["id"])
         return {"analysis_date": day.isoformat(), "state": run["state"], "run_id": run["id"]}  # type: ignore[index]

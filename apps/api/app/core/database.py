@@ -169,6 +169,26 @@ def _rewrite_production_sql(sql: str, params):
     return _convert_question_marks(normalized, params)
 
 
+def split_sql_script(sql: str) -> list[str]:
+    """Split on ';' outside $$-quoted bodies (PL/pgSQL functions contain semicolons)."""
+    statements, buf, quoted = [], [], False
+    for token in re.split(r'(\$\$|;)', sql):
+        if token == '$$':
+            quoted = not quoted
+            buf.append(token)
+        elif token == ';' and not quoted:
+            stmt = ''.join(buf).strip()
+            if stmt:
+                statements.append(stmt)
+            buf = []
+        else:
+            buf.append(token)
+    tail = ''.join(buf).strip()
+    if tail:
+        statements.append(tail)
+    return statements
+
+
 class _CompatConnection:
     def __init__(self, raw_conn, provider: str):
         self._raw = raw_conn
@@ -194,8 +214,7 @@ class _CompatConnection:
     def executescript(self, sql):
         if self.provider == 'sqlite':
             return self._raw.executescript(sql)
-        statements = [part.strip() for part in sql.split(';') if part.strip()]
-        for part in statements:
+        for part in split_sql_script(sql):
             self.execute(part)
         return None
 

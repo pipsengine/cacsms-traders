@@ -354,6 +354,37 @@ def test_failed_run_retries_with_backoff(service_env, monkeypatch):
         ctx.__exit__(None, None, None)
 
 
+def test_failed_run_recovers_automatically_before_next_close(service_env, monkeypatch):
+    svc = service_env
+    service = svc.OutlookService()
+    now = CUTOFF + timedelta(hours=1)
+    ctx, conn, store = _store(svc)
+    try:
+        run = store.create_run(DAY.isoformat(), "LIVE", CUTOFF.isoformat(), "test")
+        store.update_run(run["id"], state="FAILED", attempts=3, error="INSERT with ON CONFLICT clause cannot be used")
+        conn.execute("UPDATE ai_outlook_run SET updated_at=? WHERE id=?", ((now - timedelta(minutes=svc.FAILED_RECOVERY_MINUTES + 1)).isoformat(), run["id"]))
+        conn.commit()
+    finally:
+        ctx.__exit__(None, None, None)
+    service.tick(now, replay=False)
+    ctx, conn, store = _store(svc)
+    try:
+        assert store.run(DAY.isoformat(), "LIVE")["state"] in ("PUBLISHED", "MONITORING")
+    finally:
+        ctx.__exit__(None, None, None)
+
+
+def test_postgres_migrations_split_dollar_quoted_bodies_and_avoid_rules():
+    from apps.api.app.core.database import split_sql_script
+
+    root = Path(__file__).resolve().parents[1] / "apps" / "api" / "database" / "migrations" / "postgres"
+    trigger = split_sql_script((root / "005_ai_outlook_immutable_trigger.sql").read_text(encoding="utf-8"))
+    assert len(trigger) == 4
+    assert trigger[1].startswith("CREATE OR REPLACE FUNCTION") and "RAISE EXCEPTION" in trigger[1] and trigger[1].endswith("$$")
+    assert "CREATE OR REPLACE RULE" not in (root / "004_ai_market_outlook.sql").read_text(encoding="utf-8")
+    assert split_sql_script("SELECT 1; ;SELECT 2") == ["SELECT 1", "SELECT 2"]
+
+
 def test_job_lock_is_exclusive_reentrant_and_expires(service_env):
     svc = service_env
     ctx, conn, store = _store(svc)

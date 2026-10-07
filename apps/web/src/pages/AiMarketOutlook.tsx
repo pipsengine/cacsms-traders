@@ -60,11 +60,12 @@ export function AiMarketOutlook({ initialTab, onTab }: { initialTab?: string; on
 
   const active = symbol;
   const detailLoader = useCallback(() => (active ? outlookApi.symbol(active) : Promise.resolve(null)), [active, tick]);
-  const detail = usePollingAsync(detailLoader, [detailLoader], { enabled: visible && !!active && !isHistory, intervalMs: 30000 });
+  const hasRun = !!latest.data?.run;
+  const detail = usePollingAsync(detailLoader, [detailLoader], { enabled: visible && hasRun && !!active && !isHistory, intervalMs: 30000 });
   const o = detail.data && detail.data.outlook.symbol === active ? detail.data.outlook : null;
 
   const mtfLoader = useCallback(() => (active ? outlookApi.mtf(active, null, 42) : Promise.resolve(null)), [active, tick]);
-  const mtf = usePollingAsync(mtfLoader, [mtfLoader], { enabled: visible && !!active && tab === 'chart', intervalMs: 120000 });
+  const mtf = usePollingAsync(mtfLoader, [mtfLoader], { enabled: visible && hasRun && !!active && tab === 'chart', intervalMs: 120000 });
 
   const historyLoader = useCallback(() => (active ? outlookApi.history(active, days) : Promise.resolve(null)), [active, days, tick]);
   const history = usePollingAsync(historyLoader, [historyLoader], { enabled: visible && !!active && isHistory, intervalMs: 120000 });
