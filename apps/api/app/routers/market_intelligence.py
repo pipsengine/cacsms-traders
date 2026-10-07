@@ -1,4 +1,5 @@
 import os
+import time
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -63,15 +64,20 @@ def matrix(
         mode = CalculationMode(calculation_mode.upper())
     except ValueError as exc:
         raise HTTPException(400, f"Unknown calculation mode: {calculation_mode}") from exc
+    started = time.monotonic()
     engine = get_strength_engine()
     engine.seed_from_db()
+    seeded = time.monotonic()
     _advance(engine)
+    advanced = time.monotonic()
     payload = engine.payload(sort_by, mode)
     if payload is None:
         engine.seed_from_db()
         payload = engine.payload(sort_by, mode)
     if payload is None:
         raise HTTPException(503, "Strength engine has not produced a calculation yet")
+    if isinstance(payload.get("meta"), dict):
+        payload["meta"]["request_profile"] = {"seed": round(seeded - started, 3), "advance": round(advanced - seeded, 3), "payload": round(time.monotonic() - advanced, 3)}
     return payload
 
 

@@ -87,6 +87,7 @@ class StrengthEngine:
         self._on_demand = False
         self._demand_lock = threading.Lock()
         self._last_demand_mono = 0.0
+        self._last_profile: dict[str, float] = {}
 
     @property
     def running(self) -> bool:
@@ -151,10 +152,12 @@ class StrengthEngine:
             return None
 
     def _sync_closed_bars(self, repo: MarketRepository, svc: CurrencyStrengthMatrixService) -> bool:
+        started = time.monotonic()
         gw = create_market_data_gateway(repo.conn, context=self._ctx)
         repo.provider = gw.provider_id
         repo.snapshot_id = gw.snapshot_id
         repo.account_id = (gw.get_account_context() or {}).get("account_id", "")
+        self._last_profile["gateway"] = round(time.monotonic() - started, 3)
         self._ctx["snapshot_id"] = gw.snapshot_id
         if getattr(getattr(gw, "adapter", None), "candles_persisted", False) is True:
             return self._sync_from_store(gw, repo)
@@ -265,12 +268,23 @@ class StrengthEngine:
         return ("CLOSE_CLOSE", *extra)
 
     def _tick(self) -> None:
+        profile: dict[str, float] = {}
+        mark = [time.monotonic()]
+
+        def lap(name: str) -> None:
+            now_ = time.monotonic()
+            profile[name] = round(now_ - mark[0], 3)
+            mark[0] = now_
+
+        self._last_profile = profile
         with db() as conn:
+            lap("connect")
             from .provider_manager import ProviderManager
             ProviderManager(conn).refresh_health()
             ctx = market_context(conn)
             for provider, status in ctx.get('providers', {}).items():
                 ProviderManager(conn).record_health(provider, status)
+            lap("context")
             from .market_data import configuration
             cfg = configuration(conn)
             key = (ctx.get("active_provider"), cfg["tenant_id"], ctx.get("providers", {}).get(ctx.get("active_provider"), {}).get("account_id", cfg["account_id"]))
@@ -318,6 +332,7 @@ class StrengthEngine:
                 result = None  # Calculate from synchronized closed bars only.
             else:
                 self._bootstrapped = False
+            lap("sync")
 
             if not self._bootstrapped:
                 with self._lock:
@@ -329,12 +344,14 @@ class StrengthEngine:
                 changed or self._result is None or now_mono - self._last_calc_mono >= HEARTBEAT_RECALC_SECONDS
             ):
                 result = svc.calculate(calculation_mode=CalculationMode.CLOSE_CLOSE)
+            lap("calculate")
             if result is not None:
                 signature = tuple(
                     round(result.values[c].get(tf, 0.0), 4) for c in sorted(result.values) for tf in MATRIX_TIMEFRAMES
                 )
                 if self._last_persist_mono == 0.0:
                     self._adopt_recent_persist(repo, now, now_mono)
+                lap("adopt")
                 # Persist only provider-synchronized closed-bar results.
                 persist_due = connected and signature != self._last_persisted_sig and (
                     self._last_persist_mono == 0.0
@@ -343,6 +360,7 @@ class StrengthEngine:
                 if persist_due or now_mono - self._reference_mono >= REFERENCE_REFRESH_SECONDS:
                     self._refresh_reference(conn, now, now_mono)
                 self._update_intelligence(result, signature)
+                lap("reference")
                 if persist_due:
                     svc.persist(result)
                     write_relationships(repo, result)
@@ -352,7 +370,9 @@ class StrengthEngine:
                     self._last_persist_mono = now_mono
                     self._last_persisted_sig = signature
                     self._last_persisted_at = now
+                lap("persist")
                 histories = svc.score_histories() if persist_due or not self._histories else self._histories
+                lap("histories")
                 with self._lock:
                     if self._result is not None and signature != self._last_sig:
                         self._last_bar_change_at = now
@@ -505,6 +525,7 @@ class StrengthEngine:
             "last_persisted_at": _iso(last_persisted),
             "last_bar_change_at": _iso(last_change),
             "snapshot_interval_seconds": SNAPSHOT_INTERVAL_SECONDS,
+            "tick_profile": dict(self._last_profile),
         }
 
     def payload(self, sort_by: str = "AVG", mode: CalculationMode = CalculationMode.CLOSE_CLOSE) -> dict | None:
