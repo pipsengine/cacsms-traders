@@ -3,7 +3,7 @@ import { InstrumentIcon } from '../../market-scanner/components/InstrumentIcon';
 import { StructureChart } from '../../market-structure/components/StructureChart';
 import { buildOverlay, futureBarsFor, legendFor, type GroupKey, type OverlayMode, DEFAULT_GROUPS } from '../overlay';
 import type { Outlook, VCandle } from '../types';
-import { TFS, type OutlookTf } from './shared';
+import { CANDLE_LIMIT, TFS, type OutlookTf } from './shared';
 
 export type CandleState = { candles: VCandle[]; loading: boolean; error: string | null };
 
@@ -32,8 +32,9 @@ export function OutlookChart({
   selected?: string | null;
   footer?: ReactNode;
 }) {
-  const overlay = useMemo(() => buildOverlay(o, tf, candles.candles, groups, mode), [o, tf, candles.candles, groups, mode]);
-  const future = useMemo(() => futureBarsFor(o, tf, candles.candles), [o, tf, candles.candles]);
+  const framed = useMemo(() => candles.candles.slice(-CANDLE_LIMIT[tf]), [candles.candles, tf]);
+  const overlay = useMemo(() => buildOverlay(o, tf, framed, groups, mode), [o, tf, framed, groups, mode]);
+  const future = useMemo(() => futureBarsFor(o, tf, framed), [o, tf, framed]);
   return (
     <div className="mao-chart-wrap">
       <StructureChart
@@ -48,6 +49,8 @@ export function OutlookChart({
         error={candles.error ?? undefined}
         overlay={overlay}
         futureBars={future}
+        zoomable
+        defaultSpan={CANDLE_LIMIT[tf]}
         onPick={onPick}
         selected={selected}
         legend={legendFor(mode)}

@@ -5,7 +5,7 @@ import { DailyOutlook } from '../features/ai-outlook/components/DailyOutlook';
 import { HistoricalOutlook } from '../features/ai-outlook/components/HistoricalOutlook';
 import { KeyLevels } from '../features/ai-outlook/components/KeyLevels';
 import { ScenarioAnalysis } from '../features/ai-outlook/components/ScenarioAnalysis';
-import { CANDLE_LIMIT, NoOpportunity, SessionCards, StatusCluster, SymbolPicker, TfBar, dayLabel, runState, type OutlookTf } from '../features/ai-outlook/components/shared';
+import { HISTORY_LIMIT, NoOpportunity, SessionCards, StatusCluster, SymbolPicker, TfBar, dayLabel, runState, type OutlookTf } from '../features/ai-outlook/components/shared';
 import { usePollingAsync } from '../features/market-intelligence/hooks/useMarketIntelligence';
 import { Blocking } from '../features/market-structure/components/StructureUi';
 import { useCandles, useShortScreen, useVisible } from '../features/market-structure/hooks';
@@ -71,7 +71,7 @@ export function AiMarketOutlook({ initialTab, onTab }: { initialTab?: string; on
   const history = usePollingAsync(historyLoader, [historyLoader], { enabled: visible && !!active && isHistory, intervalMs: 120000 });
 
   const chartTf: OutlookTf = isHistory ? 'D1' : tf;
-  const limit = isHistory ? Math.min(400, Math.round(days * 0.75) + 20) : CANDLE_LIMIT[tf];
+  const limit = isHistory ? 400 : HISTORY_LIMIT[tf];
   const c = useCandles(active ?? 'XAUUSD', chartTf, visible && !!active, tick, limit);
   const candles = { candles: c.candles, loading: c.loading, error: c.error ?? null };
   const chartHeight = short ? 300 : 372;

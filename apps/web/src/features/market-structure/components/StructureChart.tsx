@@ -1,4 +1,5 @@
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
+import { ChevronLeft, ChevronRight, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react';
 import { InstrumentIcon } from '../../market-scanner/components/InstrumentIcon';
 import { fmtPrice } from '../../market-scanner/format';
 import type { ChannelOverlay, FractalMark, RangeCore, VCandle } from '../types';
@@ -48,14 +49,32 @@ function ticks(lo: number, hi: number, count: number) {
   return out;
 }
 
-function axisLabels(candles: VCandle[], tf: string) {
+const INTRADAY_HOURS: Record<string, number> = { H8: 8, H4: 4, H1: 1, M30: 0.5, M15: 0.25 };
+
+/** `spanBars` narrows the label granularity when zoomed in (days for D1, hours inside a day for intraday). */
+function axisLabels(candles: VCandle[], tf: string, spanBars = Infinity) {
   const out: { i: number; text: string; strong: boolean }[] = [];
   const fmt = (d: Date, o: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat('en-GB', { ...o, timeZone: 'UTC' }).format(d);
+  const hours = INTRADAY_HOURS[tf];
+  const fineDays = (tf === 'D1' || tf === 'YTD') && spanBars <= 60;
+  const fineMonths = tf === 'W' && spanBars <= 40;
+  const fineHours = hours != null && spanBars * hours <= 48;
   let prev: Date | null = null;
   candles.forEach((c, i) => {
     const d = new Date(c.t);
     if (prev) {
-      if (tf === 'Y' || tf === 'HY' || tf === 'Q' || tf === 'MN') {
+      const newDay = d.getUTCDate() !== prev.getUTCDate();
+      const newMonth = d.getUTCMonth() !== prev.getUTCMonth();
+      if (fineDays) {
+        if (newDay) out.push({ i, text: newMonth ? fmt(d, { month: 'short' }) : String(d.getUTCDate()), strong: newMonth });
+      } else if (fineMonths) {
+        if (newMonth) out.push({ i, text: d.getUTCMonth() === 0 ? String(d.getUTCFullYear()) : fmt(d, { month: 'short' }), strong: d.getUTCMonth() === 0 });
+      } else if (fineHours) {
+        const step = spanBars * hours <= 12 ? 1 : spanBars * hours <= 24 ? 2 : 4;
+        if (newDay) out.push({ i, text: fmt(d, { day: 'numeric', month: 'short' }), strong: true });
+        else if (d.getUTCHours() !== prev.getUTCHours() && d.getUTCHours() % step === 0 && d.getUTCMinutes() === 0)
+          out.push({ i, text: `${String(d.getUTCHours()).padStart(2, '0')}:00`, strong: false });
+      } else if (tf === 'Y' || tf === 'HY' || tf === 'Q' || tf === 'MN') {
         if (d.getUTCFullYear() !== prev.getUTCFullYear()) out.push({ i, text: String(d.getUTCFullYear()), strong: d.getUTCFullYear() % 5 === 0 });
       } else if (tf === 'W') {
         if (d.getUTCMonth() !== prev.getUTCMonth() && d.getUTCMonth() % 3 === 0) {
@@ -71,8 +90,10 @@ function axisLabels(candles: VCandle[], tf: string) {
     }
     prev = d;
   });
-  const minGap = tf === 'W' || tf === 'D1' ? 1 : 4;
-  return out.filter((l, k) => k === 0 || l.i - out[k - 1].i >= minGap || l.strong);
+  const minGap = tf === 'W' || tf === 'D1' || fineHours || fineDays ? 1 : 4;
+  const kept: typeof out = [];
+  for (const l of out) if (!kept.length || l.i - kept[kept.length - 1].i >= minGap || l.strong) kept.push(l);
+  return kept;
 }
 
 function thin<T extends { i: number }>(labels: T[], x: (i: number) => number, minPx: number) {
@@ -102,6 +123,21 @@ function timeIndex(candles: VCandle[]) {
 }
 
 const TAG_W = 120;
+const MIN_SPAN = 8;
+const Y_ZOOM_LIMITS: [number, number] = [0.15, 6];
+
+/** Zoom window kept as a span plus a gap from the right edge, so a new closed bar keeps the latest candles in view. */
+type View = { span: number; gap: number };
+
+function resolveView(view: View | null, total: number, initial: View | null) {
+  if (!view) view = initial;
+  if (!view) return { start: -0.5, span: total };
+  const span = Math.min(total, Math.max(Math.min(MIN_SPAN, total), view.span));
+  const gap = Math.min(total - span, Math.max(0, view.gap));
+  return { start: -0.5 + total - gap - span, span };
+}
+
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
 export function StructureChart({
   symbol,
@@ -125,6 +161,8 @@ export function StructureChart({
   futureBars = 0,
   onPick,
   selected,
+  zoomable = false,
+  defaultSpan,
 }: {
   symbol: string;
   title: string;
@@ -147,11 +185,27 @@ export function StructureChart({
   futureBars?: number;
   onPick?: (id: string) => void;
   selected?: string | null;
+  /** Wheel / pinch zoom, drag pan, keyboard and toolbar controls; double-click resets. */
+  zoomable?: boolean;
+  /** Bars shown before the user zooms (the rest of the loaded history stays reachable by zooming out or panning). */
+  defaultSpan?: number;
 }) {
-  const clipId = `mst-clip-${useId().replace(/:/g, '')}`;
+  const uid = useId().replace(/:/g, '');
+  const clipId = `mst-clip-${uid}`;
+  const plotClipId = `mst-plot-${uid}`;
   const wrap = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(600);
   const [hover, setHover] = useState<number | null>(null);
+  const [view, setView] = useState<View | null>(null);
+  const [yZoom, setYZoom] = useState(1);
+  const [yPan, setYPan] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const dragged = useRef(false);
+  useEffect(() => {
+    setView(null);
+    setYZoom(1);
+    setYPan(0);
+  }, [symbol, tf]);
   useEffect(() => {
     const el = wrap.current;
     if (!el) return;
@@ -194,39 +248,52 @@ export function StructureChart({
 
   const idxAt = useMemo(() => timeIndex(candles), [candles]);
 
+  const total = candles.length + futureBars;
+  const initial = useMemo<View | null>(
+    () => (zoomable && defaultSpan && defaultSpan < candles.length ? { span: defaultSpan + futureBars, gap: 0 } : null),
+    [zoomable, defaultSpan, candles.length, futureBars],
+  );
+  const vw = useMemo(() => resolveView(zoomable ? view : null, total, initial), [zoomable, view, total, initial]);
+  const zoomed = vw.span < total - 1e-6;
+  const atInitial = !view;
+
   const g = useMemo(() => {
     if (!candles.length) return null;
+    const n = candles.length;
+    const viewL = vw.start;
+    const viewR = vw.start + vw.span;
+    const inView = (i: number) => i >= viewL && i <= viewR;
     const si = range ? Math.max(0, candles.findIndex((c) => c.t >= range.start)) : 0;
-    const framed = candles.slice(si);
+    let framed = zoomed ? candles.slice(clamp(Math.ceil(viewL), 0, n - 1), clamp(Math.floor(viewR) + 1, 1, n)) : candles.slice(si);
+    if (!framed.length) framed = candles.slice(-MIN_SPAN);
     let lo = Math.min(...framed.map((c) => c.l));
     let hi = Math.max(...framed.map((c) => c.h));
+    const near = (v: number) => !zoomed || (v >= lo - (hi - lo) * 0.35 && v <= hi + (hi - lo) * 0.35);
     const extra: number[] = [];
-    if (lastPrice != null) extra.push(lastPrice);
+    if (lastPrice != null && (!zoomed || inView(n - 1))) extra.push(lastPrice);
     if (range) extra.push(range.range_high, range.range_low);
     if (ch) extra.push(ch.m0 + ch.half, ch.m0 - ch.half, ch.m1 + ch.half, ch.m1 - ch.half);
     if (overlay) {
-      const n = candles.length;
-      const end = n - 0.5 + futureBars;
       const visible = (a: TimePoint, b: TimePoint) => {
         const ia = idxAt(a[0]);
         const ib = idxAt(b[0]);
         if (!Number.isFinite(ia) || !Number.isFinite(ib) || ib === ia) return [];
         const at = (i: number) => a[1] + ((b[1] - a[1]) * (i - ia)) / (ib - ia);
-        const i0 = Math.max(-0.5, Math.min(ia, ib));
-        const i1 = Math.min(end, Math.max(ia, ib));
+        const i0 = Math.max(viewL, Math.min(ia, ib));
+        const i1 = Math.min(viewR, Math.max(ia, ib));
         return i1 > i0 ? [at(i0), at(i1)] : [];
       };
       for (const b of overlay.bands ?? []) extra.push(...visible(...b.upper), ...visible(...b.lower));
       for (const l of overlay.lines ?? []) extra.push(...visible(l.from, l.to));
-      for (const l of overlay.levels ?? []) extra.push(l.price);
-      for (const z of overlay.zones ?? []) extra.push(z.lo, z.hi);
-      for (const m of overlay.markers ?? []) if (idxAt(m.at) >= -0.5) extra.push(m.price);
-      for (const t of overlay.tags ?? []) extra.push(t.price);
+      for (const l of overlay.levels ?? []) if (near(l.price)) extra.push(l.price);
+      for (const z of overlay.zones ?? []) if (near(z.lo) && near(z.hi)) extra.push(z.lo, z.hi);
+      for (const m of overlay.markers ?? []) {
+        const i = idxAt(m.at);
+        if (i >= viewL && (!zoomed || i <= viewR)) extra.push(m.price);
+      }
+      for (const t of overlay.tags ?? []) if (!zoomed || (t.at != null ? inView(idxAt(t.at)) : near(t.price))) extra.push(t.price);
       for (const p of overlay.paths ?? [])
-        for (const [t, v] of p.points) {
-          const i = idxAt(t);
-          if (i >= -0.5 && i <= end) extra.push(v);
-        }
+        for (const [t, v] of p.points) if (inView(idxAt(t))) extra.push(v);
     }
     for (const v of extra) {
       lo = Math.min(lo, v);
@@ -245,18 +312,168 @@ export function StructureChart({
         hi = allHi + edge;
       }
     }
+    if (yZoom !== 1 || yPan !== 0) {
+      const mid = (lo + hi) / 2 + yPan * (hi - lo);
+      const half = ((hi - lo) / 2) * yZoom;
+      lo = mid - half;
+      hi = mid + half;
+    }
     const plotBottom = height - PAD.bottom;
     const priceBottom = showVolume ? plotBottom - VOL_H - 4 : plotBottom - 2;
-    const step = (width - PAD.left - PAD.right) / (candles.length + futureBars);
-    const x = (i: number) => PAD.left + step * (i + 0.5);
+    const plotW = width - PAD.left - PAD.right;
+    const step = plotW / vw.span;
+    const x = (i: number) => PAD.left + step * (i - vw.start);
     const y = (v: number) => PAD.top + ((hi - v) / (hi - lo)) * (priceBottom - PAD.top);
-    const vmax = Math.max(1, ...candles.map((c) => c.v || 0));
+    const iL = clamp(Math.floor(viewL), 0, n - 1);
+    const iR = clamp(Math.ceil(viewR), 0, n - 1);
+    const vmax = Math.max(1, ...candles.slice(iL, iR + 1).map((c) => c.v || 0));
     const tickCount = Math.max(compact ? 3 : 4, Math.round((priceBottom - PAD.top) / TICK_SPACING_PX));
-    return { lo, hi, step, x, y, plotBottom, priceBottom, vmax, tickCount };
-  }, [candles, width, height, lastPrice, range, ch, overlay, idxAt, showVolume, compact, futureBars]);
+    return { lo, hi, step, x, y, plotBottom, priceBottom, plotW, vmax, tickCount, iL, iR, viewL, viewR };
+  }, [candles, width, height, lastPrice, range, ch, overlay, idxAt, showVolume, compact, vw, zoomed, yZoom, yPan]);
+
+  const geom = useRef({ vw, total, step: g?.step ?? 1, plotW: g?.plotW ?? 1, priceH: g ? g.priceBottom - PAD.top : 1, yZoom });
+  geom.current = { vw, total, step: g?.step ?? 1, plotW: g?.plotW ?? 1, priceH: g ? g.priceBottom - PAD.top : 1, yZoom };
+
+  const applyView = useCallback((start: number, span: number) => {
+    const { total: tot } = geom.current;
+    const sp = clamp(span, Math.min(MIN_SPAN, tot), tot);
+    const st = clamp(start, -0.5, -0.5 + tot - sp);
+    setView({ span: sp, gap: tot - 0.5 - (st + sp) });
+  }, []);
+  const zoomAt = useCallback(
+    (factor: number, px?: number) => {
+      const { vw: cur, plotW } = geom.current;
+      const frac = px == null ? 0.5 : clamp(px / plotW, 0, 1);
+      const anchor = cur.start + frac * cur.span;
+      const span = cur.span * factor;
+      applyView(anchor - frac * span, span);
+    },
+    [applyView],
+  );
+  const panBy = useCallback(
+    (bars: number) => {
+      const { vw: cur } = geom.current;
+      applyView(cur.start + bars, cur.span);
+    },
+    [applyView],
+  );
+  const reset = useCallback(() => {
+    setView(null);
+    setYZoom(1);
+    setYPan(0);
+  }, []);
+
+  useEffect(() => {
+    const el = wrap.current;
+    if (!zoomable || !el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const r = el.getBoundingClientRect();
+      const px = e.clientX - r.left - PAD.left;
+      const { plotW, step } = geom.current;
+      if (px > plotW) {
+        setYZoom((z) => clamp(z * Math.exp(e.deltaY * 0.0015), ...Y_ZOOM_LIMITS));
+        return;
+      }
+      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) panBy(e.deltaX / step);
+      else zoomAt(Math.exp(clamp(e.deltaY, -120, 120) * 0.0018), px);
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [zoomable, zoomAt, panBy, g === null]);
+
+  const pointers = useRef(new Map<number, number>());
+  const gesture = useRef<{ x0: number; y0: number; start0: number; span0: number; yPan0: number; dist0: number; mid0: number } | null>(null);
+  const svgX = (el: Element, clientX: number) => clientX - el.getBoundingClientRect().left - PAD.left;
+  const pointerHandlers: {
+    onPointerDown?: (e: PointerEvent<SVGSVGElement>) => void;
+    onPointerUp?: (e: PointerEvent<SVGSVGElement>) => void;
+  } = zoomable
+    ? {
+        onPointerDown: (e: PointerEvent<SVGSVGElement>) => {
+          if (e.button !== 0) return;
+          pointers.current.set(e.pointerId, svgX(e.currentTarget, e.clientX));
+          dragged.current = false;
+          const xs = [...pointers.current.values()];
+          gesture.current = {
+            x0: xs[0],
+            y0: e.clientY,
+            start0: geom.current.vw.start,
+            span0: geom.current.vw.span,
+            yPan0: yPan,
+            dist0: xs.length > 1 ? Math.abs(xs[1] - xs[0]) : 0,
+            mid0: xs.length > 1 ? (xs[0] + xs[1]) / 2 : xs[0],
+          };
+        },
+        onPointerUp: (e: PointerEvent<SVGSVGElement>) => {
+          pointers.current.delete(e.pointerId);
+          if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+          if (!pointers.current.size) {
+            gesture.current = null;
+            setDragging(false);
+          }
+        },
+      }
+    : {};
+  const onGestureMove = (e: PointerEvent<SVGSVGElement>) => {
+    const gs = gesture.current;
+    if (!zoomable || !gs || !pointers.current.has(e.pointerId)) return false;
+    pointers.current.set(e.pointerId, svgX(e.currentTarget, e.clientX));
+    const xs = [...pointers.current.values()];
+    const { step, plotW, priceH, yZoom: yz } = geom.current;
+    if (xs.length > 1 && gs.dist0 > 0) {
+      dragged.current = true;
+      const ratio = Math.max(0.05, Math.abs(xs[1] - xs[0]) / gs.dist0);
+      const span = gs.span0 / ratio;
+      const anchor = gs.start0 + (gs.mid0 / plotW) * gs.span0;
+      applyView(anchor - (gs.mid0 / plotW) * span, span);
+      return true;
+    }
+    const dx = xs[0] - gs.x0;
+    const dy = e.clientY - gs.y0;
+    if (!dragged.current && Math.hypot(dx, dy) < 4) return false;
+    if (!dragged.current) {
+      dragged.current = true;
+      setDragging(true);
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        /* pointer already released */
+      }
+    }
+    applyView(gs.start0 - dx / step, gs.span0);
+    if (yz !== 1) setYPan(gs.yPan0 + (dy / priceH) * yz);
+    return true;
+  };
+  const onKey = (e: KeyboardEvent) => {
+    const { vw: cur } = geom.current;
+    const keys: Record<string, () => void> = {
+      '+': () => zoomAt(1 / 1.25),
+      '=': () => zoomAt(1 / 1.25),
+      '-': () => zoomAt(1.25),
+      _: () => zoomAt(1.25),
+      ArrowLeft: () => panBy(-cur.span * 0.1),
+      ArrowRight: () => panBy(cur.span * 0.1),
+      '0': reset,
+      Home: reset,
+    };
+    const act = keys[e.key];
+    if (act) {
+      e.preventDefault();
+      act();
+    }
+  };
+  const manual = !atInitial || yZoom !== 1 || yPan !== 0;
+
   const pick = (id?: string) =>
     id && onPick
-      ? { onClick: () => onPick(id), style: { cursor: 'pointer' }, 'data-picked': selected === id ? '' : undefined }
+      ? {
+          onClick: () => {
+            if (!dragged.current) onPick(id);
+          },
+          style: { cursor: 'pointer' },
+          'data-picked': selected === id ? '' : undefined,
+        }
       : {};
 
   const last = candles[candles.length - 1];
@@ -294,7 +511,34 @@ export function StructureChart({
           <span className="mst-muted">—</span>
         )}
       </div>
-      <div ref={wrap} className="mst-chart" style={{ height }}>
+      <div
+        ref={wrap}
+        className={`mst-chart ${zoomable ? 'is-zoomable' : ''} ${dragging ? 'is-dragging' : ''}`}
+        style={{ height }}
+        tabIndex={zoomable ? 0 : undefined}
+        onKeyDown={zoomable ? onKey : undefined}
+        aria-label={zoomable ? `${symbol} ${title} chart — scroll or pinch to zoom, drag to pan, double-click to reset` : undefined}
+      >
+        {zoomable && g ? (
+          <div className="mst-zoom" onPointerDown={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+            <button type="button" title="Zoom in (+)" aria-label="Zoom in" onClick={() => zoomAt(1 / 1.4)} disabled={vw.span <= Math.min(MIN_SPAN, total) + 1e-6}>
+              <ZoomIn size={14} />
+            </button>
+            <button type="button" title="Zoom out (−)" aria-label="Zoom out" onClick={() => zoomAt(1.4)} disabled={!zoomed}>
+              <ZoomOut size={14} />
+            </button>
+            <button type="button" title="Pan left (←)" aria-label="Pan left" onClick={() => panBy(-vw.span * 0.2)} disabled={!zoomed || vw.start <= -0.5 + 1e-6}>
+              <ChevronLeft size={14} />
+            </button>
+            <button type="button" title="Pan right (→)" aria-label="Pan right" onClick={() => panBy(vw.span * 0.2)} disabled={!zoomed || vw.start + vw.span >= total - 0.5 - 1e-6}>
+              <ChevronRight size={14} />
+            </button>
+            <button type="button" title="Reset view (double-click)" aria-label="Reset view" onClick={reset} disabled={!manual}>
+              <RotateCcw size={14} />
+            </button>
+            {manual ? <span>{Math.round(Math.min(vw.span, candles.length))} bars</span> : null}
+          </div>
+        ) : null}
         {!g ? (
           <div className="mst-chart-empty" style={{ height }}>
             {loading ? `Loading ${tfLabel} candles…` : error ? 'Candle history unavailable' : `No closed ${tfLabel} candles stored`}
@@ -305,12 +549,17 @@ export function StructureChart({
             height={height}
             role="img"
             aria-label={`${symbol} ${title} chart`}
+            className={zoomable ? 'mst-svg-zoom' : undefined}
             onMouseLeave={() => setHover(null)}
-            onMouseMove={(e) => {
+            onPointerMove={(e) => {
+              if (onGestureMove(e)) return setHover(null);
               const r = (e.currentTarget as SVGSVGElement).getBoundingClientRect();
-              const i = Math.floor((e.clientX - r.left - PAD.left) / g.step);
-              setHover(i >= 0 && i < candles.length ? i : null);
+              const i = Math.round((e.clientX - r.left - PAD.left) / g.step + vw.start);
+              setHover(i >= g.iL && i <= g.iR && i >= 0 && i < candles.length ? i : null);
             }}
+            onDoubleClick={zoomable ? reset : undefined}
+            {...pointerHandlers}
+            onPointerCancel={pointerHandlers.onPointerUp}
           >
             {ticks(g.lo, g.hi, g.tickCount).map((t) => (
               <g key={t}>
@@ -320,7 +569,11 @@ export function StructureChart({
                 </text>
               </g>
             ))}
-            {thin(axisLabels(candles, tf), g.x, compact ? 30 : 34).map((l) => (
+            {thin(
+              axisLabels(candles, tf, zoomable ? vw.span : Infinity).filter((l) => l.i >= g.iL && l.i <= g.iR && g.x(l.i) >= PAD.left && g.x(l.i) <= width - PAD.right),
+              g.x,
+              compact ? 30 : 34,
+            ).map((l) => (
               <g key={l.i}>
                 <line className="mst-grid" x1={g.x(l.i)} x2={g.x(l.i)} y1={PAD.top} y2={g.plotBottom} />
                 <text className={`mst-axis ${l.strong ? 'is-strong' : ''}`} x={g.x(l.i)} y={height - 6} textAnchor="middle">
@@ -373,6 +626,9 @@ export function StructureChart({
               <clipPath id={clipId}>
                 <rect x={PAD.left} y={PAD.top} width={width - PAD.left - PAD.right} height={g.priceBottom - PAD.top} />
               </clipPath>
+              <clipPath id={plotClipId}>
+                <rect x={PAD.left} y={0} width={width - PAD.left - PAD.right} height={height} />
+              </clipPath>
             </defs>
             {overlay ? (
               <g clipPath={`url(#${clipId})`}>
@@ -422,23 +678,28 @@ export function StructureChart({
                 })}
               </g>
             ) : null}
-            {showVolume && candles.map((c, i) => {
-              const bw = Math.max(1, Math.min(9, g.step * 0.62));
-              const vh = ((c.v || 0) / g.vmax) * VOL_H;
-              return (
-                <rect
-                  key={`v${c.t}`}
-                  className={`mst-vol ${c.c >= c.o ? 'is-up' : 'is-down'}`}
-                  x={g.x(i) - bw / 2}
-                  y={g.plotBottom - vh}
-                  width={bw}
-                  height={vh}
-                />
-              );
-            })}
+            <g clipPath={`url(#${plotClipId})`}>
+              {showVolume &&
+                candles.slice(g.iL, g.iR + 1).map((c, k) => {
+                  const i = g.iL + k;
+                  const bw = Math.max(1, Math.min(zoomable ? 16 : 9, g.step * 0.62));
+                  const vh = ((c.v || 0) / g.vmax) * VOL_H;
+                  return (
+                    <rect
+                      key={`v${c.t}`}
+                      className={`mst-vol ${c.c >= c.o ? 'is-up' : 'is-down'}`}
+                      x={g.x(i) - bw / 2}
+                      y={g.plotBottom - vh}
+                      width={bw}
+                      height={vh}
+                    />
+                  );
+                })}
+            </g>
             <g clipPath={`url(#${clipId})`}>
-              {candles.map((c, i) => {
-                const bw = Math.max(1, Math.min(9, g.step * 0.62));
+              {candles.slice(g.iL, g.iR + 1).map((c, k) => {
+                const i = g.iL + k;
+                const bw = Math.max(1, Math.min(zoomable ? 16 : 9, g.step * 0.62));
                 return (
                   <g key={c.t} className={c.c >= c.o ? 'mst-up' : 'mst-down'}>
                     <line x1={g.x(i)} x2={g.x(i)} y1={g.y(c.h)} y2={g.y(c.l)} />
@@ -516,7 +777,7 @@ export function StructureChart({
             })}
 
             {overlay ? (
-              <g>
+              <g clipPath={zoomable ? `url(#${plotClipId})` : undefined}>
                 {overlay.zones?.map((z, k) =>
                   z.label ? (
                     <text
@@ -543,7 +804,7 @@ export function StructureChart({
                 )}
                 {overlay.markers?.map((m, k) => {
                   const i = idxAt(m.at);
-                  if (!(i >= -0.5 && i <= candles.length - 0.5)) return null;
+                  if (!(i >= Math.max(-0.5, g.viewL) && i <= Math.min(candles.length - 0.5, g.viewR))) return null;
                   const mx = g.x(i);
                   const my = g.y(m.price);
                   if (my < PAD.top - 2 || my > g.priceBottom + 2) return null;
@@ -596,6 +857,7 @@ export function StructureChart({
                 {overlay.tags?.map((t, k) => {
                   const w = TAG_W;
                   const h = t.value ? 30 : 18;
+                  if (zoomed && t.at != null && !(idxAt(t.at) >= g.viewL - 1 && idxAt(t.at) <= g.viewR + 1)) return null;
                   const ax = t.at != null ? g.x(idxAt(t.at)) - w / 2 : width - PAD.right - w - 6;
                   const bx = Math.max(PAD.left + 2, Math.min(width - PAD.right - w - 2, ax));
                   const py = g.y(t.price);
@@ -620,7 +882,7 @@ export function StructureChart({
 
             {hover !== null ? <line className="mst-cross" x1={g.x(hover)} x2={g.x(hover)} y1={PAD.top} y2={g.plotBottom} /> : null}
 
-            {lastPrice != null ? (
+            {lastPrice != null && g.y(lastPrice) >= PAD.top && g.y(lastPrice) <= g.priceBottom ? (
               <g className="mst-last">
                 <line x1={PAD.left} x2={width - PAD.right} y1={g.y(lastPrice)} y2={g.y(lastPrice)} />
                 <rect x={width - PAD.right + 1} y={g.y(lastPrice) - 9} width={PAD.right - 2} height={18} rx={3} />

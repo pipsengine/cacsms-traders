@@ -180,6 +180,9 @@ export function HistoricalOutlook({
       <div className="mao-main is-wide-side">
         <div className="mao-chart-wrap">
           <StructureChart
+            key={days}
+            zoomable
+            defaultSpan={Math.round((days * 5) / 7) + 6}
             symbol={symbol}
             title={`Historical Daily Outlook (Last ${days} Days)`}
             tf="D1"

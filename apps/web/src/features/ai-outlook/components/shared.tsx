@@ -7,6 +7,8 @@ import type { Annotation, OutlookRow, RunSummary, Schedule, SessionPlan, VCandle
 export const TFS = ['Y', 'YTD', 'HY', 'Q', 'MN', 'W', 'D1', 'H8', 'H1', 'M30'] as const;
 export type OutlookTf = (typeof TFS)[number];
 export const CANDLE_LIMIT: Record<OutlookTf, number> = { Y: 40, YTD: 220, HY: 40, Q: 48, MN: 120, W: 120, D1: 110, H8: 120, H1: 140, M30: 140 };
+/** History loaded for zooming out / panning back; the chart opens on CANDLE_LIMIT bars. */
+export const HISTORY_LIMIT: Record<OutlookTf, number> = { Y: 40, YTD: 220, HY: 40, Q: 48, MN: 240, W: 260, D1: 400, H8: 360, H1: 420, M30: 420 };
 
 export const dirWord = (d?: string | null) => (d === 'BULLISH' ? 'Bullish' : d === 'BEARISH' ? 'Bearish' : d === 'RANGE' ? 'Range' : '—');
 export const dirTone = (d?: string | null) => (d === 'BULLISH' || d === 'Bullish' ? 'is-bull' : d === 'BEARISH' || d === 'Bearish' ? 'is-bear' : 'is-range');

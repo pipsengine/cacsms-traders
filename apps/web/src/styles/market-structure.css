@@ -115,6 +115,16 @@
 .mst-ohlc b { font-weight: 700; margin-right: 6px; }
 .mst-ohlc small { color: #98a2b3; }
 .mst-chart { position: relative; flex: 1; }
+.mst-chart.is-zoomable { outline: none; touch-action: none; user-select: none; }
+.mst-chart.is-zoomable:focus-visible { box-shadow: inset 0 0 0 2px rgba(23, 101, 239, 0.35); border-radius: 6px; }
+.mst-chart.is-zoomable .mst-svg-zoom { cursor: crosshair; }
+.mst-chart.is-dragging .mst-svg-zoom { cursor: grabbing; }
+.mst-zoom { position: absolute; z-index: 3; top: 6px; left: 12px; display: flex; align-items: center; gap: 2px; padding: 2px; background: rgba(255, 255, 255, 0.92); border: 1px solid #dfe6f0; border-radius: 7px; box-shadow: 0 2px 6px rgba(18, 35, 63, 0.08); opacity: 0.55; transition: opacity 0.15s; }
+.mst-chart:hover .mst-zoom, .mst-chart:focus-within .mst-zoom { opacity: 1; }
+.mst-zoom button { width: 24px; height: 22px; display: grid; place-items: center; border: 0; border-radius: 5px; background: transparent; color: #42506a; cursor: pointer; padding: 0; }
+.mst-zoom button:hover:not(:disabled) { background: #eef4ff; color: #1765ef; }
+.mst-zoom button:disabled { opacity: 0.35; cursor: default; }
+.mst-zoom span { padding: 0 6px 0 4px; font-size: 10.5px; font-weight: 650; color: #5d6b82; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .mst-chart svg { display: block; }
 .mst-chart-empty { display: grid; place-items: center; color: var(--mst-muted); font-size: 12px; background: #f9fbfd; border: 1px dashed #d7dee8; border-radius: 8px; }
 .mst-grid { stroke: #e8edf4; stroke-width: 1; }
