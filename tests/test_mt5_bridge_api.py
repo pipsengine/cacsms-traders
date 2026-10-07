@@ -98,6 +98,28 @@ def test_uploaded_window_replaces_bars_the_broker_no_longer_has(client):
     assert stored() == expected
 
 
+def test_h1_upload_derives_h8_and_store_validation_reads_it(client):
+    tenant,headers,bridge_headers = pairing(client)
+    body = payload()
+    first = body['candles'][0]
+    bucket = int(datetime.now(timezone.utc).timestamp()) // 28800 * 28800 - 28800
+    body['candles'] = [{**first,'time':bucket+3600*i} for i in range(8)]
+    assert client.post(f'/api/tenants/{tenant}/mt5-bridge/heartbeat',headers=bridge_headers,json=body).status_code == 200
+    from apps.api.app.core.database import db
+    from apps.api.app.market.market_data import create_market_data_gateway
+    from apps.api.app.market.repository import MarketRepository
+    from apps.api.app.market.store_sync import probe_open_times, store_failures
+    with db() as conn:
+        gateway = create_market_data_gateway(conn)
+        repo = MarketRepository(conn, provider='mt5', snapshot_id=gateway.snapshot_id)
+        h8 = repo.recent_candles('H8', 5)['EURUSD']
+        assert len(h8) == 1 and h8[0].high == 1.11 and int(h8[0].open_time.timestamp()) == bucket
+        assert probe_open_times(repo, 'EURUSD')['H8'] == bucket
+        failures = store_failures(repo, ['H8'])
+        assert not [f for f in failures if f['symbol'] == 'EURUSD']
+        assert {f['error_code'] for f in failures} == {'no_closed_bars'}
+
+
 def test_bridge_accepts_normalized_broker_time_and_preserves_month_boundary(client):
     tenant,headers,bridge_headers=pairing(client)
     body=payload()

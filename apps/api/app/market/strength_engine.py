@@ -13,15 +13,17 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from ..core.database import db
-from .constants import COMPUTE_TIMEFRAMES, FX_PAIRS_28, MATRIX_TIMEFRAMES
+from .constants import CANDLE_TIMEFRAMES, COMPUTE_TIMEFRAMES, FX_PAIRS_28, MATRIX_TIMEFRAMES
 from .csm_engine import CalculationMode, CsmMatrixResult
 from .csm_scoring import normalize_all_scores
 from .csm_service import CurrencyStrengthMatrixService
+from .ingestion import broker_offset
 from .ingestion_runner import MarketIngestionRunner
 from .intelligence_cycle import write_relationships
 from .market_data import create_market_data_gateway, market_context
 from .pair_relationships import Scores, pair_relationships
 from .repository import MarketRepository
+from .store_sync import probe_open_times, store_failures
 from .strength_intel_config import dynamics_lookback_minutes
 from .strength_intel_store import active_scope, reference_scores, save_pair_snapshot
 
@@ -153,6 +155,8 @@ class StrengthEngine:
         repo.snapshot_id = gw.snapshot_id
         repo.account_id = (gw.get_account_context() or {}).get("account_id", "")
         self._ctx["snapshot_id"] = gw.snapshot_id
+        if getattr(getattr(gw, "adapter", None), "candles_persisted", False) is True:
+            return self._sync_from_store(gw, repo)
         if not hasattr(gw, "latest_closed_open_time"):
             return False
         if not self._bootstrapped:
@@ -210,6 +214,47 @@ class StrengthEngine:
                 return False
         if "H1" in changed:
             runner.sync_timeframe_universe("H8", candle_count=INCREMENTAL_BARS)
+        return True
+
+    def _sync_from_store(self, gw, repo: MarketRepository) -> bool:
+        """Bridge uploads are already persisted: validate them with bulk reads instead of ~200 gateway round trips."""
+        offset = broker_offset(gw)
+        latest = probe_open_times(repo, PROBE_PAIR, offset)
+        if not self._bootstrapped:
+            if time.monotonic() < self._bootstrap_retry_at:
+                return False
+            with self._lock:
+                self._state = "SYNCING"
+            resolved = {r.get("canonical_symbol") for r in gw.get_symbols()}
+            missing = [p for p in FX_PAIRS_28 if p not in resolved]
+            failures = [] if missing else store_failures(repo, CANDLE_TIMEFRAMES, offset)
+            ok = not missing and not failures
+            with self._lock:
+                self._ctx.update(symbols_resolved=28-len(missing), missing_pairs=missing, failed_symbol_mappings=missing,
+                                 provider_status="CONNECTED" if ok else "DEGRADED", failed_candle_requests=failures,
+                                 closed_bar_status="SYNCHRONIZED" if ok else "INCOMPLETE",
+                                 last_successful_sync=_iso(datetime.now(timezone.utc)) if ok else None)
+            if not ok:
+                self._bootstrap_retry_at = time.monotonic() + BOOTSTRAP_RETRY_SECONDS
+                return False
+            self._last_bar = {tf: latest[tf] for tf in PROBE_TIMEFRAMES if tf in latest}
+            self._bootstrapped = len(self._last_bar) == len(PROBE_TIMEFRAMES)
+            return self._bootstrapped
+        if any(tf not in latest for tf in PROBE_TIMEFRAMES):
+            self._bootstrapped = False
+            self._ctx.update(closed_bar_status="INCOMPLETE", error_code="stale_or_missing_candles")
+            return False
+        changed = [tf for tf in PROBE_TIMEFRAMES if latest[tf] != self._last_bar.get(tf)]
+        if not changed:
+            return False
+        failures = store_failures(repo, [*changed, *(["H8"] if "H1" in changed else [])], offset)
+        if failures:
+            self._bootstrapped = False
+            self._bootstrap_retry_at = time.monotonic() + BOOTSTRAP_RETRY_SECONDS
+            with self._lock:
+                self._ctx.update(provider_status="DEGRADED", closed_bar_status="INCOMPLETE", failed_candle_requests=failures)
+            return False
+        self._last_bar.update({tf: latest[tf] for tf in changed})
         return True
 
     def _wanted_modes(self) -> tuple[str, ...]:

@@ -11,6 +11,8 @@ from ..deps import current_user
 from ..services.access import require_permission
 from ..domain import mt5_bridge as bridge
 from ..market.constants import FX_PAIRS_28
+from ..market.h8_aggregate import aggregate_h8_from_h1
+from ..market.models import Candle
 from ..market.normalized_provider import candle_close
 
 router = APIRouter(prefix='/api/tenants/{tenant_id}/mt5-bridge', tags=['MT5 Windows Bridge'])
@@ -132,9 +134,17 @@ def heartbeat(tenant_id: str, body: Heartbeat, x_mt5_bridge_token: str = Header(
         bridge.sync_registry(conn,tenant_id,state)
         # Bounded batches avoid one Neon round-trip per bar.
         bars = {}
+        h1 = {}
         for bar in body.candles:
             opened = datetime.fromtimestamp(bar.time,timezone.utc)
-            bars[(bar.symbol,bar.timeframe,bar.time)] = (bar.symbol,bar.timeframe,opened.isoformat(),candle_close(opened,bar.timeframe,body.broker_utc_offset_seconds).isoformat(),bar.open,bar.high,bar.low,bar.close,bar.tick_volume,bar.spread,'mt5',account_id,1)
+            closed = candle_close(opened,bar.timeframe,body.broker_utc_offset_seconds)
+            bars[(bar.symbol,bar.timeframe,bar.time)] = (bar.symbol,bar.timeframe,opened.isoformat(),closed.isoformat(),bar.open,bar.high,bar.low,bar.close,bar.tick_volume,bar.spread,'mt5',account_id,1)
+            if bar.timeframe == 'H1':
+                h1.setdefault(bar.symbol,[]).append(Candle(bar.symbol,'H1',opened,closed,bar.open,bar.high,bar.low,bar.close,bar.tick_volume,bar.spread,'mt5',True,account_id))
+        # MT5 has no native H8; derive it here so analytical readers never have to write candles.
+        for symbol,rows in h1.items():
+            for c in aggregate_h8_from_h1(rows):
+                bars[(symbol,'H8',int(c.open_time.timestamp()))] = (symbol,'H8',c.open_time.isoformat(),c.close_time.isoformat(),c.open,c.high,c.low,c.close,c.tick_volume,c.spread,'mt5',account_id,1)
         values = list(bars.values())
         # Each uploaded series is a contiguous broker window: drop stored rows inside it that the broker no longer has
         # (e.g. bars recorded on broker time before UTC normalization) so gaps and duplicates cannot persist.

@@ -2,7 +2,12 @@ from __future__ import annotations
 import sqlite3, json
 from datetime import datetime
 from ..core.database import execute_retry
+from .models import Candle
 from .provenance import scoped_query, values
+def _utc(value):
+ from datetime import timezone
+ dt=value if isinstance(value,datetime) else datetime.fromisoformat(str(value))
+ return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 class MarketRepository:
  def __init__(self,conn:sqlite3.Connection,provider=None,snapshot_id=None):
   self.conn=conn
@@ -48,6 +53,24 @@ class MarketRepository:
   execute_retry(self.conn,"""INSERT INTO mi_candle(symbol,timeframe,open_time,close_time,open,high,low,close,tick_volume,spread,source,is_closed) VALUES(?,?,?,?,?,?,?,?,?,?,?,1) ON CONFLICT(symbol,timeframe,open_time) DO UPDATE SET close_time=excluded.close_time,open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,tick_volume=excluded.tick_volume,spread=excluded.spread,source=excluded.source,is_closed=1""",(c.symbol,c.timeframe,c.open_time.isoformat(),c.close_time.isoformat(),c.open,c.high,c.low,c.close,c.tick_volume,c.spread,c.source)); return True
  def candles(self,symbol,timeframe,limit=300):
   return [values(row) for row in self._candles_query("SELECT open_time,close_time,open,high,low,close,tick_volume,spread FROM mi_candle WHERE symbol=? AND timeframe=? AND is_closed=1 ORDER BY open_time DESC LIMIT ?",(symbol,timeframe,limit)).fetchall()[::-1]]
+ def recent_candles(self,timeframe:str,limit:int)->dict[str,list[Candle]]:
+  """Latest `limit` closed candles per symbol in one round trip, oldest first."""
+  rows=self._candles_query(
+   """SELECT symbol,open_time,close_time,open,high,low,close,tick_volume,spread FROM (
+        SELECT symbol,open_time,close_time,open,high,low,close,tick_volume,spread,
+               ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY open_time DESC) AS rn
+        FROM mi_candle WHERE timeframe=? AND is_closed=1
+      ) WHERE rn <= ? ORDER BY symbol, open_time""",
+   (timeframe, limit),
+  ).fetchall()
+  out:dict[str,list[Candle]]={}
+  for row in rows:
+   sym,ot,ct,o,h,l,c,v,s=values(row)
+   out.setdefault(str(sym),[]).append(Candle(str(sym),timeframe,_utc(ot),_utc(ct),float(o),float(h),float(l),float(c),int(v or 0),s,self.provider or "UNKNOWN",True,self.account_id))
+  return out
+ def latest_open_times(self,symbol:str)->dict[str,datetime]:
+  rows=self._candles_query("SELECT timeframe,MAX(open_time) FROM mi_candle WHERE symbol=? AND is_closed=1 GROUP BY timeframe",(symbol,)).fetchall()
+  return {str(tf):_utc(t) for tf,t in (values(r) for r in rows) if t}
  def closes_by_timeframe(self,timeframe:str,limit:int=400)->dict[str,list[float]]:
   rows=self._candles_query(
    """SELECT symbol, close FROM (
