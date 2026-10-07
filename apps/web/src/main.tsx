@@ -7,6 +7,7 @@ import './styles/market-intelligence.css';
 import './styles/strength-intelligence.css';
 import './styles/market-scanner.css';
 import './styles/market-structure.css';
+import './styles/ai-outlook.css';
 import './styles/h8-bos-btl.css';
 import './styles/system-control-mt5.css';
 import './styles/responsive-layout.css';

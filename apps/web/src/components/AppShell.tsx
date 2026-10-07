@@ -2,6 +2,7 @@ import React from 'react';
 import {
   Activity,
   BarChart3,
+  BrainCircuit,
   Building2,
   Bell,
   ChevronDown,
@@ -44,6 +45,7 @@ const nav: [string, { page: Page; label: string; icon: React.ReactNode }[]][] = 
       { page: 'market-structure', label: 'Market Structure', icon: <LineChart /> },
       { page: 'h8-bos-btl', label: 'H8 BOS & BTL Intelligence', icon: <BarChart3 /> },
       { page: 'channel-intelligence', label: 'Channel Intelligence', icon: <GitBranch /> },
+      { page: 'ai-market-outlook', label: 'AI Market Outlook', icon: <BrainCircuit /> },
     ],
   ],
   [

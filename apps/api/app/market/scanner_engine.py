@@ -62,6 +62,7 @@ from . import channel_intelligence as chan
 from . import fractal_structure as frac
 from .strength_engine import get_strength_engine
 from .strength_intel_store import active_scope
+from .supertrend import supertrend_core
 from .provenance import values
 
 log = logging.getLogger(__name__)
@@ -201,30 +202,7 @@ class MarketScannerEngine:
             if invalid:
                 out[sym] = {'excluded': 'Missing or stale closed history: ' + ', '.join(invalid)}
                 continue
-            structures = {tf: market_structure(bars[tf], s.swing_strength) for tf in STRUCTURE_TIMEFRAMES}
-            primary_tf = next(
-                (tf for tf in ("D1", "W1", "H8") if structures[tf]["key"] in ("BULLISH", "BEARISH")), "D1"
-            )
-            h1 = bars["H1"]
-            rs = range_settings()
-            range_core = weekly_range(bars["W1"], rs)
-            overview = self._overview_core(bars, range_core, rs)
-            out[sym] = {
-                "d1": d1,
-                "h1": h1,
-                "range_core": range_core,
-                "overview": overview,
-                "h8bb": self._h8bb_core(bars),
-                "trend": trend_core(bars, trend_settings()),
-                "fractal": frac.fractal_core(bars, frac.fractal_settings()),
-                "bos": bos.bos_core(bars, overview, bos.bos_settings()),
-                "channel": chan.channel_core(bars, chan.channel_settings()),
-                "range_ltf": ltf_context(d1, bars["H8"], h1, rs),
-                "structures": structures,
-                "primary_tf": primary_tf,
-                "volatility": volatility(d1, s.atr_period, s.atr_baseline, s.vol_low, s.vol_high),
-                "last_close": (h1[-1].t + timedelta(hours=1), h1[-1].c) if h1 else (d1[-1].t, d1[-1].c),
-            }
+            out[sym] = analysis_cores(bars)
         with self._lock:
             self._analysis = out
             self._cycle_id += 1
@@ -1219,6 +1197,19 @@ class MarketScannerEngine:
         with self._lock:
             return {r["symbol"]: r for r in self._rows}, dict(self._analysis)
 
+    def analysis_state(self) -> dict:
+        """Consistent copy of the latest closed-bar analysis for downstream engines (AI Market Outlook)."""
+        with self._lock:
+            return {
+                "rows": {r["symbol"]: r for r in self._rows},
+                "analysis": dict(self._analysis),
+                "cycle_id": self._cycle_id,
+                "cycle_at": self._cycle_at,
+                "snapshot_id": self._ctx.get("snapshot_id"),
+                "provider": self._ctx.get("active_provider"),
+                "connected": bool(self._ctx.get("market_data_ready")),
+            }
+
     @staticmethod
     def _base(sym: str, row: dict) -> dict:
         return {
@@ -1529,6 +1520,36 @@ class MarketScannerEngine:
             "tit": chan.tit_view(sym, core, price, s),
             "tf_lines": {t: (core.get(t) or {}).get("lines") for t in chan.CHANNEL_TIMEFRAMES},
         }
+
+
+def analysis_cores(bars: dict[str, list[Bar]], *, h8bb: bool = True) -> dict:
+    """Every specialist engine's price-independent core for one instrument from its closed bars.
+
+    Pure function of the bars, so a walk-forward replay can rebuild the exact state as of any past close."""
+    s = settings()
+    d1, h1 = bars["D1"], bars["H1"]
+    structures = {tf: market_structure(bars[tf], s.swing_strength) for tf in STRUCTURE_TIMEFRAMES}
+    primary_tf = next((tf for tf in ("D1", "W1", "H8") if structures[tf]["key"] in ("BULLISH", "BEARISH")), "D1")
+    rs = range_settings()
+    range_core = weekly_range(bars["W1"], rs)
+    overview = MarketScannerEngine._overview_core(bars, range_core, rs)
+    return {
+        "d1": d1,
+        "h1": h1,
+        "range_core": range_core,
+        "overview": overview,
+        "h8bb": MarketScannerEngine._h8bb_core(bars) if h8bb else None,
+        "trend": trend_core(bars, trend_settings()),
+        "fractal": frac.fractal_core(bars, frac.fractal_settings()),
+        "bos": bos.bos_core(bars, overview, bos.bos_settings()),
+        "channel": chan.channel_core(bars, chan.channel_settings()),
+        "supertrend": supertrend_core(bars),
+        "range_ltf": ltf_context(d1, bars["H8"], h1, rs),
+        "structures": structures,
+        "primary_tf": primary_tf,
+        "volatility": volatility(d1, s.atr_period, s.atr_baseline, s.vol_low, s.vol_high),
+        "last_close": (h1[-1].t + timedelta(hours=1), h1[-1].c) if h1 else (d1[-1].t, d1[-1].c),
+    }
 
 
 def _recent_gap(symbol: str, timeframe: str, history: list[Bar], broker_utc_offset_seconds: int) -> bool:

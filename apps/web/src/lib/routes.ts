@@ -6,6 +6,7 @@ export type Page =
   | 'market-structure'
   | 'h8-bos-btl'
   | 'channel-intelligence'
+  | 'ai-market-outlook'
   | 'trading-opportunities'
   | 'risk-portfolio'
   | 'execution-positions'
@@ -38,6 +39,7 @@ export const PAGE_CRUMB: Record<Page, string> = {
   'market-structure': 'Market Structure',
   'h8-bos-btl': 'H8 BOS & BTL Intelligence',
   'channel-intelligence': 'Channel Intelligence',
+  'ai-market-outlook': 'AI Market Outlook',
   'trading-opportunities': 'Trading Opportunities',
   'risk-portfolio': 'Risk & Portfolio',
   'execution-positions': 'Execution & Positions',

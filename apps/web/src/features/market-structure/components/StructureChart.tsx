@@ -21,8 +21,8 @@ export type TimePoint = [string, number];
 export type ChartOverlay = {
   bands?: { upper: [TimePoint, TimePoint]; lower: [TimePoint, TimePoint]; tone: OverlayTone }[];
   lines?: { from: TimePoint; to: TimePoint; tone: OverlayTone; dashed?: boolean; width?: number }[];
-  levels?: { price: number; tone: OverlayTone; label?: string; dashed?: boolean; from?: string }[];
-  zones?: { lo: number; hi: number; tone: OverlayTone; from?: string; label?: string }[];
+  levels?: { price: number; tone: OverlayTone; label?: string; dashed?: boolean; from?: string; id?: string }[];
+  zones?: { lo: number; hi: number; tone: OverlayTone; from?: string; label?: string; id?: string }[];
   markers?: {
     at: string;
     price: number;
@@ -31,8 +31,11 @@ export type ChartOverlay = {
     label?: string;
     muted?: boolean;
     below?: boolean;
+    id?: string;
   }[];
-  tags?: { at?: string; price: number; title: string; value?: string; tone: OverlayTone; place: 'above' | 'below' | 'center' }[];
+  tags?: { at?: string; price: number; title: string; value?: string; tone: OverlayTone; place: 'above' | 'below' | 'center'; id?: string }[];
+  /** Projected paths (may extend into the reserved future area); the last segment gets an arrowhead. */
+  paths?: { points: TimePoint[]; tone: OverlayTone; dashed?: boolean; arrow?: boolean; id?: string }[];
 };
 export type LegendItem = { label: string; swatch: string };
 
@@ -119,6 +122,9 @@ export function StructureChart({
   showVolume = true,
   compact = false,
   className = '',
+  futureBars = 0,
+  onPick,
+  selected,
 }: {
   symbol: string;
   title: string;
@@ -138,6 +144,9 @@ export function StructureChart({
   showVolume?: boolean;
   compact?: boolean;
   className?: string;
+  futureBars?: number;
+  onPick?: (id: string) => void;
+  selected?: string | null;
 }) {
   const clipId = `mst-clip-${useId().replace(/:/g, '')}`;
   const wrap = useRef<HTMLDivElement>(null);
@@ -197,13 +206,14 @@ export function StructureChart({
     if (ch) extra.push(ch.m0 + ch.half, ch.m0 - ch.half, ch.m1 + ch.half, ch.m1 - ch.half);
     if (overlay) {
       const n = candles.length;
+      const end = n - 0.5 + futureBars;
       const visible = (a: TimePoint, b: TimePoint) => {
         const ia = idxAt(a[0]);
         const ib = idxAt(b[0]);
         if (!Number.isFinite(ia) || !Number.isFinite(ib) || ib === ia) return [];
         const at = (i: number) => a[1] + ((b[1] - a[1]) * (i - ia)) / (ib - ia);
         const i0 = Math.max(-0.5, Math.min(ia, ib));
-        const i1 = Math.min(n - 0.5, Math.max(ia, ib));
+        const i1 = Math.min(end, Math.max(ia, ib));
         return i1 > i0 ? [at(i0), at(i1)] : [];
       };
       for (const b of overlay.bands ?? []) extra.push(...visible(...b.upper), ...visible(...b.lower));
@@ -211,6 +221,12 @@ export function StructureChart({
       for (const l of overlay.levels ?? []) extra.push(l.price);
       for (const z of overlay.zones ?? []) extra.push(z.lo, z.hi);
       for (const m of overlay.markers ?? []) if (idxAt(m.at) >= -0.5) extra.push(m.price);
+      for (const t of overlay.tags ?? []) extra.push(t.price);
+      for (const p of overlay.paths ?? [])
+        for (const [t, v] of p.points) {
+          const i = idxAt(t);
+          if (i >= -0.5 && i <= end) extra.push(v);
+        }
     }
     for (const v of extra) {
       lo = Math.min(lo, v);
@@ -231,13 +247,17 @@ export function StructureChart({
     }
     const plotBottom = height - PAD.bottom;
     const priceBottom = showVolume ? plotBottom - VOL_H - 4 : plotBottom - 2;
-    const step = (width - PAD.left - PAD.right) / candles.length;
+    const step = (width - PAD.left - PAD.right) / (candles.length + futureBars);
     const x = (i: number) => PAD.left + step * (i + 0.5);
     const y = (v: number) => PAD.top + ((hi - v) / (hi - lo)) * (priceBottom - PAD.top);
     const vmax = Math.max(1, ...candles.map((c) => c.v || 0));
     const tickCount = Math.max(compact ? 3 : 4, Math.round((priceBottom - PAD.top) / TICK_SPACING_PX));
     return { lo, hi, step, x, y, plotBottom, priceBottom, vmax, tickCount };
-  }, [candles, width, height, lastPrice, range, ch, overlay, idxAt, showVolume, compact]);
+  }, [candles, width, height, lastPrice, range, ch, overlay, idxAt, showVolume, compact, futureBars]);
+  const pick = (id?: string) =>
+    id && onPick
+      ? { onClick: () => onPick(id), style: { cursor: 'pointer' }, 'data-picked': selected === id ? '' : undefined }
+      : {};
 
   const last = candles[candles.length - 1];
   const prev = candles[candles.length - 2];
@@ -362,6 +382,7 @@ export function StructureChart({
                   return (
                     <rect
                       key={`z${k}`}
+                      {...pick(z.id)}
                       className={`mcx-zone is-${z.tone}`}
                       x={x0}
                       y={top}
@@ -390,6 +411,7 @@ export function StructureChart({
                   return (
                     <line
                       key={`v${k}`}
+                      {...pick(l.id)}
                       className={`mcx-line is-${l.tone} ${l.dashed === false ? '' : 'is-dashed'}`}
                       x1={x0}
                       x2={width - PAD.right}
@@ -536,7 +558,7 @@ export function StructureChart({
                   const below = m.shape === 'up';
                   const ty = below ? my + 22 : my - 15;
                   return (
-                    <g key={`m${k}`} className={cls}>
+                    <g key={`m${k}`} {...pick(m.id)} className={cls}>
                       {m.shape === 'up' ? (
                         <path d={`M${mx},${my + 5} l5,8 h-10 z`} />
                       ) : m.shape === 'down' ? (
@@ -554,6 +576,23 @@ export function StructureChart({
                     </g>
                   );
                 })}
+                {overlay.paths?.map((p, k) => {
+                  const pts = p.points.map(([t, v]) => [g.x(idxAt(t)), g.y(v)] as const).filter(([px, py]) => Number.isFinite(px) && Number.isFinite(py));
+                  if (pts.length < 2) return null;
+                  const [ax, ay] = pts[pts.length - 2];
+                  const [bx, by] = pts[pts.length - 1];
+                  const ang = Math.atan2(by - ay, bx - ax);
+                  const head = (s: number) => `${bx - 9 * Math.cos(ang + s)},${by - 9 * Math.sin(ang + s)}`;
+                  return (
+                    <g key={`p${k}`} {...pick(p.id)} className={`mcx-path is-${p.tone} ${p.dashed ? 'is-dashed' : ''}`}>
+                      <polyline points={pts.map(([px, py]) => `${px},${py}`).join(' ')} />
+                      {pts.slice(1, -1).map(([px, py], j) => (
+                        <circle key={j} cx={px} cy={py} r={2.5} />
+                      ))}
+                      {p.arrow !== false ? <path className="mcx-path-head" d={`M${bx},${by} L${head(0.45)} L${head(-0.45)} Z`} /> : null}
+                    </g>
+                  );
+                })}
                 {overlay.tags?.map((t, k) => {
                   const w = TAG_W;
                   const h = t.value ? 30 : 18;
@@ -563,7 +602,7 @@ export function StructureChart({
                   const raw = t.place === 'above' ? py - h - 8 : t.place === 'below' ? py + 8 : py - h / 2;
                   const by = Math.max(PAD.top, Math.min(g.priceBottom - h, raw));
                   return (
-                    <g key={`t${k}`} className={`mcx-tag is-${t.tone}`}>
+                    <g key={`t${k}`} {...pick(t.id)} className={`mcx-tag is-${t.tone}`}>
                       <rect x={bx} y={by} width={w} height={h} rx={5} />
                       <text className="mcx-tag-t" x={bx + w / 2} y={by + 12} textAnchor="middle">
                         {t.title}

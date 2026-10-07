@@ -6,6 +6,7 @@ import { WorkflowEngine } from './pages/WorkflowEngine';
 import { MarketScanner } from './pages/MarketScanner';
 import { MarketStructure } from './pages/MarketStructure';
 import { ChannelIntelligence } from './pages/ChannelIntelligence';
+import { AiMarketOutlook } from './pages/AiMarketOutlook';
 import { H8BosBtl } from './pages/H8BosBtl';
 import { TradingOpportunities } from './pages/TradingOpportunities';
 import { RiskPortfolio } from './pages/RiskPortfolio';
@@ -144,6 +145,9 @@ export function App() {
       break;
     case 'channel-intelligence':
       body = <ChannelIntelligence />;
+      break;
+    case 'ai-market-outlook':
+      body = <AiMarketOutlook initialTab={tab} onTab={(t) => writeHashRoute('ai-market-outlook', t)} />;
       break;
     case 'trading-opportunities':
       body = <TradingOpportunities />;

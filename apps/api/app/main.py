@@ -91,6 +91,10 @@ def _start_optional_services(app: FastAPI) -> None:
             get_strength_engine().start()
         if scanner_enabled():
             get_scanner_engine().start()
+        if os.getenv("AI_OUTLOOK_SCHEDULER_ENABLED", "1").strip().lower() not in ("0", "false", "no"):
+            from .market.outlook.service import get_outlook_service
+
+            get_outlook_service().start()
         if os.getenv("MI_WORKER_ENABLED", "0").strip() in ("1", "true", "yes"):
             from .workers.market_intelligence_worker import MarketIntelligenceWorker
 
@@ -114,6 +118,9 @@ def _stop_optional_services() -> None:
 
         get_strength_engine().stop()
         get_scanner_engine().stop()
+        from .market.outlook.service import get_outlook_service
+
+        get_outlook_service().stop()
     except Exception as exc:
         _log_startup_failure("Optional autonomous service shutdown", exc)
 
@@ -213,3 +220,6 @@ app.include_router(market_intelligence.router)
 
 from .routers import providers
 app.include_router(providers.router)
+
+from .routers import ai_outlook
+app.include_router(ai_outlook.router)
