@@ -1,8 +1,12 @@
 """Provider adapter over fresh, account-scoped Windows bridge uploads."""
+import time
 from datetime import datetime, timezone
 from ..domain.mt5_bridge import status
 from .models import Candle
 from .provider_contract import MarketDataUnavailable
+
+# Heartbeats arrive every ~15s; re-reading them per symbol costs a database round trip each.
+STATE_CACHE_SECONDS = 5.0
 
 
 class MT5BridgeGateway:
@@ -10,9 +14,12 @@ class MT5BridgeGateway:
 
     def __init__(self, conn, tenant_id):
         self.conn, self.tenant_id = conn, tenant_id
+        self._state, self._state_mono = None, 0.0
 
     def state(self):
-        state = status(self.conn,self.tenant_id)
+        if self._state is None or time.monotonic() - self._state_mono > STATE_CACHE_SECONDS:
+            self._state, self._state_mono = status(self.conn,self.tenant_id), time.monotonic()
+        state = self._state
         if not state or not state['connected']:
             raise MarketDataUnavailable('mt5_bridge_heartbeat_expired')
         return state
@@ -32,8 +39,12 @@ class MT5BridgeGateway:
         return {**q,'provider':'mt5','spread':q['ask']-q['bid'],'timestamp':datetime.fromtimestamp(q['time'],timezone.utc).isoformat()}
 
     def symbol_snapshot(self,symbol):
+        """Same contract as the direct MT5 gateway; the bridge does not upload the forming D1 bar."""
         price = self.get_latest_price(symbol)
-        return {**price,'point':price['tick_size'],'broker_symbol':price['provider_symbol']}
+        point = price['tick_size']
+        return {**price,'symbol':symbol,'point':point,'broker_symbol':price['provider_symbol'],'description':'',
+                'spread_points':round((price['ask']-price['bid'])/point) if point else 0,
+                'tick_time':datetime.fromtimestamp(price['time'],timezone.utc),'day_high':None,'day_low':None}
 
     def get_closed_candles(self,symbol,timeframe,*,start=None,end=None,count=400):
         state = self.state()

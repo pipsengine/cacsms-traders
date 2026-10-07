@@ -13,7 +13,11 @@ def _epoch_seconds(dt: datetime) -> float:
 
 
 def aggregate_h8_from_h1(h1: list[Candle]) -> list[Candle]:
-    """Group H1 bars into 8-hour buckets (UTC epoch aligned)."""
+    """Group H1 bars into 8-hour buckets (UTC epoch aligned).
+
+    A bucket with fewer than 8 bars is closed only once a later H1 bar exists: the missing hours were
+    a market closure (weekend open/close, gold's daily break), not bars still to come.
+    """
     if not h1:
         return []
     bucket_sec = 8 * 3600
@@ -23,19 +27,24 @@ def aggregate_h8_from_h1(h1: list[Candle]) -> list[Candle]:
             continue
         key = int(_epoch_seconds(c.open_time) // bucket_sec)
         buckets.setdefault(key, []).append(c)
+    last_key = max(buckets, default=None)
     out: list[Candle] = []
     for key in sorted(buckets):
         bars = sorted(buckets[key], key=lambda x: x.open_time)
-        if len(bars) != 8 or len({(b.source.lower(),b.account_id) for b in bars}) != 1:
+        if len(bars) != 8 and key == last_key:
             continue
-        if any(int(_epoch_seconds(b.open_time)) != key * bucket_sec + i * 3600 for i, b in enumerate(bars)):
+        if len({(b.source.lower(),b.account_id) for b in bars}) != 1:
             continue
+        offsets = [int(_epoch_seconds(b.open_time)) - key * bucket_sec for b in bars]
+        if len(set(offsets)) != len(offsets) or any(o % 3600 for o in offsets):
+            continue
+        start = datetime.fromtimestamp(key * bucket_sec, timezone.utc)
         out.append(
             Candle(
                 symbol=bars[0].symbol,
                 timeframe="H8",
-                open_time=bars[0].open_time,
-                close_time=bars[-1].close_time,
+                open_time=start,
+                close_time=datetime.fromtimestamp((key + 1) * bucket_sec, timezone.utc),
                 open=bars[0].open,
                 high=max(b.high for b in bars),
                 low=min(b.low for b in bars),

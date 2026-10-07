@@ -192,7 +192,15 @@ def pair_relationship_analysis(pair: str, period: str = Query("24H")):
 
 def _scanner() -> MarketScannerEngine:
     engine = get_scanner_engine()
-    if not engine.running and scanner_enabled():
+    if engine.running or not scanner_enabled():
+        return engine
+    if os.getenv("VERCEL", "").strip() == "1":
+        # Threads are frozen between serverless invocations; the scanner also merges strength intelligence.
+        strength = get_strength_engine()
+        if _on_demand(strength):
+            strength.tick_on_demand()
+        engine.tick_on_demand()
+    else:
         engine.start()
     return engine
 

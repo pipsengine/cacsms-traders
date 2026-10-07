@@ -1,6 +1,7 @@
 """Deterministic market-data policy. Execution is never selected by this policy."""
 from datetime import datetime, timezone
 import json
+import time
 
 from .market_data import configuration, provider_context
 
@@ -19,6 +20,7 @@ class ProviderManager:
     def __init__(self, conn):
         self.conn = conn
         self.cfg = configuration(conn)
+        self._last_observed: dict[str, tuple[tuple, float]] = {}
 
     def states(self):
         states = {}
@@ -77,6 +79,12 @@ class ProviderManager:
             self.observe('ctrader', success=False, error='provider_probe_failed')
 
     def observe(self, provider, *, success, data_available=None, error=None):
+        # A gateway observes every request; repeating the same outcome needs no health/account re-reads.
+        outcome = (success, data_available, error)
+        seen = self._last_observed.get(provider)
+        if seen and seen[0] == outcome and time.monotonic() - seen[1] < OBSERVE_WRITE_SECONDS:
+            return
+        self._last_observed[provider] = (outcome, time.monotonic())
         now = datetime.now(timezone.utc).isoformat()
         old = self.conn.execute('SELECT state_json FROM mi_provider_health WHERE provider=?', (provider,)).fetchone()
         state = json.loads(old['state_json']) if old else {k: v for k, v in self.states()[provider].items() if k != 'context'}

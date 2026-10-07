@@ -120,6 +120,19 @@ def test_h1_upload_derives_h8_and_store_validation_reads_it(client):
         assert {f['error_code'] for f in failures} == {'no_closed_bars'}
 
 
+def test_bridge_quote_snapshot_has_the_scanner_contract(client):
+    tenant,headers,bridge_headers = pairing(client)
+    body = payload()
+    assert client.post(f'/api/tenants/{tenant}/mt5-bridge/heartbeat',headers=bridge_headers,json=body).status_code == 200
+    from apps.api.app.core.database import db
+    from apps.api.app.market.market_data import create_market_data_gateway
+    with db() as conn:
+        quote = create_market_data_gateway(conn).symbol_snapshot(body['quotes'][0]['symbol'])
+    for key in ('bid','ask','digits','spread_points','tick_time','day_high','day_low','description'):
+        assert key in quote
+    assert quote['tick_time'] == datetime.fromtimestamp(body['quotes'][0]['time'], timezone.utc)
+
+
 def test_bridge_accepts_normalized_broker_time_and_preserves_month_boundary(client):
     tenant,headers,bridge_headers=pairing(client)
     body=payload()

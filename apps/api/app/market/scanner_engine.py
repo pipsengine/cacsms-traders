@@ -14,7 +14,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-from ..core.database import db, execute_retry
+from ..core.database import db, execute_values
 from .ingestion_runner import MarketIngestionRunner
 from .market_data import create_market_data_gateway, market_context
 from .repository import MarketRepository
@@ -59,6 +59,7 @@ from .trend_structure import mtf_rows, trend_core, trend_events, trend_view
 from .trend_structure_config import TREND_TIMEFRAMES, trend_settings, trend_settings_payload
 from .strength_engine import get_strength_engine
 from .strength_intel_store import active_scope
+from .provenance import values
 
 log = logging.getLogger(__name__)
 
@@ -67,18 +68,12 @@ H8BB_CHART_BARS = {"W": 72, "H8": 96, "H1": 110, "M30": 110}
 INCREMENTAL_BARS = 6
 REVERSAL_TIMEFRAMES = ("W", "D1", "H8")
 STALE_AFTER_SECONDS = 180.0
+ON_DEMAND_INTERVAL_SECONDS = float(os.getenv("SCANNER_ON_DEMAND_SECONDS", "10") or 10)
+COLD_WAIT_SECONDS = float(os.getenv("SCANNER_COLD_WAIT_SECONDS", "90") or 90)
 
 
 def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt else None
-
-
-def load_bars(repo: MarketRepository, symbol: str, timeframe: str, limit: int) -> list[Bar]:
-    out: list[Bar] = []
-    for r in repo.candles(symbol, timeframe, limit):
-        t = datetime.fromisoformat(r[0])
-        out.append(Bar(t if t.tzinfo else t.replace(tzinfo=timezone.utc), float(r[2]), float(r[3]), float(r[4]), float(r[5])))
-    return out
 
 
 class MarketScannerEngine:
@@ -100,6 +95,8 @@ class MarketScannerEngine:
         self._persist_mono = 0.0
         self._gold_bootstrapped = False
         self._gold_error: str | None = None
+        self._demand_lock = threading.Lock()
+        self._last_demand_mono = 0.0
 
     @property
     def running(self) -> bool:
@@ -118,14 +115,39 @@ class MarketScannerEngine:
 
     def _run(self) -> None:
         while not self._stop.is_set():
-            try:
-                self._tick()
-            except Exception as exc:
-                log.exception("Market scanner tick failed")
-                with self._lock:
-                    self._state = "ERROR"
-                    self._error = str(exc)
+            self._safe_tick()
             self._stop.wait(settings().quote_seconds)
+
+    def _safe_tick(self) -> None:
+        try:
+            self._tick()
+        except Exception as exc:
+            log.exception("Market scanner tick failed")
+            with self._lock:
+                self._state = "ERROR"
+                self._error = str(exc)
+
+    def tick_on_demand(self) -> None:
+        """Advance the scanner inside an API request where no background worker can live (serverless).
+
+        Throttled. Concurrent requests return the cached rows while one request ticks; with nothing
+        cached yet (cold instance) they wait for that tick instead of answering with an empty scan.
+        """
+        if self.running:
+            return
+        if time.monotonic() - self._last_demand_mono < ON_DEMAND_INTERVAL_SECONDS:
+            return
+        with self._lock:
+            cold = not self._analysis
+        if not self._demand_lock.acquire(blocking=cold, timeout=COLD_WAIT_SECONDS if cold else -1):
+            return
+        try:
+            if time.monotonic() - self._last_demand_mono < ON_DEMAND_INTERVAL_SECONDS:
+                return
+            self._safe_tick()
+        finally:
+            self._last_demand_mono = time.monotonic()
+            self._demand_lock.release()
 
     def _ingest_gold(self, repo: MarketRepository, gw, *, bootstrap: bool) -> None:
         runner = MarketIngestionRunner(gw, repo, candle_count=400 if bootstrap else INCREMENTAL_BARS)
@@ -153,8 +175,9 @@ class MarketScannerEngine:
     def _analyze(self, repo: MarketRepository, now: datetime, connected: bool, broker_utc_offset_seconds: int = 0) -> None:
         s = settings()
         out: dict[str, dict] = {}
+        loaded = {tf: repo.recent_candles(tf, n, SCANNER_UNIVERSE) for tf, n in BARS.items()}
         for sym in SCANNER_UNIVERSE:
-            bars = {tf: load_bars(repo, sym, tf, n) for tf, n in BARS.items()}
+            bars = {tf: [Bar(c.open_time, c.open, c.high, c.low, c.close) for c in loaded[tf].get(sym, [])] for tf in BARS}
             d1 = bars["D1"]
             if len(d1) < s.min_d1_bars:
                 why = f"Insufficient D1 history ({len(d1)}/{s.min_d1_bars} closed bars)"
@@ -166,12 +189,11 @@ class MarketScannerEngine:
                 continue
             from .normalized_provider import candle_close
             from .quality import assess
-            from .ingestion import missing_between
             invalid = []
             for tf in STRUCTURE_TIMEFRAMES:
                 history = bars[tf]
                 offset = broker_utc_offset_seconds
-                if len(history) < 2 or assess(sym,tf,candle_close(history[-1].t,tf,offset) if history else None).state == 'STALE' or any(missing_between(a.t,b.t,tf,offset) for a,b in zip(history,history[1:])):
+                if len(history) < 2 or assess(sym,tf,candle_close(history[-1].t,tf,offset) if history else None).state == 'STALE' or _recent_gap(sym, tf, history, offset):
                     invalid.append(tf)
             if invalid:
                 out[sym] = {'excluded': 'Missing or stale closed history: ' + ', '.join(invalid)}
@@ -221,6 +243,7 @@ class MarketScannerEngine:
             from .provider_manager import ProviderManager
             for provider, status in ctx.get('providers', {}).items():
                 ProviderManager(conn).record_health(provider, status)
+            conn.commit()
             connected = bool(ctx.get("market_data_ready"))
             key = (ctx.get('active_provider'), ctx.get('providers', {}).get(ctx.get('active_provider'), {}).get('account_id'))
             previous = (self._ctx.get('active_provider'), self._ctx.get('providers', {}).get(self._ctx.get('active_provider'), {}).get('account_id'))
@@ -231,7 +254,7 @@ class MarketScannerEngine:
                     self._quotes = {}
                     self._gold_bootstrapped = False
                     self._cycle_mono = 0.0
-            gw = create_market_data_gateway(conn, context=ctx) if connected else None
+            gw = create_market_data_gateway(conn, context=ctx, verify_scope=False) if connected else None
             # Release provider-health and policy row locks before the long ingest/analysis phase.
             conn.commit()
             ctx["snapshot_id"] = getattr(gw, "snapshot_id", None)
@@ -243,7 +266,8 @@ class MarketScannerEngine:
                     self._state = "SYNCING" if connected else "MARKET_DATA_UNAVAILABLE"
             due = time.monotonic() - self._cycle_mono >= s.analysis_seconds or not self._analysis
             if due:
-                if gw is not None:
+                # Bridge uploads are already in the candle store; re-ingesting would only read them back.
+                if gw is not None and getattr(getattr(gw, "adapter", None), "candles_persisted", False) is not True:
                     try:
                         self._ingest_gold(repo, gw, bootstrap=not self._gold_bootstrapped)
                     except Exception as exc:
@@ -259,11 +283,27 @@ class MarketScannerEngine:
                 self._rows = rows
                 self._state = "READY" if connected else "MARKET_DATA_UNAVAILABLE"
                 self._error = None
+            if due and self._persist_mono == 0.0:
+                self._adopt_recent_persist(conn, now, s.persist_seconds)
             if due and time.monotonic() - self._persist_mono >= s.persist_seconds:
                 for kind in ("scanner", "range_structure", "structure_overview", "h8_bos_btl", "trend_structure", "channels"):
                     repo.record_provenance(kind, self._cycle_at or now)
                 self._persist(conn, rows)
                 self._persist_mono = time.monotonic()
+
+    def _adopt_recent_persist(self, conn, now: datetime, interval: float) -> None:
+        """A fresh (serverless) instance must not duplicate a snapshot another instance just persisted."""
+        tenant, account = active_scope(conn)
+        row = conn.execute(
+            "SELECT MAX(as_of) FROM mi_scanner_snapshot WHERE tenant_id=? AND trading_account_id=?", (tenant, account)
+        ).fetchone()
+        latest = values(row)[0] if row else None
+        if not latest:
+            return
+        at = datetime.fromisoformat(str(latest))
+        age = (now - (at if at.tzinfo else at.replace(tzinfo=timezone.utc))).total_seconds()
+        if 0 <= age < interval:
+            self._persist_mono = time.monotonic() - age
 
     def _compose(self, now: datetime) -> list[dict]:
         s = settings()
@@ -367,12 +407,14 @@ class MarketScannerEngine:
             cycle, at = self._cycle_id, self._cycle_at
         if at is None:
             return
+        batches: dict[str, list[tuple]] = {table: [] for table in SNAPSHOT_COLUMNS}
+
+        def put(table: str, row: tuple) -> None:
+            batches[table].append(row)
+
         for r in rows:
-            execute_retry(
-                conn,
-                """INSERT OR REPLACE INTO mi_scanner_snapshot(tenant_id,trading_account_id,cycle_id,as_of,symbol,status,
-                     score,price,change_24h_pct,structure,channel,volatility,differential,reasons_json,details_json)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            put(
+                "mi_scanner_snapshot",
                 (
                     tenant,
                     account,
@@ -404,12 +446,8 @@ class MarketScannerEngine:
             if not view or not view.get("available"):
                 continue
             core = a["range_core"]
-            execute_retry(
-                conn,
-                """INSERT OR REPLACE INTO mi_range_structure_snapshot(tenant_id,trading_account_id,cycle_id,as_of,symbol,
-                     regime,range_state,range_high,range_low,position,developing_fractal,evidence_score,quality,
-                     hypothesis,decision,details_json)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            put(
+                "mi_range_structure_snapshot",
                 (
                     tenant,
                     account,
@@ -433,11 +471,8 @@ class MarketScannerEngine:
             if not r["available"]:
                 continue
             reg = r["regimes"]
-            execute_retry(
-                conn,
-                """INSERT OR REPLACE INTO mi_structure_overview_snapshot(tenant_id,trading_account_id,cycle_id,as_of,symbol,
-                     regime_w,regime_d1,regime_h8,regime_h1,current_state,alignment_score,details_json)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            put(
+                "mi_structure_overview_snapshot",
                 (
                     tenant,
                     account,
@@ -461,12 +496,8 @@ class MarketScannerEngine:
                 continue
             ev = r["event"] or {}
             confirmed = r["kind"] in ("BOS + BTL", "BOS", "BTL")
-            execute_retry(
-                conn,
-                """INSERT OR REPLACE INTO mi_h8_bos_btl_snapshot(tenant_id,trading_account_id,cycle_id,as_of,symbol,
-                     event_kind,confirmed,direction,event_at,bos_level,btl_level,break_strength_atr,retest_status,
-                     h1_status,m30_status,analysis_id,details_json)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            put(
+                "mi_h8_bos_btl_snapshot",
                 (
                     tenant,
                     account,
@@ -495,12 +526,8 @@ class MarketScannerEngine:
                 continue
             v = r["_view"]
             geo = v["geometry"] or {}
-            execute_retry(
-                conn,
-                """INSERT OR REPLACE INTO mi_trend_structure_snapshot(tenant_id,trading_account_id,cycle_id,as_of,symbol,
-                     direction,trend_state,strength,age_weeks,cell_w,cell_d1,cell_h8,cell_h1,setup,pullback_depth_pct,
-                     analysis_close_at,details_json)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            put(
+                "mi_trend_structure_snapshot",
                 (
                     tenant,
                     account,
@@ -528,6 +555,8 @@ class MarketScannerEngine:
                     ),
                 ),
             )
+        for table, batch in batches.items():
+            _upsert_snapshots(conn, table, batch)
         conn.commit()
 
     def meta(self) -> dict:
@@ -1178,12 +1207,62 @@ class MarketScannerEngine:
         }
 
 
+def _recent_gap(symbol: str, timeframe: str, history: list[Bar], broker_utc_offset_seconds: int) -> bool:
+    """Same continuity rule as candle ingestion: only gaps among the latest bars block analysis.
+
+    Gold pauses for an hour every trading day, so a lone missing H1 bar is its daily break."""
+    from .ingestion import RECENT_GAP_BARS, missing_between
+    recent = history[-RECENT_GAP_BARS:]
+    tolerance = 1 if symbol == GOLD and timeframe == "H1" else 0
+    return any(missing_between(a.t, b.t, timeframe, broker_utc_offset_seconds) > tolerance for a, b in zip(recent, recent[1:]))
+
+
 def _close_at_or_before(h1: list[Bar], at: datetime) -> float | None:
     """Close of the last H1 bar that had closed by ``at`` (24h change anchored to the price time, not wall clock)."""
     for b in reversed(h1):
         if b.t + timedelta(hours=1) <= at:
             return b.c
     return None
+
+
+SNAPSHOT_KEY = ("tenant_id", "trading_account_id", "symbol", "as_of")
+SNAPSHOT_COLUMNS = {
+    "mi_scanner_snapshot": (
+        "tenant_id", "trading_account_id", "cycle_id", "as_of", "symbol", "status", "score", "price", "change_24h_pct",
+        "structure", "channel", "volatility", "differential", "reasons_json", "details_json",
+    ),
+    "mi_range_structure_snapshot": (
+        "tenant_id", "trading_account_id", "cycle_id", "as_of", "symbol", "regime", "range_state", "range_high",
+        "range_low", "position", "developing_fractal", "evidence_score", "quality", "hypothesis", "decision", "details_json",
+    ),
+    "mi_structure_overview_snapshot": (
+        "tenant_id", "trading_account_id", "cycle_id", "as_of", "symbol", "regime_w", "regime_d1", "regime_h8",
+        "regime_h1", "current_state", "alignment_score", "details_json",
+    ),
+    "mi_h8_bos_btl_snapshot": (
+        "tenant_id", "trading_account_id", "cycle_id", "as_of", "symbol", "event_kind", "confirmed", "direction",
+        "event_at", "bos_level", "btl_level", "break_strength_atr", "retest_status", "h1_status", "m30_status",
+        "analysis_id", "details_json",
+    ),
+    "mi_trend_structure_snapshot": (
+        "tenant_id", "trading_account_id", "cycle_id", "as_of", "symbol", "direction", "trend_state", "strength",
+        "age_weeks", "cell_w", "cell_d1", "cell_h8", "cell_h1", "setup", "pullback_depth_pct", "analysis_close_at",
+        "details_json",
+    ),
+}
+
+
+def _upsert_snapshots(conn, table: str, rows: list[tuple]) -> None:
+    columns = SNAPSHOT_COLUMNS[table]
+    key = [columns.index(c) for c in SNAPSHOT_KEY]
+    updates = ",".join(f"{c}=excluded.{c}" for c in columns if c not in SNAPSHOT_KEY)
+    execute_values(
+        conn,
+        f"INSERT INTO {table}({','.join(columns)})",
+        rows,
+        f"ON CONFLICT({','.join(SNAPSHOT_KEY)}) DO UPDATE SET {updates}",
+        key=lambda r: tuple(r[i] for i in key),
+    )
 
 
 def _public(row: dict) -> dict:
