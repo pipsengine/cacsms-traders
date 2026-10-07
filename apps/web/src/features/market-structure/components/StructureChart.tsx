@@ -15,6 +15,27 @@ type RangeOverlay = Pick<RangeCore, 'start' | 'high_zone' | 'low_zone' | 'range_
   fractals?: FractalMark[];
 };
 
+export type OverlayTone = 'res' | 'sup' | 'mid' | 'blue' | 'red' | 'green' | 'amber' | 'purple' | 'gray';
+export type TimePoint = [string, number];
+/** Time-anchored chart annotations; times outside the loaded candles are extrapolated by bar spacing. */
+export type ChartOverlay = {
+  bands?: { upper: [TimePoint, TimePoint]; lower: [TimePoint, TimePoint]; tone: OverlayTone }[];
+  lines?: { from: TimePoint; to: TimePoint; tone: OverlayTone; dashed?: boolean; width?: number }[];
+  levels?: { price: number; tone: OverlayTone; label?: string; dashed?: boolean; from?: string }[];
+  zones?: { lo: number; hi: number; tone: OverlayTone; from?: string; label?: string }[];
+  markers?: {
+    at: string;
+    price: number;
+    shape: 'up' | 'down' | 'dot' | 'diamond' | 'text';
+    tone: OverlayTone;
+    label?: string;
+    muted?: boolean;
+    below?: boolean;
+  }[];
+  tags?: { at?: string; price: number; title: string; value?: string; tone: OverlayTone; place: 'above' | 'below' | 'center' }[];
+};
+export type LegendItem = { label: string; swatch: string };
+
 function ticks(lo: number, hi: number, count: number) {
   const raw = (hi - lo || 1) / count;
   const mag = 10 ** Math.floor(Math.log10(raw));
@@ -31,12 +52,14 @@ function axisLabels(candles: VCandle[], tf: string) {
   candles.forEach((c, i) => {
     const d = new Date(c.t);
     if (prev) {
-      if (tf === 'W') {
+      if (tf === 'Y' || tf === 'HY' || tf === 'Q' || tf === 'MN') {
+        if (d.getUTCFullYear() !== prev.getUTCFullYear()) out.push({ i, text: String(d.getUTCFullYear()), strong: d.getUTCFullYear() % 5 === 0 });
+      } else if (tf === 'W') {
         if (d.getUTCMonth() !== prev.getUTCMonth() && d.getUTCMonth() % 3 === 0) {
           const jan = d.getUTCMonth() === 0;
           out.push({ i, text: jan ? String(d.getUTCFullYear()) : fmt(d, { month: 'short' }), strong: jan });
         }
-      } else if (tf === 'D1') {
+      } else if (tf === 'D1' || tf === 'YTD') {
         if (d.getUTCMonth() !== prev.getUTCMonth()) out.push({ i, text: fmt(d, { month: 'short' }), strong: false });
       } else if (d.getUTCDate() !== prev.getUTCDate()) {
         const monthStart = d.getUTCMonth() !== prev.getUTCMonth();
@@ -48,6 +71,34 @@ function axisLabels(candles: VCandle[], tf: string) {
   const minGap = tf === 'W' || tf === 'D1' ? 1 : 4;
   return out.filter((l, k) => k === 0 || l.i - out[k - 1].i >= minGap || l.strong);
 }
+
+function thin<T extends { i: number }>(labels: T[], x: (i: number) => number, minPx: number) {
+  const out: T[] = [];
+  for (const l of labels) if (!out.length || x(l.i) - x(out[out.length - 1].i) >= minPx) out.push(l);
+  return out;
+}
+
+function timeIndex(candles: VCandle[]) {
+  const ms = candles.map((c) => Date.parse(c.t));
+  const n = ms.length;
+  const span = n > 1 ? (ms[n - 1] - ms[0]) / (n - 1) : 1;
+  return (t: string) => {
+    const v = Date.parse(t);
+    if (!n || Number.isNaN(v)) return NaN;
+    if (v <= ms[0]) return (v - ms[0]) / span;
+    if (v >= ms[n - 1]) return n - 1 + (v - ms[n - 1]) / span;
+    let lo = 0;
+    let hi = n - 1;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (ms[mid] <= v) lo = mid;
+      else hi = mid;
+    }
+    return lo + (v - ms[lo]) / (ms[hi] - ms[lo] || 1);
+  };
+}
+
+const TAG_W = 120;
 
 export function StructureChart({
   symbol,
@@ -63,6 +114,11 @@ export function StructureChart({
   error,
   heading,
   actions,
+  overlay,
+  legend,
+  showVolume = true,
+  compact = false,
+  className = '',
 }: {
   symbol: string;
   title: string;
@@ -77,6 +133,11 @@ export function StructureChart({
   error?: string;
   heading?: ReactNode;
   actions?: ReactNode;
+  overlay?: ChartOverlay | null;
+  legend?: LegendItem[];
+  showVolume?: boolean;
+  compact?: boolean;
+  className?: string;
 }) {
   const clipId = `mst-clip-${useId().replace(/:/g, '')}`;
   const wrap = useRef<HTMLDivElement>(null);
@@ -122,6 +183,8 @@ export function StructureChart({
     };
   }, [channel, candles.length]);
 
+  const idxAt = useMemo(() => timeIndex(candles), [candles]);
+
   const g = useMemo(() => {
     if (!candles.length) return null;
     const si = range ? Math.max(0, candles.findIndex((c) => c.t >= range.start)) : 0;
@@ -132,6 +195,23 @@ export function StructureChart({
     if (lastPrice != null) extra.push(lastPrice);
     if (range) extra.push(range.range_high, range.range_low);
     if (ch) extra.push(ch.m0 + ch.half, ch.m0 - ch.half, ch.m1 + ch.half, ch.m1 - ch.half);
+    if (overlay) {
+      const n = candles.length;
+      const visible = (a: TimePoint, b: TimePoint) => {
+        const ia = idxAt(a[0]);
+        const ib = idxAt(b[0]);
+        if (!Number.isFinite(ia) || !Number.isFinite(ib) || ib === ia) return [];
+        const at = (i: number) => a[1] + ((b[1] - a[1]) * (i - ia)) / (ib - ia);
+        const i0 = Math.max(-0.5, Math.min(ia, ib));
+        const i1 = Math.min(n - 0.5, Math.max(ia, ib));
+        return i1 > i0 ? [at(i0), at(i1)] : [];
+      };
+      for (const b of overlay.bands ?? []) extra.push(...visible(...b.upper), ...visible(...b.lower));
+      for (const l of overlay.lines ?? []) extra.push(...visible(l.from, l.to));
+      for (const l of overlay.levels ?? []) extra.push(l.price);
+      for (const z of overlay.zones ?? []) extra.push(z.lo, z.hi);
+      for (const m of overlay.markers ?? []) if (idxAt(m.at) >= -0.5) extra.push(m.price);
+    }
     for (const v of extra) {
       lo = Math.min(lo, v);
       hi = Math.max(hi, v);
@@ -150,14 +230,14 @@ export function StructureChart({
       }
     }
     const plotBottom = height - PAD.bottom;
-    const priceBottom = plotBottom - VOL_H - 4;
+    const priceBottom = showVolume ? plotBottom - VOL_H - 4 : plotBottom - 2;
     const step = (width - PAD.left - PAD.right) / candles.length;
     const x = (i: number) => PAD.left + step * (i + 0.5);
     const y = (v: number) => PAD.top + ((hi - v) / (hi - lo)) * (priceBottom - PAD.top);
     const vmax = Math.max(1, ...candles.map((c) => c.v || 0));
-    const tickCount = Math.max(4, Math.round((priceBottom - PAD.top) / TICK_SPACING_PX));
+    const tickCount = Math.max(compact ? 3 : 4, Math.round((priceBottom - PAD.top) / TICK_SPACING_PX));
     return { lo, hi, step, x, y, plotBottom, priceBottom, vmax, tickCount };
-  }, [candles, width, height, lastPrice, range, ch]);
+  }, [candles, width, height, lastPrice, range, ch, overlay, idxAt, showVolume, compact]);
 
   const last = candles[candles.length - 1];
   const prev = candles[candles.length - 2];
@@ -167,7 +247,7 @@ export function StructureChart({
   const tfLabel = tf === 'W' ? 'W' : tf;
 
   return (
-    <section className="mst-card mst-chart-card">
+    <section className={`mst-card mst-chart-card ${className}`}>
       <header className="mst-chart-head">
         {heading ?? (
           <strong>
@@ -176,7 +256,7 @@ export function StructureChart({
         )}
         {actions ?? <span className="mst-tf-badge">{tfLabel}</span>}
       </header>
-      <div className="mst-ohlc">
+      <div className="mst-ohlc" hidden={compact}>
         {last ? (
           <>
             O <b className={cls}>{fmtPrice(last.o, digits)}</b> H <b className={cls}>{fmtPrice(last.h, digits)}</b> L{' '}
@@ -220,7 +300,7 @@ export function StructureChart({
                 </text>
               </g>
             ))}
-            {axisLabels(candles, tf).map((l) => (
+            {thin(axisLabels(candles, tf), g.x, compact ? 30 : 34).map((l) => (
               <g key={l.i}>
                 <line className="mst-grid" x1={g.x(l.i)} x2={g.x(l.i)} y1={PAD.top} y2={g.plotBottom} />
                 <text className={`mst-axis ${l.strong ? 'is-strong' : ''}`} x={g.x(l.i)} y={height - 6} textAnchor="middle">
@@ -274,7 +354,53 @@ export function StructureChart({
                 <rect x={PAD.left} y={PAD.top} width={width - PAD.left - PAD.right} height={g.priceBottom - PAD.top} />
               </clipPath>
             </defs>
-            {candles.map((c, i) => {
+            {overlay ? (
+              <g clipPath={`url(#${clipId})`}>
+                {overlay.zones?.map((z, k) => {
+                  const x0 = z.from ? Math.max(PAD.left, g.x(idxAt(z.from)) - g.step / 2) : PAD.left;
+                  const top = g.y(Math.max(z.lo, z.hi));
+                  return (
+                    <rect
+                      key={`z${k}`}
+                      className={`mcx-zone is-${z.tone}`}
+                      x={x0}
+                      y={top}
+                      width={Math.max(0, width - PAD.right - x0)}
+                      height={Math.max(2, g.y(Math.min(z.lo, z.hi)) - top)}
+                    />
+                  );
+                })}
+                {overlay.bands?.map((b, k) => {
+                  const pt = ([t, p]: TimePoint) => `${g.x(idxAt(t))},${g.y(p)}`;
+                  return <polygon key={`b${k}`} className={`mcx-band is-${b.tone}`} points={[pt(b.upper[0]), pt(b.upper[1]), pt(b.lower[1]), pt(b.lower[0])].join(' ')} />;
+                })}
+                {overlay.lines?.map((l, k) => (
+                  <line
+                    key={`l${k}`}
+                    className={`mcx-line is-${l.tone} ${l.dashed ? 'is-dashed' : ''}`}
+                    style={l.width ? { strokeWidth: l.width } : undefined}
+                    x1={g.x(idxAt(l.from[0]))}
+                    y1={g.y(l.from[1])}
+                    x2={g.x(idxAt(l.to[0]))}
+                    y2={g.y(l.to[1])}
+                  />
+                ))}
+                {overlay.levels?.map((l, k) => {
+                  const x0 = l.from ? Math.max(PAD.left, g.x(idxAt(l.from))) : PAD.left;
+                  return (
+                    <line
+                      key={`v${k}`}
+                      className={`mcx-line is-${l.tone} ${l.dashed === false ? '' : 'is-dashed'}`}
+                      x1={x0}
+                      x2={width - PAD.right}
+                      y1={g.y(l.price)}
+                      y2={g.y(l.price)}
+                    />
+                  );
+                })}
+              </g>
+            ) : null}
+            {showVolume && candles.map((c, i) => {
               const bw = Math.max(1, Math.min(9, g.step * 0.62));
               const vh = ((c.v || 0) / g.vmax) * VOL_H;
               return (
@@ -367,6 +493,92 @@ export function StructureChart({
               );
             })}
 
+            {overlay ? (
+              <g>
+                {overlay.zones?.map((z, k) =>
+                  z.label ? (
+                    <text
+                      key={`zt${k}`}
+                      className={`mcx-level-t is-${z.tone}`}
+                      x={(z.from ? Math.max(PAD.left, g.x(idxAt(z.from)) - g.step / 2) : PAD.left) + 4}
+                      y={g.y(Math.max(z.lo, z.hi)) - 3}
+                    >
+                      {z.label}
+                    </text>
+                  ) : null,
+                )}
+                {overlay.levels?.map((l, k) =>
+                  l.label ? (
+                    <text
+                      key={`vt${k}`}
+                      className={`mcx-level-t is-${l.tone}`}
+                      x={(l.from ? Math.max(PAD.left, g.x(idxAt(l.from))) : PAD.left) + 4}
+                      y={g.y(l.price) - 3}
+                    >
+                      {l.label}
+                    </text>
+                  ) : null,
+                )}
+                {overlay.markers?.map((m, k) => {
+                  const i = idxAt(m.at);
+                  if (!(i >= -0.5 && i <= candles.length - 0.5)) return null;
+                  const mx = g.x(i);
+                  const my = g.y(m.price);
+                  if (my < PAD.top - 2 || my > g.priceBottom + 2) return null;
+                  const cls = `mcx-mark is-${m.tone} ${m.muted ? 'is-muted' : ''}`;
+                  if (m.shape === 'text') {
+                    return (
+                      <text key={`m${k}`} className={`${cls} is-text`} x={mx} y={m.below ? my + 13 : my - 5} textAnchor="middle">
+                        {m.label}
+                      </text>
+                    );
+                  }
+                  const below = m.shape === 'up';
+                  const ty = below ? my + 22 : my - 15;
+                  return (
+                    <g key={`m${k}`} className={cls}>
+                      {m.shape === 'up' ? (
+                        <path d={`M${mx},${my + 5} l5,8 h-10 z`} />
+                      ) : m.shape === 'down' ? (
+                        <path d={`M${mx},${my - 5} l5,-8 h-10 z`} />
+                      ) : m.shape === 'diamond' ? (
+                        <path d={`M${mx},${my - 5} l5,5 l-5,5 l-5,-5 z`} />
+                      ) : (
+                        <circle cx={mx} cy={my} r={4} />
+                      )}
+                      {m.label ? (
+                        <text x={mx} y={m.shape === 'dot' || m.shape === 'diamond' ? my - 8 : ty} textAnchor="middle">
+                          {m.label}
+                        </text>
+                      ) : null}
+                    </g>
+                  );
+                })}
+                {overlay.tags?.map((t, k) => {
+                  const w = TAG_W;
+                  const h = t.value ? 30 : 18;
+                  const ax = t.at != null ? g.x(idxAt(t.at)) - w / 2 : width - PAD.right - w - 6;
+                  const bx = Math.max(PAD.left + 2, Math.min(width - PAD.right - w - 2, ax));
+                  const py = g.y(t.price);
+                  const raw = t.place === 'above' ? py - h - 8 : t.place === 'below' ? py + 8 : py - h / 2;
+                  const by = Math.max(PAD.top, Math.min(g.priceBottom - h, raw));
+                  return (
+                    <g key={`t${k}`} className={`mcx-tag is-${t.tone}`}>
+                      <rect x={bx} y={by} width={w} height={h} rx={5} />
+                      <text className="mcx-tag-t" x={bx + w / 2} y={by + 12} textAnchor="middle">
+                        {t.title}
+                      </text>
+                      {t.value ? (
+                        <text className="mcx-tag-v" x={bx + w / 2} y={by + 25} textAnchor="middle">
+                          {t.value}
+                        </text>
+                      ) : null}
+                    </g>
+                  );
+                })}
+              </g>
+            ) : null}
+
             {hover !== null ? <line className="mst-cross" x1={g.x(hover)} x2={g.x(hover)} y1={PAD.top} y2={g.plotBottom} /> : null}
 
             {lastPrice != null ? (
@@ -392,7 +604,15 @@ export function StructureChart({
           </div>
         ) : null}
       </div>
-      {range ? (
+      {legend?.length ? (
+        <footer className="mst-legend">
+          {legend.map((l) => (
+            <span key={l.label}>
+              <i className={`mcx-sw ${l.swatch}`} /> {l.label}
+            </span>
+          ))}
+        </footer>
+      ) : range ? (
         <footer className="mst-legend">
           <span>
             <i className="mst-lg-fh" /> Fractal High

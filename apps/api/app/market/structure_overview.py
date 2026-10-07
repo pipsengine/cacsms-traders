@@ -100,22 +100,23 @@ def structure_events(bars: list[Bar], tf: str, n: int, atr_period: int = 14) -> 
     trend = 0
     swing_h: float | None = None
     swing_l: float | None = None
+    swing_h_at = swing_l_at = None
     hp = lp = 0
     events: list[dict] = []
     for k, b in enumerate(bars):
         while hp < len(hq) and hq[hp][0] < k:
-            swing_h = hq[hp][1]
+            swing_h, swing_h_at = hq[hp][1], bars[hq[hp][0] - n].t
             hp += 1
         while lp < len(lq) and lq[lp][0] < k:
-            swing_l = lq[lp][1]
+            swing_l, swing_l_at = lq[lp][1], bars[lq[lp][0] - n].t
             lp += 1
         if swing_h is not None and b.c > swing_h:
             events.append({"tf": tf, "kind": "BOS" if trend == 1 else "CHOCH", "direction": "UP", "level": swing_h, "index": k,
-                           "at": (b.t + TF_DELTA[tf]).isoformat()})
+                           "at": (b.t + TF_DELTA[tf]).isoformat(), "break_at": b.t.isoformat(), "swing_at": swing_h_at.isoformat()})
             trend, swing_h = 1, None
         elif swing_l is not None and b.c < swing_l:
             events.append({"tf": tf, "kind": "BOS" if trend == -1 else "CHOCH", "direction": "DOWN", "level": swing_l, "index": k,
-                           "at": (b.t + TF_DELTA[tf]).isoformat()})
+                           "at": (b.t + TF_DELTA[tf]).isoformat(), "break_at": b.t.isoformat(), "swing_at": swing_l_at.isoformat()})
             trend, swing_l = -1, None
     atr = wilder_atr(true_ranges(bars), atr_period)[-1] if len(bars) > atr_period + 1 else None
     for e in events:

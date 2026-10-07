@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
-import { EnginePlaceholder } from '../components/EnginePlaceholder';
 import { usePollingAsync } from '../features/market-intelligence/hooks/useMarketIntelligence';
 import { InstrumentIcon } from '../features/market-scanner/components/InstrumentIcon';
 import { priceDigits } from '../features/market-scanner/format';
@@ -17,7 +16,10 @@ import {
 import { RangeSymbolsTable } from '../features/market-structure/components/RangeSymbolsTable';
 import { StructureOverview } from '../features/market-structure/components/StructureOverview';
 import { TrendStructure } from '../features/market-structure/components/TrendStructure';
-import type { HeaderTf, RangeMeta, TrendTf } from '../features/market-structure/types';
+import { FractalStructure } from '../features/market-structure/components/FractalStructure';
+import { BosStructure } from '../features/market-structure/components/BosStructure';
+import { localStamp, liveStatus, useCandles, useShortScreen, useVisible } from '../features/market-structure/hooks';
+import type { BosTf, FractalTf, HeaderTf, TrendTf } from '../features/market-structure/types';
 
 const TABS = [
   { id: 'overview', label: 'Structure Overview' },
@@ -31,55 +33,28 @@ const TF_API: Record<HeaderTf, string> = { W: 'W', D: 'D1', H8: 'H8', H4: 'H4' }
 const TF_TITLE: Record<HeaderTf, string> = { W: 'Weekly', D: 'Daily', H8: 'H8', H4: 'H4' };
 const TF_BARS: Record<string, number> = { W: 160, D1: 72, H8: 72, H4: 120 };
 const TREND_BARS: Record<TrendTf, number> = { W: 120, D1: 110, H8: 110, H1: 110 };
+const FRACTAL_BARS: Record<FractalTf, number> = { W: 160, D1: 110, H8: 110, H1: 110 };
+const BOS_BARS: Record<BosTf, number> = { W: 120, D1: 120, H8: 120, H1: 140 };
 
-function useVisible() {
-  const [visible, setVisible] = useState(() => typeof document === 'undefined' || document.visibilityState === 'visible');
-  useEffect(() => {
-    const onVis = () => setVisible(document.visibilityState === 'visible');
-    document.addEventListener('visibilitychange', onVis);
-    return () => document.removeEventListener('visibilitychange', onVis);
-  }, []);
-  return visible;
-}
-
-const SHORT_SCREEN = '(max-height: 900px)';
-
-function useShortScreen() {
-  const [short, setShort] = useState(() => typeof window !== 'undefined' && window.matchMedia(SHORT_SCREEN).matches);
-  useEffect(() => {
-    const mq = window.matchMedia(SHORT_SCREEN);
-    const onChange = () => setShort(mq.matches);
-    mq.addEventListener('change', onChange);
-    return () => mq.removeEventListener('change', onChange);
-  }, []);
-  return short;
-}
-
-function useCandles(symbol: string, tf: string, enabled: boolean, tick: number, limit = TF_BARS[tf] ?? 90) {
-  const loader = useCallback(() => marketStructureApi.candles(symbol, tf, limit), [symbol, tf, tick, limit]);
-  const res = usePollingAsync(loader, [loader], { enabled, intervalMs: 60000 });
-  const ok = res.data?.symbol === symbol && res.data.timeframe === tf;
-  return { candles: ok ? res.data!.candles : [], loading: res.loading || !ok, error: res.error };
-}
-
-function liveStatus(meta: RangeMeta | null, error: boolean) {
-  if (!meta) return { tone: error ? 'off' : 'warn', label: error ? 'Analysis Unavailable' : 'Connecting' };
-  if (!meta.mt5_connected) return { tone: 'off', label: 'MT5 Disconnected' };
-  if (meta.stale) return { tone: 'warn', label: 'Stale Analysis' };
-  return { tone: 'live', label: 'Live Analysis' };
-}
-
-function localStamp(iso: string | null | undefined) {
-  if (!iso) return '—';
-  return new Intl.DateTimeFormat('en-GB', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-    timeZoneName: 'short',
-  }).format(new Date(iso));
+function TabLoading({ name, error, onRetry }: { name: string; error: string; onRetry: () => void }) {
+  return (
+    <section className={`mst-card mst-blocking ${error ? 'is-error' : ''}`}>
+      {error ? (
+        <>
+          <strong>{name} unavailable</strong>
+          <span>{error}</span>
+          <button className="mst-view" onClick={onRetry}>
+            Retry
+          </button>
+        </>
+      ) : (
+        <>
+          <span className="mst-spinner" aria-hidden />
+          Loading {name.toLowerCase()}…
+        </>
+      )}
+    </section>
+  );
 }
 
 export function MarketStructure() {
@@ -106,10 +81,29 @@ export function MarketStructure() {
   const trendCandles = useCandles(symbol, trendTf, trendActive, tick, TREND_BARS[trendTf]);
   const trendDetail = trend.data && trend.data.summary.symbol === symbol ? trend.data : null;
 
+  const [fracTf, setFracTf] = useState<FractalTf>('W');
+  const fracActive = visible && tab === 'fractals';
+  const fractalsLoader = useCallback(() => marketStructureApi.fractals(), [tick]);
+  const fractals = usePollingAsync(fractalsLoader, [fractalsLoader], { enabled: fracActive, intervalMs: 5000 });
+  const fractalLoader = useCallback(() => marketStructureApi.fractal(symbol, fracTf), [symbol, fracTf, tick]);
+  const fractal = usePollingAsync(fractalLoader, [fractalLoader], { enabled: fracActive, intervalMs: 5000 });
+  const fracCandles = useCandles(symbol, fracTf, fracActive, tick, FRACTAL_BARS[fracTf]);
+  const fractalDetail = fractal.data && fractal.data.summary.symbol === symbol ? fractal.data : null;
+
+  const [bosTf, setBosTf] = useState<BosTf>('H1');
+  const bosActive = visible && tab === 'bos';
+  const bosListLoader = useCallback(() => marketStructureApi.bos(), [tick]);
+  const bosList = usePollingAsync(bosListLoader, [bosListLoader], { enabled: bosActive, intervalMs: 5000 });
+  const bosLoader = useCallback(() => marketStructureApi.bosDetail(symbol, bosTf), [symbol, bosTf, tick]);
+  const bosOne = usePollingAsync(bosLoader, [bosLoader], { enabled: bosActive, intervalMs: 5000 });
+  const bosCandles = useCandles(symbol, bosTf, bosActive, tick, BOS_BARS[bosTf]);
+  const bosDetail = bosOne.data && bosOne.data.summary.symbol === symbol ? bosOne.data : null;
+  const busy = [list, detail, overview, trends, trend, fractals, fractal, bosList, bosOne].some((r) => r.refreshing);
+
   const mainTf = TF_API[tf];
-  const main = useCandles(symbol, mainTf, active, tick);
-  const d1 = useCandles(symbol, 'D1', active, tick);
-  const h8 = useCandles(symbol, 'H8', active, tick);
+  const main = useCandles(symbol, mainTf, active, tick, TF_BARS[mainTf] ?? 90);
+  const d1 = useCandles(symbol, 'D1', active, tick, TF_BARS.D1);
+  const h8 = useCandles(symbol, 'H8', active, tick, TF_BARS.H8);
 
   const meta = list.data?.meta ?? null;
   const rows = list.data?.rows ?? [];
@@ -156,7 +150,7 @@ export function MarketStructure() {
             <small>Last update: {localStamp(meta?.last_cycle_at)}</small>
           </div>
           <button className="mst-refresh" aria-label="Reload analysis" title="Reload latest analysis" onClick={() => setTick((t) => t + 1)}>
-            <RefreshCw size={16} className={list.refreshing || detail.refreshing || overview.refreshing || trends.refreshing || trend.refreshing ? 'is-spin' : ''} />
+            <RefreshCw size={16} className={busy ? 'is-spin' : ''} />
           </button>
         </div>
       </header>
@@ -221,12 +215,38 @@ export function MarketStructure() {
             )}
           </section>
         )
-      ) : tab !== 'range' ? (
-        <EnginePlaceholder
-          title={TABS.find((t) => t.id === tab)!.label}
-          body="This structure view will bind to the structure intelligence engine. Range Structure is live."
-          engine="structure_intelligence"
-        />
+      ) : tab === 'fractals' ? (
+        fractals.data ? (
+          <FractalStructure
+            data={fractals.data}
+            detail={fractalDetail}
+            detailError={fractal.error}
+            symbol={symbol}
+            onSelect={setSymbol}
+            tf={fracTf}
+            onTf={setFracTf}
+            candles={fracCandles}
+            chartHeight={short ? 250 : 318}
+          />
+        ) : (
+          <TabLoading name="Fractals" error={fractals.error} onRetry={fractals.refresh} />
+        )
+      ) : tab === 'bos' ? (
+        bosList.data ? (
+          <BosStructure
+            data={bosList.data}
+            detail={bosDetail}
+            detailError={bosOne.error}
+            symbol={symbol}
+            onSelect={setSymbol}
+            tf={bosTf}
+            onTf={setBosTf}
+            candles={bosCandles}
+            chartHeight={short ? 250 : 318}
+          />
+        ) : (
+          <TabLoading name="BOS / CHoCH" error={bosList.error} onRetry={bosList.refresh} />
+        )
       ) : list.error && !list.data ? (
         <section className="mst-card mst-blocking is-error">
           <strong>Range Structure unavailable</strong>

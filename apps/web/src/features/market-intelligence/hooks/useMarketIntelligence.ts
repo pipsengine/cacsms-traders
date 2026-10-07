@@ -36,12 +36,13 @@ export function usePollingAsync<T>(
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const busy = useRef(false);
+  const busy = useRef<unknown>(null);
+  const current = useRef<unknown>(null);
 
   const run = useCallback(
-    async (silent: boolean) => {
-      if (!enabled || busy.current) return;
-      busy.current = true;
+    async function self(silent: boolean) {
+      if (!enabled || busy.current === self) return;
+      busy.current = self;
       if (silent) setRefreshing(true);
       else {
         setLoading(true);
@@ -49,18 +50,23 @@ export function usePollingAsync<T>(
       }
       try {
         const next = await loader();
+        if (current.current !== self) return;
         setData(next);
         setError('');
       } catch (e) {
+        if (current.current !== self) return;
         setError(e instanceof Error ? e.message : String(e));
       } finally {
-        if (!silent) setLoading(false);
-        setRefreshing(false);
-        busy.current = false;
+        if (busy.current === self) busy.current = null;
+        if (current.current === self) {
+          if (!silent) setLoading(false);
+          setRefreshing(false);
+        }
       }
     },
     [enabled, ...deps],
   );
+  current.current = run;
 
   const refresh = useCallback(() => void run(false), [run]);
 

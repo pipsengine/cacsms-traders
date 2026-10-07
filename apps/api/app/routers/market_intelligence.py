@@ -263,6 +263,45 @@ def trend_structure_instrument(symbol: str):
     return detail
 
 
+def _found(detail: dict | None, symbol: str) -> dict:
+    if detail is None:
+        raise HTTPException(404, f"{symbol.upper()} is not in the scanner universe")
+    return detail
+
+
+@router.get("/structure/fractals")
+def fractal_structure():
+    """Market Structure → Fractals: per-timeframe fractal lifecycle, weekly clusters and counts (closed bars)."""
+    return _scanner().fractal_payload()
+
+
+@router.get("/structure/fractals/{symbol}")
+def fractal_structure_instrument(symbol: str, timeframe: str = Query("W")):
+    return _found(_scanner().fractal_detail(symbol, timeframe), symbol)
+
+
+@router.get("/structure/bos")
+def bos_choch():
+    """Market Structure → BOS / CHoCH: confirmed and developing structure breaks with retest status."""
+    return _scanner().bos_payload()
+
+
+@router.get("/structure/bos/{symbol}")
+def bos_choch_instrument(symbol: str, timeframe: str = Query("H1")):
+    return _found(_scanner().bos_detail(symbol, timeframe), symbol)
+
+
+@router.get("/channels")
+def channel_intelligence():
+    """Channel Intelligence: channel states, breakout & retest events and trend-in-trend candidates (all symbols)."""
+    return _scanner().channel_payload()
+
+
+@router.get("/channels/{symbol}")
+def channel_intelligence_instrument(symbol: str, timeframe: str = Query("W"), breakout_timeframe: str = Query("H1")):
+    return _found(_scanner().channel_detail(symbol, timeframe, breakout_timeframe), symbol)
+
+
 @router.get("/structure/range")
 def range_structure():
     """Market Structure → Range Structure: weekly range intelligence for every scanner instrument."""

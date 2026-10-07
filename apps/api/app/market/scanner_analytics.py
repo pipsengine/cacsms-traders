@@ -19,6 +19,7 @@ class Bar:
     h: float
     l: float
     c: float
+    v: float = 0.0
 
 
 def _kl(key: str, label: str, **extra) -> dict:

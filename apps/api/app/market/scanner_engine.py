@@ -57,13 +57,16 @@ from .h8_bos_btl import h1_validation, h8_core, h8_live, m30_confirmation, weekl
 from .h8_bos_btl_config import ALERT_KINDS, ALERT_PRIORITY, h8_bos_btl_settings, h8_bos_btl_settings_payload
 from .trend_structure import mtf_rows, trend_core, trend_events, trend_view
 from .trend_structure_config import TREND_TIMEFRAMES, trend_settings, trend_settings_payload
+from . import bos_choch as bos
+from . import channel_intelligence as chan
+from . import fractal_structure as frac
 from .strength_engine import get_strength_engine
 from .strength_intel_store import active_scope
 from .provenance import values
 
 log = logging.getLogger(__name__)
 
-BARS = {"W1": 260, "D1": 300, "H8": 200, "H1": 200, "M30": 200}
+BARS = {"MN": 240, "W1": 260, "D1": 300, "H8": 200, "H1": 200, "M30": 200}
 H8BB_CHART_BARS = {"W": 72, "H8": 96, "H1": 110, "M30": 110}
 INCREMENTAL_BARS = 6
 REVERSAL_TIMEFRAMES = ("W", "D1", "H8")
@@ -177,7 +180,7 @@ class MarketScannerEngine:
         out: dict[str, dict] = {}
         loaded = {tf: repo.recent_candles(tf, n, SCANNER_UNIVERSE) for tf, n in BARS.items()}
         for sym in SCANNER_UNIVERSE:
-            bars = {tf: [Bar(c.open_time, c.open, c.high, c.low, c.close) for c in loaded[tf].get(sym, [])] for tf in BARS}
+            bars = {tf: [Bar(c.open_time, c.open, c.high, c.low, c.close, c.tick_volume) for c in loaded[tf].get(sym, [])] for tf in BARS}
             d1 = bars["D1"]
             if len(d1) < s.min_d1_bars:
                 why = f"Insufficient D1 history ({len(d1)}/{s.min_d1_bars} closed bars)"
@@ -205,13 +208,17 @@ class MarketScannerEngine:
             h1 = bars["H1"]
             rs = range_settings()
             range_core = weekly_range(bars["W1"], rs)
+            overview = self._overview_core(bars, range_core, rs)
             out[sym] = {
                 "d1": d1,
                 "h1": h1,
                 "range_core": range_core,
-                "overview": self._overview_core(bars, range_core, rs),
+                "overview": overview,
                 "h8bb": self._h8bb_core(bars),
                 "trend": trend_core(bars, trend_settings()),
+                "fractal": frac.fractal_core(bars, frac.fractal_settings()),
+                "bos": bos.bos_core(bars, overview, bos.bos_settings()),
+                "channel": chan.channel_core(bars, chan.channel_settings()),
                 "range_ltf": ltf_context(d1, bars["H8"], h1, rs),
                 "structures": structures,
                 "primary_tf": primary_tf,
@@ -1206,6 +1213,323 @@ class MarketScannerEngine:
             "last_closed": {tf: (core.get(tf) or {}).get("closed_at") for tf in TREND_TIMEFRAMES},
         }
 
+    # ----- shared helpers for the structure / channel intelligence tabs -----
+
+    def _snapshot(self) -> tuple[dict[str, dict], dict[str, dict]]:
+        with self._lock:
+            return {r["symbol"]: r for r in self._rows}, dict(self._analysis)
+
+    @staticmethod
+    def _base(sym: str, row: dict) -> dict:
+        return {
+            "symbol": sym,
+            "base": sym[:3],
+            "quote": sym[3:6],
+            "name": row.get("name") or instrument_name(sym),
+            "asset": "Commodity" if sym == GOLD else "Forex",
+            "digits": row.get("digits") or (2 if sym == GOLD else 3 if sym.endswith("JPY") else 5),
+            "price": row.get("price"),
+        }
+
+    @staticmethod
+    def _unavailable(base: dict, row: dict, a: dict, fallback: str = "Insufficient closed history") -> dict:
+        return {**base, "available": False, "reason": row.get("excluded_reason") or a.get("excluded") or fallback}
+
+    # ----- Fractals (Market Structure → Fractals) -----
+
+    def _fractal_rows(self) -> list[dict]:
+        s, rs = frac.fractal_settings(), range_settings()
+        rows, analysis = self._snapshot()
+        out = []
+        for sym in SCANNER_UNIVERSE:
+            row, a = rows.get(sym) or {}, analysis.get(sym) or {}
+            base = self._base(sym, row)
+            core = a.get("fractal")
+            if not core or not (core.get("W") or {}).get("available"):
+                out.append(self._unavailable(base, row, a))
+                continue
+            price = base["price"]
+            rv = range_view(a["range_core"], a["range_ltf"], price, rs) if price is not None and a.get("range_core") else None
+            rv = rv if rv and rv.get("available") else None
+            view = frac.fractal_view(core, price, a["overview"]["regimes"], rv, a.get("range_core"), s)
+            if not view["available"]:
+                out.append({**base, "available": False, "reason": view["reason"]})
+                continue
+            out.append({**base, "available": True, "_view": view, "_core": a, "_rv": rv})
+        return out
+
+    @staticmethod
+    def _fractal_public(r: dict) -> dict:
+        base = {k: v for k, v in r.items() if not k.startswith("_")}
+        if not r["available"]:
+            return base
+        tfs = r["_view"]["timeframes"]
+        cells = {tf: (tfs[tf].get("latest") if tfs[tf].get("available") else None) for tf in frac.FRACTAL_TIMEFRAMES}
+        lead = next((cells[tf] for tf in frac.FRACTAL_TIMEFRAMES if cells[tf] and cells[tf]["status"]["key"] != "INVALID"), None)
+        lead = lead or next((cells[tf] for tf in frac.FRACTAL_TIMEFRAMES if cells[tf]), None)
+        return {**base, "cells": cells, "latest": lead}
+
+    def fractal_payload(self) -> dict:
+        s = frac.fractal_settings()
+        rows = self._fractal_rows()
+        counts = {"total": 0, "confirmed": 0, "developing": 0, "invalid": 0, "candidates": 0, "clusters": 0, "symbols_active": 0,
+                  "analysed": 0, "symbols": len(rows)}
+        for r in rows:
+            if not r["available"]:
+                continue
+            counts["analysed"] += 1
+            active = False
+            for tf in frac.FRACTAL_TIMEFRAMES:
+                v = r["_view"]["timeframes"][tf]
+                for f in (v.get("sides") or {}).values() if v.get("available") else ():
+                    if not f:
+                        continue
+                    k = f["status"]["key"]
+                    counts["total"] += 1
+                    if k == "CONFIRMED":
+                        counts["confirmed"] += 1
+                    elif k == "INVALID":
+                        counts["invalid"] += 1
+                    else:
+                        counts["developing"] += 1
+                        counts["candidates"] += k == "CANDIDATE"
+                    active = active or k != "INVALID"
+            cl = r["_view"]["clusters"]
+            counts["clusters"] += sum(1 for c in cl["resistance"] + cl["support"] if c["near"])
+            counts["symbols_active"] += active
+        return {
+            "meta": {**self.meta(), "fractal_settings": frac.fractal_settings_payload()},
+            "counts": counts,
+            "rows": [self._fractal_public(r) for r in rows],
+            "near_cluster_atr": s.near_cluster_atr,
+        }
+
+    def fractal_detail(self, symbol: str, tf: str = "W") -> dict | None:
+        sym = symbol.upper()
+        tf = tf.upper() if tf.upper() in frac.FRACTAL_TIMEFRAMES else "W"
+        r = next((x for x in self._fractal_rows() if x["symbol"] == sym), None)
+        if r is None:
+            return None
+        meta = {**self.meta(), "fractal_settings": frac.fractal_settings_payload()}
+        summary = self._fractal_public(r)
+        if not r["available"]:
+            return {"meta": meta, "available": False, "summary": summary}
+        a = r["_core"]
+        rc = a.get("range_core") or {}
+        rng = None
+        if tf == "W" and rc.get("range_high") is not None:
+            rng = {k: rc.get(k) for k in ("start", "high_zone", "low_zone", "range_high", "range_low", "midpoint")}
+        return {
+            "meta": meta,
+            "available": True,
+            "summary": summary,
+            "view": r["_view"],
+            "tf": tf,
+            "marks": frac.fractal_marks(a["fractal"], tf),
+            "range": rng,
+        }
+
+    # ----- BOS / CHoCH (Market Structure → BOS / CHoCH) -----
+
+    def _bos_rows(self) -> list[dict]:
+        s = bos.bos_settings()
+        now = datetime.now(timezone.utc)
+        rows, analysis = self._snapshot()
+        out = []
+        for sym in SCANNER_UNIVERSE:
+            row, a = rows.get(sym) or {}, analysis.get(sym) or {}
+            base = self._base(sym, row)
+            if not a.get("bos") or not a.get("overview"):
+                out.append(self._unavailable(base, row, a))
+                continue
+            out.append({**base, "available": True, "_a": a, "_events": bos.live_events(a["bos"], base["price"], now, s)})
+        return out
+
+    def bos_payload(self) -> dict:
+        s = bos.bos_settings()
+        now = datetime.now(timezone.utc)
+        rows = self._bos_rows()
+        since = now - timedelta(days=s.lookback_days)
+        events = [
+            {"symbol": r["symbol"], "base": r["base"], "quote": r["quote"], "asset": r["asset"], "digits": r["digits"],
+             **{k: v for k, v in e.items() if k not in ("swing_at",)}}
+            for r in rows if r["available"] for e in r["_events"]
+            if datetime.fromisoformat(e["at"]) >= since
+        ]
+        events.sort(key=lambda e: (e["at"], -bos.BOS_TIMEFRAMES.index(e["tf"])), reverse=True)
+        week = [e for e in events if datetime.fromisoformat(e["at"]) >= now - timedelta(days=7)]
+        day = [e for e in week if datetime.fromisoformat(e["at"]) >= now - timedelta(hours=24)]
+        def count(kind: str, direction: str) -> int:
+            return sum(1 for e in week if e["kind"] == kind and e["direction"] == direction)
+        counts = {
+            "total": len(week),
+            "new_24h": len(day),
+            "bullish_bos": count("BOS", "UP"),
+            "bearish_bos": count("BOS", "DOWN"),
+            "bullish_choch": count("CHOCH", "UP"),
+            "bearish_choch": count("CHOCH", "DOWN"),
+            "awaiting": sum(1 for e in week if e["status"]["key"] in ("DEVELOPING", "RETESTING")),
+            "analysed": sum(1 for r in rows if r["available"]),
+            "symbols": len(rows),
+        }
+        return {
+            "meta": {**self.meta(), "bos_settings": bos.bos_settings_payload()},
+            "counts": counts,
+            "events": events[:500],
+            "symbols": [{k: v for k, v in r.items() if not k.startswith("_")} for r in rows],
+        }
+
+    def bos_detail(self, symbol: str, tf: str = "H1") -> dict | None:
+        s, rs, ovs = bos.bos_settings(), range_settings(), overview_settings()
+        sym = symbol.upper()
+        tf = tf.upper() if tf.upper() in bos.BOS_TIMEFRAMES else "H1"
+        r = next((x for x in self._bos_rows() if x["symbol"] == sym), None)
+        if r is None:
+            return None
+        meta = {**self.meta(), "bos_settings": bos.bos_settings_payload()}
+        base = {k: v for k, v in r.items() if not k.startswith("_")}
+        if not r["available"]:
+            return {"meta": meta, "available": False, "summary": base}
+        a = r["_a"]
+        now = datetime.now(timezone.utc)
+        price = base["price"]
+        rv = range_view(a["range_core"], a["range_ltf"], price, rs) if price is not None and a.get("range_core") else None
+        rv = rv if rv and rv.get("available") else None
+        regimes = a["overview"]["regimes"]
+        band = ((rv or {}).get("position_band") or {}).get("key")
+        state = current_state(regimes, cells_for(regimes), band)
+        view = bos.symbol_view(a["bos"], r["_events"], a["trend"], regimes, state, rv, price, tf, now, s)
+        return {
+            "meta": meta,
+            "available": True,
+            "summary": base,
+            "tf": tf,
+            **view,
+            "marks": bos.chart_marks(a["bos"], a["trend"], tf),
+            "alignment": alignment(regimes, ovs),
+        }
+
+    # ----- Channel Intelligence (Channel Analysis, Breakout & Retest, Trend-in-Trend) -----
+
+    def _channel_rows(self) -> list[dict]:
+        rows, analysis = self._snapshot()
+        out = []
+        for sym in SCANNER_UNIVERSE:
+            row, a = rows.get(sym) or {}, analysis.get(sym) or {}
+            base = self._base(sym, row)
+            core = a.get("channel")
+            if not core or not any((core.get(tf) or {}).get("available") for tf in chan.EVENT_TIMEFRAMES):
+                out.append(self._unavailable(base, row, a))
+                continue
+            out.append({**base, "available": True, "_core": core})
+        return out
+
+    def channel_payload(self) -> dict:
+        s = chan.channel_settings()
+        now = datetime.now(timezone.utc)
+        rows = self._channel_rows()
+        public, breakouts, candidates, tits = [], [], [], []
+        events_7d = events_24h = 0
+        for r in rows:
+            base = {k: v for k, v in r.items() if not k.startswith("_")}
+            if not r["available"]:
+                public.append(base)
+                continue
+            core, price = r["_core"], r["price"]
+            views = {tf: chan.tf_view(core, tf, price, s) for tf in chan.CHANNEL_TIMEFRAMES}
+            public.append({**base, "channels": {tf: None if not v.get("available") else
+                                                {"direction": v["direction"]["key"], "position": v["position"], "state": v["state"]["key"]}
+                                                for tf, v in views.items()}})
+            for e in chan.live_breakouts(r["symbol"], core, price, s):
+                breakouts.append({**{k: e[k] for k in BREAKOUT_LIST_FIELDS}, "digits": r["digits"], "base": r["base"],
+                                  "quote": r["quote"], "asset": r["asset"]})
+            for c in chan.setup_candidates(r["symbol"], core, price, s):
+                candidates.append({**c, "digits": r["digits"], "base": r["base"], "quote": r["quote"], "asset": r["asset"]})
+            for tf in chan.EVENT_TIMEFRAMES:
+                for e in (core.get(tf) or {}).get("events", []):
+                    age = (now - datetime.fromisoformat(e["at"])).total_seconds()
+                    events_7d += age <= 7 * 86400
+                    events_24h += age <= 86400
+            t = chan.tit_view(r["symbol"], core, price, s)
+            if t.get("available") and t.get("countertrend"):
+                ct, st = t["countertrend"], t["setup"]
+                tits.append({
+                    "symbol": r["symbol"], "base": r["base"], "quote": r["quote"], "asset": r["asset"], "digits": r["digits"],
+                    "layer": ct["layer"], "tf": ct["tf"], "setup_type": "Channel Rejoin" if ct["maturity"] >= 50 else "Pullback Continuation",
+                    "direction": st["direction"], "maturity": ct["maturity"], "quality": st["quality"], "status": st["status"],
+                })
+        breakouts.sort(key=lambda e: (e["at"], -chan.EVENT_TIMEFRAMES.index(e["tf"])), reverse=True)
+        week = [e for e in breakouts if (now - datetime.fromisoformat(e["at"])).total_seconds() <= 7 * 86400]
+        confirmed = [e for e in breakouts if e["confirmed"] and not e["failed"]]
+        failed = [e for e in breakouts if e["failed"]]
+        holding = ("CONFIRMED", "RETESTING")
+        retests = [
+            {k: e[k] for k in ("symbol", "base", "quote", "digits", "tf", "direction", "retest_now", "distance_pips", "distance_atr",
+                               "status", "retest", "at")}
+            for e in breakouts if e["status"]["key"] in holding and e["retest"]["key"] != "COMPLETED"
+        ]
+        retests.sort(key=lambda e: abs(e["distance_atr"]) if e["distance_atr"] is not None else 99)
+        mfe = [e["mfe_atr"] for e in breakouts if e.get("mfe_atr") is not None and not e["failed"]]
+        candidates.sort(key=lambda c: (-c["score"], c["distance_atr"] if c["distance_atr"] is not None else 99))
+        tits.sort(key=lambda t: (-t["quality"], t["symbol"]))
+        counts = {
+            "events_7d": events_7d,
+            "events_24h": events_24h,
+            "breakouts_7d": len(week),
+            "retest_in_progress": sum(1 for e in breakouts if e["status"]["key"] == "RETESTING"),
+            "confirmed": sum(1 for e in week if e["confirmed"] and not e["failed"]),
+            "failed": sum(1 for e in week if e["failed"]),
+            "high_probability": sum(1 for e in breakouts if e["status"]["key"] in holding and e["distance_atr"] is not None
+                                    and 0 <= e["distance_atr"] <= s.near_setup_atr),
+            "tit_active": sum(1 for t in tits if t["status"]["key"] == "ACTIVE"),
+            "analysed": sum(1 for r in rows if r["available"]),
+            "symbols": len(rows),
+        }
+        stats = {
+            "total": len(breakouts),
+            "bullish": sum(1 for e in breakouts if e["direction"] == "UP"),
+            "bearish": sum(1 for e in breakouts if e["direction"] == "DOWN"),
+            "confirmed": len(confirmed),
+            "failed": len(failed),
+            "retest_pending": sum(1 for e in breakouts if e["status"]["key"] in holding and e["retest"]["key"] == "PENDING"),
+            "retest_in_progress": sum(1 for e in breakouts if e["status"]["key"] == "RETESTING"),
+            "avg_move_atr": round(sum(mfe) / len(mfe), 2) if mfe else None,
+            "success_rate": round(100 * len(confirmed) / (len(confirmed) + len(failed))) if confirmed or failed else None,
+        }
+        return {
+            "meta": {**self.meta(), "channel_settings": chan.channel_settings_payload()},
+            "counts": counts,
+            "rows": public,
+            "breakouts": breakouts[:400],
+            "candidates": candidates[:40],
+            "retests": retests[:40],
+            "stats": stats,
+            "tit": tits,
+        }
+
+    def channel_detail(self, symbol: str, tf: str = "W", breakout_tf: str = "H1") -> dict | None:
+        s = chan.channel_settings()
+        sym = symbol.upper()
+        tf = tf.upper() if tf.upper() in chan.CHANNEL_TIMEFRAMES else "W"
+        btf = breakout_tf.upper() if breakout_tf.upper() in chan.EVENT_TIMEFRAMES else "H1"
+        r = next((x for x in self._channel_rows() if x["symbol"] == sym), None)
+        if r is None:
+            return None
+        meta = {**self.meta(), "channel_settings": chan.channel_settings_payload()}
+        base = {k: v for k, v in r.items() if not k.startswith("_")}
+        if not r["available"]:
+            return {"meta": meta, "available": False, "summary": base}
+        core, price = r["_core"], r["price"]
+        return {
+            "meta": meta,
+            "available": True,
+            "summary": base,
+            "channel": chan.channel_detail(core, price, tf, s),
+            "breakout": chan.breakout_detail(sym, core, price, btf, s),
+            "tit": chan.tit_view(sym, core, price, s),
+            "tf_lines": {t: (core.get(t) or {}).get("lines") for t in chan.CHANNEL_TIMEFRAMES},
+        }
+
 
 def _recent_gap(symbol: str, timeframe: str, history: list[Bar], broker_utc_offset_seconds: int) -> bool:
     """Same continuity rule as candle ingestion: only gaps among the latest bars block analysis.
@@ -1269,20 +1593,36 @@ def _public(row: dict) -> dict:
     return {k: v for k, v in row.items() if k != "d1"}
 
 
+AGGREGATE_MONTHS = {"Y": 12, "HY": 6, "Q": 3}
+BREAKOUT_LIST_FIELDS = (
+    "symbol", "tf", "direction", "label", "at", "level", "close", "confirmed", "failed", "status", "retest", "retest_now",
+    "result_pips", "distance_pips", "distance_atr", "mfe_atr",
+)
+
+
 def chart_candles(symbol: str, timeframe: str, limit: int) -> dict:
-    tf = CHART_TIMEFRAMES.get(timeframe.upper())
+    """Closed candles for charts. Y / HY / Q aggregate closed MN bars; YTD is the D1 window since 1 January."""
+    name = timeframe.upper()
+    months = AGGREGATE_MONTHS.get(name)
+    tf = "MN" if months else "D1" if name == "YTD" else CHART_TIMEFRAMES.get(name)
     if tf is None:
         raise ValueError(f"Unsupported chart timeframe: {timeframe}")
     if symbol.upper() not in SCANNER_UNIVERSE:
         raise ValueError(f"Unknown instrument: {symbol}")
+    fetch = min(480, limit * months) if months else 380 if name == "YTD" else limit
     with db() as conn:
-        rows = MarketRepository(conn).candles(symbol.upper(), tf, limit)
-    candles = []
+        rows = MarketRepository(conn).candles(symbol.upper(), tf, fetch)
+    bars = []
     for r in rows:
         t = datetime.fromisoformat(r[0])
         t = t if t.tzinfo else t.replace(tzinfo=timezone.utc)
-        candles.append({"t": t.isoformat(), "o": r[2], "h": r[3], "l": r[4], "c": r[5], "v": r[6]})
-    return {"symbol": symbol.upper(), "timeframe": timeframe.upper(), "closed_only": True, "candles": candles}
+        bars.append(Bar(t, r[2], r[3], r[4], r[5], r[6] or 0))
+    if months:
+        bars = chan.aggregate(bars, months)[-limit:]
+    elif name == "YTD":
+        bars = chan.ytd_bars(bars)
+    candles = [{"t": b.t.isoformat(), "o": b.o, "h": b.h, "l": b.l, "c": b.c, "v": b.v} for b in bars]
+    return {"symbol": symbol.upper(), "timeframe": name, "closed_only": True, "candles": candles}
 
 
 _engine: MarketScannerEngine | None = None
