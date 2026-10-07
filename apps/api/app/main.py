@@ -100,6 +100,10 @@ def _start_optional_services(app: FastAPI) -> None:
 
         if notifications_enabled():
             get_notification_worker().start()
+        from .autonomous.engine import enabled as autonomous_enabled, get_autonomous_engine
+
+        if autonomous_enabled() and scanner_enabled():
+            get_autonomous_engine().start()
         if os.getenv("MI_WORKER_ENABLED", "0").strip() in ("1", "true", "yes"):
             from .workers.market_intelligence_worker import MarketIntelligenceWorker
 
@@ -129,6 +133,9 @@ def _stop_optional_services() -> None:
         from .notifications.worker import get_notification_worker
 
         get_notification_worker().stop()
+        from .autonomous.engine import get_autonomous_engine
+
+        get_autonomous_engine().stop()
     except Exception as exc:
         _log_startup_failure("Optional autonomous service shutdown", exc)
 
@@ -234,3 +241,6 @@ app.include_router(ai_outlook.router)
 
 from .routers import notifications
 app.include_router(notifications.router)
+
+from .routers import autonomous
+app.include_router(autonomous.router)

@@ -1,6 +1,6 @@
 export type Page =
   | 'overview'
-  | 'workflow-engine'
+  | 'autonomous-engine'
   | 'strength-intelligence'
   | 'market-scanner'
   | 'market-structure'
@@ -30,11 +30,12 @@ export const LEGACY_ROUTE: Record<
   audit: { page: 'system-control', tab: 'audit' },
   notifications: { page: 'system-control', tab: 'notifications' },
   'strength-matrix': { page: 'strength-intelligence', tab: 'matrix' },
+  'workflow-engine': { page: 'autonomous-engine' },
 };
 
 export const PAGE_CRUMB: Record<Page, string> = {
   overview: 'Overview',
-  'workflow-engine': 'Workflow Engine',
+  'autonomous-engine': 'Autonomous Engine',
   'strength-intelligence': 'Strength Intelligence',
   'market-scanner': 'Market Scanner',
   'market-structure': 'Market Structure',

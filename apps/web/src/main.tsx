@@ -14,6 +14,7 @@ import './styles/notifications.css';
 import './styles/responsive-layout.css';
 import './styles/compact-laptop.css';
 import './styles/overview-dashboard.css';
+import './styles/autonomous-engine.css';
 
 createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

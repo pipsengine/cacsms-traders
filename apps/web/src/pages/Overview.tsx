@@ -347,7 +347,7 @@ export function Overview({
             </li>
           </ul>
           <div className="ov-link-foot">
-            <button type="button" onClick={() => go('workflow-engine')}>
+            <button type="button" onClick={() => go('autonomous-engine')}>
               View details <ChevronRight size={14} aria-hidden />
             </button>
           </div>

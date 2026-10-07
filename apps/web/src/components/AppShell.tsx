@@ -30,7 +30,7 @@ const nav: [string, { page: Page; label: string; icon: React.ReactNode }[]][] = 
     'AUTONOMOUS TRADER',
     [
       { page: 'overview', label: 'Overview', icon: <LayoutDashboard /> },
-      { page: 'workflow-engine', label: 'Workflow Engine', icon: <Workflow /> },
+      { page: 'autonomous-engine', label: 'Autonomous Engine', icon: <Workflow /> },
     ],
   ],
   [
