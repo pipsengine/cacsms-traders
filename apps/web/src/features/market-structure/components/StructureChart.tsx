@@ -139,6 +139,50 @@ function resolveView(view: View | null, total: number, initial: View | null) {
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
+type Box = { x: number; y: number; w: number; h: number };
+/** Overlap (px²) treated as a touch rather than a collision, e.g. a tag edge grazing a wick tip or the path arrowhead. */
+const TOUCH_PX2 = 24;
+const overlap = (a: Box, b: Box) =>
+  Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)) * Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+const textW = (s: string) => s.length * 6.2 + 6;
+const legTone = (y0: number, y1: number, fallback: OverlayTone): OverlayTone => (y1 < y0 - 0.5 ? 'green' : y1 > y0 + 0.5 ? 'red' : fallback);
+
+/**
+ * Greedy label placement: every label takes the nearest candidate slot that clears the visible candles and the
+ * labels already placed (falling back to the least-overlapping slot), so analysis labels never sit on price action
+ * when free space exists — typically the projection area right of the last candle.
+ */
+function labelPlacer(obstacles: Box[], bounds: Box) {
+  const placed: Box[] = [];
+  const fit = (b: Box): Box => ({
+    ...b,
+    x: clamp(b.x, bounds.x, bounds.x + bounds.w - b.w),
+    y: clamp(b.y, bounds.y, bounds.y + bounds.h - b.h),
+  });
+  return (candidates: Box[], { required = true }: { required?: boolean } = {}) => {
+    const want = fit(candidates[0]);
+    let pick: Box | null = null;
+    let score = Infinity;
+    for (const c of candidates) {
+      const b = fit(c);
+      let onCandles = 0;
+      for (const o of obstacles) onCandles += overlap(b, o);
+      let onLabels = 0;
+      for (const p of placed) onLabels += overlap(b, p);
+      const cost = onCandles + onLabels * 8;
+      // Vertical moves read as a different price, so they cost twice as much as sideways moves.
+      const s = cost > TOUCH_PX2 ? 1e6 + cost : Math.hypot(b.x - want.x, 2 * (b.y - want.y)) + cost;
+      if (s < score) {
+        pick = b;
+        score = s;
+      }
+    }
+    if (!pick || (!required && score >= 1e6)) return null;
+    placed.push(pick);
+    return pick;
+  };
+}
+
 export function StructureChart({
   symbol,
   title,
@@ -332,6 +376,80 @@ export function StructureChart({
     const tickCount = Math.max(compact ? 3 : 4, Math.round((priceBottom - PAD.top) / TICK_SPACING_PX));
     return { lo, hi, step, x, y, plotBottom, priceBottom, plotW, vmax, tickCount, iL, iR, viewL, viewR };
   }, [candles, width, height, lastPrice, range, ch, overlay, idxAt, showVolume, compact, vw, zoomed, yZoom, yPan]);
+
+  const layout = useMemo(() => {
+    if (!g || !overlay) return null;
+    const n = candles.length;
+    const bw = Math.max(1, Math.min(zoomable ? 16 : 9, g.step * 0.62));
+    const obstacles: Box[] = [];
+    for (let i = g.iL; i <= g.iR; i++) {
+      const top = g.y(candles[i].h);
+      obstacles.push({ x: g.x(i) - bw / 2 - 2, y: top - 2, w: bw + 4, h: g.y(candles[i].l) - top + 4 });
+    }
+    for (const p of overlay.paths ?? []) {
+      const pts = p.points.map(([t, v]) => [g.x(idxAt(t)), g.y(v)] as const).filter(([px, py]) => Number.isFinite(px) && Number.isFinite(py));
+      for (let j = 1; j < pts.length; j++) {
+        const [x0, y0] = pts[j - 1];
+        const [x1, y1] = pts[j];
+        const steps = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0) / 6));
+        for (let s = 0; s <= steps; s++) obstacles.push({ x: x0 + ((x1 - x0) * s) / steps - 4, y: y0 + ((y1 - y0) * s) / steps - 4, w: 8, h: 8 });
+      }
+    }
+    const maxX = width - PAD.right - 2;
+    const place = labelPlacer(obstacles, { x: PAD.left + 2, y: PAD.top, w: maxX - PAD.left - 2, h: g.priceBottom - PAD.top });
+    const lastX = g.x(n - 1) + bw / 2 + 4;
+    const grid = (x0: number, y0: number, w: number, h: number, xs: number[], dy: number, rows: number) => {
+      const out: Box[] = [{ x: x0, y: y0, w, h }];
+      for (let r = 0; r <= rows; r++)
+        for (const s of r ? [-1, 1] : [1])
+          for (const x of [x0, ...xs]) out.push({ x, y: y0 + s * r * dy, w, h });
+      return out;
+    };
+
+    const placeTags = () => (overlay.tags ?? []).map((t) => {
+      if (zoomed && t.at != null && !(idxAt(t.at) >= g.viewL - 1 && idxAt(t.at) <= g.viewR + 1)) return null;
+      const w = TAG_W;
+      const h = t.value ? 30 : 18;
+      const ax = t.at != null ? g.x(idxAt(t.at)) : maxX - w / 2;
+      const py = g.y(t.price);
+      const raw = t.place === 'above' ? py - h - 8 : t.place === 'below' ? py + 8 : py - h / 2;
+      const xs = [maxX - w, lastX + 2];
+      for (let s = 1; s <= 6; s++) xs.push(ax - w / 2 - s * w * 0.55, ax - w / 2 + s * w * 0.55);
+      const box = place(grid(ax - w / 2, raw, w, h, xs, h / 2 + 3, 18))!;
+      const cx = clamp(ax, box.x, box.x + box.w);
+      const cy = clamp(py, box.y, box.y + box.h);
+      const leader = Math.hypot(cx - ax, cy - py) > 10 ? { x1: ax, y1: py, x2: cx, y2: cy } : null;
+      return { box, leader };
+    });
+
+    const markers = (overlay.markers ?? []).map((m) => {
+      if (m.shape !== 'text' || !m.label) return null;
+      const i = idxAt(m.at);
+      if (!(i >= Math.max(-0.5, g.viewL) && i <= Math.min(n - 0.5, g.viewR))) return null;
+      const my = g.y(m.price);
+      if (my < PAD.top - 2 || my > g.priceBottom + 2) return null;
+      const c = candles[clamp(Math.round(i), 0, n - 1)];
+      const w = textW(m.label);
+      const edge = m.below ? Math.max(my, g.y(c.l)) + 3 : Math.min(my, g.y(c.h)) - 15;
+      const out: Box[] = [];
+      for (let r = 0; r <= 10; r++) for (const dx of [0, -w * 0.6, w * 0.6]) out.push({ x: g.x(i) - w / 2 + dx, y: edge + (m.below ? 1 : -1) * r * 10, w, h: 12 });
+      return place(out);
+    });
+
+    const lineLabel = (label: string | undefined, py: number, from: number) => {
+      if (!label) return null;
+      const w = textW(label);
+      const out: Box[] = [];
+      for (const dy of [-14, 2]) for (let x = maxX - w; x >= from; x -= 24) out.push({ x, y: py + dy, w, h: 12 });
+      if (!out.length) out.push({ x: from, y: py - 14, w, h: 12 });
+      return place(out, { required: false });
+    };
+    const start = (t?: string) => (t ? Math.max(PAD.left, g.x(idxAt(t))) : PAD.left) + 4;
+    const levels = (overlay.levels ?? []).map((l) => lineLabel(l.label, g.y(l.price), start(l.from)));
+    const zones = (overlay.zones ?? []).map((z) => lineLabel(z.label, g.y(Math.max(z.lo, z.hi)), start(z.from)));
+    // Tags can move (with a leader line), so they are placed after the labels pinned to a price.
+    return { tags: placeTags(), markers, levels, zones };
+  }, [g, overlay, candles, width, zoomable, zoomed, idxAt]);
 
   const geom = useRef({ vw, total, step: g?.step ?? 1, plotW: g?.plotW ?? 1, priceH: g ? g.priceBottom - PAD.top : 1, yZoom });
   geom.current = { vw, total, step: g?.step ?? 1, plotW: g?.plotW ?? 1, priceH: g ? g.priceBottom - PAD.top : 1, yZoom };
@@ -780,30 +898,22 @@ export function StructureChart({
 
             {overlay ? (
               <g clipPath={zoomable ? `url(#${plotClipId})` : undefined}>
-                {overlay.zones?.map((z, k) =>
-                  z.label ? (
-                    <text
-                      key={`zt${k}`}
-                      className={`mcx-level-t is-${z.tone}`}
-                      x={(z.from ? Math.max(PAD.left, g.x(idxAt(z.from)) - g.step / 2) : PAD.left) + 4}
-                      y={g.y(Math.max(z.lo, z.hi)) - 3}
-                    >
+                {overlay.zones?.map((z, k) => {
+                  const b = layout?.zones[k];
+                  return z.label && b ? (
+                    <text key={`zt${k}`} className={`mcx-level-t is-${z.tone}`} x={b.x + 3} y={b.y + 10}>
                       {z.label}
                     </text>
-                  ) : null,
-                )}
-                {overlay.levels?.map((l, k) =>
-                  l.label ? (
-                    <text
-                      key={`vt${k}`}
-                      className={`mcx-level-t is-${l.tone}`}
-                      x={(l.from ? Math.max(PAD.left, g.x(idxAt(l.from))) : PAD.left) + 4}
-                      y={g.y(l.price) - 3}
-                    >
+                  ) : null;
+                })}
+                {overlay.levels?.map((l, k) => {
+                  const b = layout?.levels[k];
+                  return l.label && b ? (
+                    <text key={`vt${k}`} className={`mcx-level-t is-${l.tone}`} x={b.x + 3} y={b.y + 10}>
                       {l.label}
                     </text>
-                  ) : null,
-                )}
+                  ) : null;
+                })}
                 {overlay.markers?.map((m, k) => {
                   const i = idxAt(m.at);
                   if (!(i >= Math.max(-0.5, g.viewL) && i <= Math.min(candles.length - 0.5, g.viewR))) return null;
@@ -812,11 +922,12 @@ export function StructureChart({
                   if (my < PAD.top - 2 || my > g.priceBottom + 2) return null;
                   const cls = `mcx-mark is-${m.tone} ${m.muted ? 'is-muted' : ''}`;
                   if (m.shape === 'text') {
-                    return (
-                      <text key={`m${k}`} className={`${cls} is-text`} x={mx} y={m.below ? my + 13 : my - 5} textAnchor="middle">
+                    const b = layout?.markers[k];
+                    return b ? (
+                      <text key={`m${k}`} className={`${cls} is-text`} x={b.x + b.w / 2} y={b.y + 10} textAnchor="middle">
                         {m.label}
                       </text>
-                    );
+                    ) : null;
                   }
                   const below = m.shape === 'up';
                   const ty = below ? my + 22 : my - 15;
@@ -847,26 +958,26 @@ export function StructureChart({
                   const ang = Math.atan2(by - ay, bx - ax);
                   const head = (s: number) => `${bx - 9 * Math.cos(ang + s)},${by - 9 * Math.sin(ang + s)}`;
                   return (
-                    <g key={`p${k}`} {...pick(p.id)} className={`mcx-path is-${p.tone} ${p.dashed ? 'is-dashed' : ''}`}>
-                      <polyline points={pts.map(([px, py]) => `${px},${py}`).join(' ')} />
-                      {pts.slice(1, -1).map(([px, py], j) => (
-                        <circle key={j} cx={px} cy={py} r={2.5} />
+                    <g key={`p${k}`} {...pick(p.id)} className={`mcx-path ${p.dashed ? 'is-dashed' : ''}`}>
+                      {pts.slice(1).map(([px, py], j) => (
+                        <line key={`s${j}`} className={`is-${legTone(pts[j][1], py, p.tone)}`} x1={pts[j][0]} y1={pts[j][1]} x2={px} y2={py} />
                       ))}
-                      {p.arrow !== false ? <path className="mcx-path-head" d={`M${bx},${by} L${head(0.45)} L${head(-0.45)} Z`} /> : null}
+                      {pts.slice(1, -1).map(([px, py], j) => (
+                        <circle key={j} className={`is-${legTone(py, pts[j + 2][1], p.tone)}`} cx={px} cy={py} r={3.5} />
+                      ))}
+                      {p.arrow !== false ? <path className={`mcx-path-head is-${legTone(ay, by, p.tone)}`} d={`M${bx},${by} L${head(0.45)} L${head(-0.45)} Z`} /> : null}
                     </g>
                   );
                 })}
                 {overlay.tags?.map((t, k) => {
-                  const w = TAG_W;
-                  const h = t.value ? 30 : 18;
-                  if (zoomed && t.at != null && !(idxAt(t.at) >= g.viewL - 1 && idxAt(t.at) <= g.viewR + 1)) return null;
-                  const ax = t.at != null ? g.x(idxAt(t.at)) - w / 2 : width - PAD.right - w - 6;
-                  const bx = Math.max(PAD.left + 2, Math.min(width - PAD.right - w - 2, ax));
-                  const py = g.y(t.price);
-                  const raw = t.place === 'above' ? py - h - 8 : t.place === 'below' ? py + 8 : py - h / 2;
-                  const by = Math.max(PAD.top, Math.min(g.priceBottom - h, raw));
+                  const placed = layout?.tags[k];
+                  if (!placed) return null;
+                  const { box, leader } = placed;
+                  const { x: bx, y: by, w, h } = box;
                   return (
                     <g key={`t${k}`} {...pick(t.id)} className={`mcx-tag is-${t.tone}`}>
+                      {leader ? <line className="mcx-tag-leader" {...leader} /> : null}
+                      {leader ? <circle className="mcx-tag-dot" cx={leader.x1} cy={leader.y1} r={2.5} /> : null}
                       <rect x={bx} y={by} width={w} height={h} rx={5} />
                       <text className="mcx-tag-t" x={bx + w / 2} y={by + 12} textAnchor="middle">
                         {t.title}

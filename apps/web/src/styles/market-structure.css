@@ -712,15 +712,22 @@
 .mcx-tag.is-blue rect { fill: #eef4ff; stroke: #8bb1ff; }
 .mcx-tag.is-blue text { fill: #1b5bd5; }
 
-.mcx-path polyline { fill: none; stroke-width: 2; }
-.mcx-path.is-dashed polyline { stroke-dasharray: 6 4; }
-.mcx-path circle { stroke: #fff; stroke-width: 1; }
-.mcx-path.is-blue polyline { stroke: #2168ee; }
-.mcx-path.is-blue circle, .mcx-path.is-blue .mcx-path-head { fill: #2168ee; }
-.mcx-path.is-green polyline { stroke: #0aa56b; }
-.mcx-path.is-green circle, .mcx-path.is-green .mcx-path-head { fill: #0aa56b; }
-.mcx-path.is-red polyline { stroke: #ef3f49; }
-.mcx-path.is-red circle, .mcx-path.is-red .mcx-path-head { fill: #ef3f49; }
+.mcx-path line { fill: none; stroke-width: 2.2; stroke-linecap: round; }
+.mcx-path.is-dashed line { stroke-dasharray: 6 4; }
+.mcx-path circle { stroke: #fff; stroke-width: 1.2; }
+.mcx-path line.is-blue { stroke: #2168ee; }
+.mcx-path circle.is-blue, .mcx-path-head.is-blue { fill: #2168ee; }
+.mcx-path line.is-green { stroke: #0aa56b; }
+.mcx-path circle.is-green, .mcx-path-head.is-green { fill: #0aa56b; }
+.mcx-path line.is-red { stroke: #ef3f49; }
+.mcx-path circle.is-red, .mcx-path-head.is-red { fill: #ef3f49; }
+.mcx-tag-leader { stroke-width: 1; stroke-dasharray: 2 2; }
+.mcx-tag.is-res .mcx-tag-leader { stroke: #ff6877; }
+.mcx-tag.is-res .mcx-tag-dot { fill: #ff6877; }
+.mcx-tag.is-sup .mcx-tag-leader { stroke: #3ec98d; }
+.mcx-tag.is-sup .mcx-tag-dot { fill: #3ec98d; }
+.mcx-tag.is-blue .mcx-tag-leader { stroke: #8bb1ff; }
+.mcx-tag.is-blue .mcx-tag-dot { fill: #8bb1ff; }
 .mst-chart [data-picked] { filter: drop-shadow(0 0 3px rgba(23, 101, 239, 0.75)); }
 .mst-chart rect[data-picked] { stroke-width: 2; }
 .mcx-zone.is-red { fill: rgba(255, 102, 121, 0.1); stroke: rgba(255, 90, 107, 0.55); }
@@ -736,6 +743,7 @@
 .mcx-sw.is-cluster { background: rgba(255, 102, 121, 0.16); border: 1px solid rgba(255, 90, 107, 0.5); }
 .mcx-sw.is-bull-line { height: 2px; background: #0aa56b; }
 .mcx-sw.is-bear-line { height: 2px; background: #ef3f49; }
+.mcx-sw.is-liq { height: 0; border-top: 2px dotted #7c3aed; border-radius: 0; }
 .mcx-sw.is-failed-line { height: 0; border-top: 2px dashed #a3adbd; border-radius: 0; }
 .mcx-sw.is-swing { width: auto; height: auto; font-style: normal; font-size: 9px; font-weight: 800; color: #6b7891; }
 .mcx-sw.is-swing::before { content: 'HH'; }

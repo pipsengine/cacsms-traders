@@ -29,7 +29,8 @@ export function futureBarsFor(o: Outlook | null, tf: string, candles: VCandle[])
   const last = Date.parse(candles[candles.length - 1].t);
   const end = Math.max(...o.expected_path.map(([t]) => Date.parse(t)));
   const bars = Math.ceil((end - last) / (TF_MS[tf] ?? 864e5)) + 2;
-  return Math.max(4, Math.min(Math.round(candles.length * 0.32), bars));
+  // The projection area also hosts the target / ERZ / level tags so they never cover price action.
+  return Math.max(4, Math.round(candles.length * 0.22), Math.min(Math.round(candles.length * 0.32), bars));
 }
 
 function frame(candles: VCandle[], o: Outlook) {
@@ -41,6 +42,14 @@ function frame(candles: VCandle[], o: Outlook) {
 
 function forTf(a: Annotation, tf: string) {
   return a.tf === '*' || a.tf === (ANN_TF[tf] ?? tf);
+}
+
+/** Chart text stays short so it fits beside price action; the full wording is in the annotation detail. */
+function liquidityLabel(label: string) {
+  const side = /buy-side/i.test(label) ? 'BSL' : /sell-side/i.test(label) ? 'SSL' : null;
+  if (!side) return `$ ${label}`;
+  const tf = label.match(/^(\w+)\s/)?.[1];
+  return `$ ${tf ? `${tf} ` : ''}${side}`;
 }
 
 const nearestPathTime = (path: TimePoint[], price: number) =>
@@ -91,7 +100,7 @@ export function buildOverlay(o: Outlook, tf: string, candles: VCandle[], groups:
         }
         break;
       case 'liquidity':
-        if (inView(a.price)) ov.levels.push({ price: a.price!, tone: 'purple', label: `$ ${a.label}`, id: a.id, from: startT });
+        if (inView(a.price)) ov.levels.push({ price: a.price!, tone: 'purple', label: liquidityLabel(a.label), id: a.id, from: startT });
         break;
       case 'fractal':
         if (a.at && inView(a.price))
@@ -189,15 +198,18 @@ function declutter(tags: NonNullable<ChartOverlay['tags']>, candles: VCandle[], 
 export const legendFor = (mode: OverlayMode) =>
   mode === 'scenarios'
     ? [
-        { label: 'Primary path', swatch: 'is-bull-line' },
-        { label: 'Alternative path', swatch: 'is-bear-line' },
+        { label: 'Bullish move', swatch: 'is-bull-line' },
+        { label: 'Bearish move', swatch: 'is-bear-line' },
         { label: 'Consolidation', swatch: 'is-chan' },
         { label: 'ERZ', swatch: 'is-range' },
       ]
     : [
+        { label: 'Bullish move', swatch: 'is-bull-line' },
+        { label: 'Bearish move', swatch: 'is-bear-line' },
         { label: 'Channel', swatch: 'is-chan' },
         { label: 'ERZ', swatch: 'is-range' },
         { label: 'Fractal High', swatch: 'is-fh' },
         { label: 'Fractal Low', swatch: 'is-fl' },
+        { label: 'Buy / sell-side liquidity ($ BSL / SSL)', swatch: 'is-liq' },
         { label: 'Invalidation', swatch: 'is-last' },
       ];
