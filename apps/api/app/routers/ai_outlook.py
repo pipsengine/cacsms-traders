@@ -3,9 +3,10 @@ import hmac
 import logging
 import os
 import threading
+import time
 from datetime import date, timedelta
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 
 from ..core.audit import write_audit
 from ..core.database import db
@@ -57,13 +58,20 @@ def _run_for(store: OutlookRepository, analysis_date: str | None) -> dict | None
     return store.latest_published()
 
 
-def _summaries(store: OutlookRepository, run_id: str) -> tuple[list[dict], dict[str, dict]]:
+def _summaries(store: OutlookRepository, run_id: str, timing: dict | None = None) -> tuple[list[dict], dict[str, dict]]:
+    timing = {} if timing is None else timing
     try:
+        t = time.perf_counter()
         rows = store.summaries(run_id)
-        return rows, store.latest_revisions([o["outlook_id"] for o in rows if o["status"] == "PUBLISHED"])
+        timing["summaries"] = (time.perf_counter() - t) * 1000
+        t = time.perf_counter()
+        revs = store.latest_revisions([o["outlook_id"] for o in rows if o["status"] == "PUBLISHED"])
+        timing["revisions"] = (time.perf_counter() - t) * 1000
+        return rows, revs
     except Exception:  # noqa: BLE001 - dialect-specific JSON SQL; the full-payload read is slower but always works
         log.warning("Outlook summary query failed; falling back to full payloads", exc_info=True)
         store.conn.rollback()
+        timing["fallback"] = 0.0
     rows = []
     for o in store.outlooks(run_id):
         rows.append({**o, "confidence": (o.get("confidence") or {}).get("primary"), "regime": (o.get("regime") or {}).get("label")})
@@ -107,15 +115,26 @@ def status():
 
 
 @router.get("/latest")
-def latest(analysis_date: str | None = Query(None)):
+def latest(response: Response, analysis_date: str | None = Query(None)):
     """Latest published daily outlook: every instrument's status plus the ranked qualified opportunities."""
+    timing: dict[str, float] = {}
+    data = _latest(analysis_date, timing)
+    response.headers["Server-Timing"] = ", ".join(f"{k};dur={v:.0f}" for k, v in timing.items())
+    return data
+
+
+def _latest(analysis_date: str | None, timing: dict[str, float]) -> dict:
+    t = time.perf_counter()
     with db() as conn:
+        timing["connect"] = (time.perf_counter() - t) * 1000
+        t = time.perf_counter()
         store = _store(conn)
         run = _run_for(store, analysis_date)
         live = store.run(get_outlook_service().target_day(utcnow(), outlook_settings()).isoformat(), "LIVE")
+        timing["runs"] = (time.perf_counter() - t) * 1000
         rows = []
         if run:
-            summaries, revs = _summaries(store, run["id"])
+            summaries, revs = _summaries(store, run["id"], timing)
             for o in summaries:
                 rev = revs.get(o["outlook_id"]) or {}
                 r = {k: o.get(k) for k in ROW_FIELDS}
@@ -130,7 +149,7 @@ def latest(analysis_date: str | None = Query(None)):
 
 @router.get("/opportunities")
 def opportunities(analysis_date: str | None = Query(None)):
-    data = latest(analysis_date)
+    data = _latest(analysis_date, {})
     return {"run": data["run"], "stale": data["stale"], "opportunities": data["opportunities"],
             "message": None if data["opportunities"] else "No qualified opportunities today"}
 
