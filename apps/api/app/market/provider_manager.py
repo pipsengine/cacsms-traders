@@ -5,6 +5,7 @@ import json
 from .market_data import configuration, provider_context
 
 MODES = ('AUTO', 'MT5_PREFERRED', 'CTRADER_PREFERRED')
+OBSERVE_WRITE_SECONDS = 15
 
 
 def select_provider(states, mode='AUTO'):
@@ -79,6 +80,7 @@ class ProviderManager:
         now = datetime.now(timezone.utc).isoformat()
         old = self.conn.execute('SELECT state_json FROM mi_provider_health WHERE provider=?', (provider,)).fetchone()
         state = json.loads(old['state_json']) if old else {k: v for k, v in self.states()[provider].items() if k != 'context'}
+        previous = dict(state)
         state.update(observed_at=now, connected=success)
         state['account_id'] = self.cfg['account_id'] if provider == 'ctrader' else provider_context(self.conn, {**self.cfg, 'provider': 'mt5'}).get('account_id')
         if success:
@@ -91,6 +93,11 @@ class ProviderManager:
             state['market_data_available'] = False
         state['healthy'] = success and state.get('market_data_available', False)
         state['last_error'] = error
+        # Every successful read observes; rewriting an unchanged row each time only adds row-lock contention.
+        unchanged = old and all(previous.get(k) == state.get(k) for k in ('connected', 'healthy', 'market_data_available', 'last_error', 'account_id'))
+        last = previous.get('observed_at')
+        if unchanged and last and (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds() < OBSERVE_WRITE_SECONDS:
+            return
         self.record_health(provider, state)
 
     def context(self):
@@ -153,6 +160,8 @@ class ProviderManager:
             elif provider == 'mt5' and state.get('last_error'):
                 events.append('MT5_CONNECTION_FAILED')
         state = {**previous, **state}
+        if state == previous:
+            return
         for event in events:
             write_audit(self.conn, None, None, event, 'provider', provider, before=previous, after=state)
         self.conn.execute('INSERT INTO mi_provider_health(provider,state_json) VALUES(?,?) ON CONFLICT(provider) DO UPDATE SET state_json=excluded.state_json', (provider, json.dumps(state)))

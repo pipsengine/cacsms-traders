@@ -232,6 +232,8 @@ class MarketScannerEngine:
                     self._gold_bootstrapped = False
                     self._cycle_mono = 0.0
             gw = create_market_data_gateway(conn, context=ctx) if connected else None
+            # Release provider-health and policy row locks before the long ingest/analysis phase.
+            conn.commit()
             ctx["snapshot_id"] = getattr(gw, "snapshot_id", None)
             repo = MarketRepository(conn, provider=ctx.get('active_provider') or '__unavailable__', snapshot_id=getattr(gw,'snapshot_id',None))
             now = datetime.now(timezone.utc)

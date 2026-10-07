@@ -157,6 +157,8 @@ class StrengthEngine:
         repo.provider = gw.provider_id
         repo.snapshot_id = gw.snapshot_id
         repo.account_id = (gw.get_account_context() or {}).get("account_id", "")
+        # bind_snapshot locks the market-data policy row; commit before the long sync/calculate/persist phase.
+        repo.conn.commit()
         self._last_profile["gateway"] = round(time.monotonic() - started, 3)
         self._ctx["snapshot_id"] = gw.snapshot_id
         if getattr(getattr(gw, "adapter", None), "candles_persisted", False) is True:
@@ -230,6 +232,7 @@ class StrengthEngine:
             with self._lock:
                 self._state = "SYNCING"
             resolved = {r.get("canonical_symbol") for r in gw.get_symbols()}
+            repo.conn.commit()
             missing = [p for p in FX_PAIRS_28 if p not in resolved]
             failures = [] if missing else store_failures(repo, CANDLE_TIMEFRAMES, offset)
             ok = not missing and not failures
@@ -284,6 +287,8 @@ class StrengthEngine:
             ctx = market_context(conn)
             for provider, status in ctx.get('providers', {}).items():
                 ProviderManager(conn).record_health(provider, status)
+            # Release provider-health row locks now; holding them for the whole tick serializes every other instance.
+            conn.commit()
             lap("context")
             from .market_data import configuration
             cfg = configuration(conn)

@@ -57,16 +57,18 @@ class MarketRepository:
   execute_retry(self.conn,"""INSERT INTO mi_candle(symbol,timeframe,open_time,close_time,open,high,low,close,tick_volume,spread,source,is_closed) VALUES(?,?,?,?,?,?,?,?,?,?,?,1) ON CONFLICT(symbol,timeframe,open_time) DO UPDATE SET close_time=excluded.close_time,open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,tick_volume=excluded.tick_volume,spread=excluded.spread,source=excluded.source,is_closed=1""",(c.symbol,c.timeframe,c.open_time.isoformat(),c.close_time.isoformat(),c.open,c.high,c.low,c.close,c.tick_volume,c.spread,c.source)); return True
  def candles(self,symbol,timeframe,limit=300):
   return [values(row) for row in self._candles_query("SELECT open_time,close_time,open,high,low,close,tick_volume,spread FROM mi_candle WHERE symbol=? AND timeframe=? AND is_closed=1 ORDER BY open_time DESC LIMIT ?",(symbol,timeframe,limit)).fetchall()[::-1]]
- def recent_candles(self,timeframe:str,limit:int)->dict[str,list[Candle]]:
-  """Latest `limit` closed candles per symbol in one round trip, oldest first."""
-  rows=self._candles_query(
-   """SELECT symbol,open_time,close_time,open,high,low,close,tick_volume,spread FROM (
-        SELECT symbol,open_time,close_time,open,high,low,close,tick_volume,spread,
-               ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY open_time DESC) AS rn
-        FROM mi_candle WHERE timeframe=? AND is_closed=1
-      ) WHERE rn <= ? ORDER BY symbol, open_time""",
-   (timeframe, limit),
-  ).fetchall()
+ def recent_candles(self,timeframe:str,limit:int,symbols=None)->dict[str,list[Candle]]:
+  """Latest `limit` closed candles per symbol in one round trip, oldest first.
+
+  One primary-key range scan per symbol (UNION ALL) instead of ranking every stored row of the timeframe.
+  """
+  from .constants import FX_PAIRS_28
+  table,scope=('mi_provider_candle','source=? AND account_id=? AND ') if self.provider_storage else ('mi_candle','')
+  member=f"SELECT * FROM (SELECT symbol,open_time,close_time,open,high,low,close,tick_volume,spread FROM {table} WHERE {scope}symbol=? AND timeframe=? AND is_closed=1 ORDER BY open_time DESC LIMIT ?) AS s{{i}}"
+  symbols=list(symbols or FX_PAIRS_28)
+  sql=" UNION ALL ".join(member.format(i=i) for i in range(len(symbols)))
+  params=[v for sym in symbols for v in ((self.provider,self.account_id) if self.provider_storage else ())+(sym,timeframe,limit)]
+  rows=sorted(self.conn.execute(sql,params).fetchall(),key=lambda r:(values(r)[0],values(r)[1]))
   out:dict[str,list[Candle]]={}
   for row in rows:
    sym,ot,ct,o,h,l,c,v,s=values(row)
