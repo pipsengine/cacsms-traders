@@ -69,3 +69,27 @@
 .kv-row{flex-wrap:wrap;align-items:flex-start}
 .kv-row>div{min-width:0;text-align:right;word-break:break-word}
 @media(max-width:1280px){.top-search kbd{display:none}}
+.top-status{display:flex;align-items:center;gap:8px;min-width:0}
+.top-market,.top-clock{display:flex;align-items:center;gap:9px;height:40px;padding:0 12px;border-radius:9px;border:1px solid var(--line);background:#fff;white-space:nowrap;line-height:1.15}
+.top-market div,.top-clock div{display:flex;flex-direction:column;min-width:0}
+.top-market b,.top-clock b{font-size:12.5px;font-weight:700;color:var(--text)}
+.top-market span,.top-clock span{font-size:10px;color:#71829a}
+.top-clock span{text-transform:uppercase;letter-spacing:.05em}
+.top-market em{font-style:normal;font-weight:600}
+.top-clock svg{width:16px;height:16px;color:#52647d;flex:none}
+.top-clock-time{font-variant-numeric:tabular-nums;letter-spacing:.02em;min-width:62px}
+.top-clock-time small{display:none;font-size:10px;font-weight:600;color:#71829a;letter-spacing:.04em}
+.top-market i{position:relative;width:9px;height:9px;border-radius:50%;flex:none;background:currentColor}
+.top-market.is-open{color:#079455;background:#ecfdf3;border-color:#abefc6}
+.top-market.is-open b{color:#067647}
+.top-market.is-open i::after{content:"";position:absolute;inset:-4px;border-radius:50%;background:currentColor;opacity:.35;animation:top-market-pulse 1.8s ease-out infinite}
+.top-market.is-caution{color:#dc6803;background:#fffaeb;border-color:#fedf89}
+.top-market.is-caution b{color:#b54708}
+.top-market.is-closed{color:#d92d20;background:#fef3f2;border-color:#fecdca}
+.top-market.is-closed b{color:#b42318}
+.top-market.is-open span,.top-market.is-caution span,.top-market.is-closed span{color:inherit;opacity:.85}
+@keyframes top-market-pulse{0%{transform:scale(.6);opacity:.45}100%{transform:scale(1.6);opacity:0}}
+@media(prefers-reduced-motion:reduce){.top-market.is-open i::after{animation:none}}
+@media(max-width:1500px){.top-market span{display:none}.top-clock span{display:none}.top-clock-time small{display:inline}}
+@media(max-width:1200px){.top-clock--date{display:none}}
+@media(max-width:760px){.top-status{order:-1;width:100%;justify-content:flex-start}}

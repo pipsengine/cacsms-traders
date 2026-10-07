@@ -23,6 +23,7 @@ import {
 import type { AuthUser, Health, Tenant } from '../types';
 import type { Page } from '../lib/routes';
 import { PAGE_CRUMB } from '../lib/routes';
+import { TopBarStatus } from './TopBarStatus';
 
 const nav: [string, { page: Page; label: string; icon: React.ReactNode }[]][] = [
   [
@@ -210,6 +211,7 @@ export function AppShell({
             </label>
           </div>
           <div className="top-right">
+            <TopBarStatus />
             <div className="tenant-switch">
               <Building2 />
               <select value={tenantId} onChange={(e) => onTenantChange(e.target.value)} aria-label="Active tenant">
