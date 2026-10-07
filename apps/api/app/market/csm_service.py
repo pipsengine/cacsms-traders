@@ -136,12 +136,13 @@ class CurrencyStrengthMatrixService:
         run_id = run_id or str(uuid.uuid4())
         started = datetime.now(timezone.utc).isoformat()
         scores = normalize_all_scores(result.values, COMPUTE_TIMEFRAMES, result.quality)
+        points = []
         for currency in CSM_CURRENCIES:
             for tf in COMPUTE_TIMEFRAMES:
                 val = result.values[currency].get(tf, 0.0)
                 q = result.quality[currency].get(tf, "MISSING")
                 sc = result.sample_counts[currency].get(tf, 0)
-                self.repo.save_strength(
+                points.append(
                     StrengthPoint(
                         currency,
                         tf,
@@ -153,6 +154,7 @@ class CurrencyStrengthMatrixService:
                         score=scores[currency].get(tf),
                     )
                 )
+        self.repo.save_strengths(points)
         execute_retry(
             self.repo.conn,
             """INSERT INTO mi_calculation_run(id,tenant_id,timeframe,started_at,completed_at,status,pair_count,currency_count,error,metadata_json)

@@ -6,7 +6,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 
-from ..core.database import execute_retry
+from ..core.database import execute_values
 from .market_data import configuration
 from .provenance import scoped_query, values
 from .constants import normalize_matrix_timeframe
@@ -53,26 +53,17 @@ def differential_history(conn: sqlite3.Connection, pair: str, start: datetime) -
 def save_pair_snapshot(conn: sqlite3.Connection, scope: tuple[str, str], as_of: datetime, rows: list[dict]) -> int:
     tenant, account = scope
     stamp = as_of.isoformat()
-    for r in rows:
-        base, quote = split_pair(r["pair"])
-        execute_retry(
-            conn,
-            """INSERT INTO mi_pair_intel_snapshot(tenant_id,trading_account_id,pair,base_currency,quote_currency,as_of,
-                 base_strength,quote_strength,differential,abs_differential,relationship,dynamics,alignment,
-                 aligned_count,timeframe_count,tf_differentials_json)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(tenant_id,trading_account_id,pair,as_of) DO UPDATE SET
-                 base_strength=excluded.base_strength,quote_strength=excluded.quote_strength,
-                 differential=excluded.differential,abs_differential=excluded.abs_differential,
-                 relationship=excluded.relationship,dynamics=excluded.dynamics,alignment=excluded.alignment,
-                 aligned_count=excluded.aligned_count,timeframe_count=excluded.timeframe_count,
-                 tf_differentials_json=excluded.tf_differentials_json""",
+    execute_values(
+        conn,
+        """INSERT INTO mi_pair_intel_snapshot(tenant_id,trading_account_id,pair,base_currency,quote_currency,as_of,
+             base_strength,quote_strength,differential,abs_differential,relationship,dynamics,alignment,
+             aligned_count,timeframe_count,tf_differentials_json)""",
+        [
             (
                 tenant,
                 account,
                 r["pair"],
-                base,
-                quote,
+                *split_pair(r["pair"]),
                 stamp,
                 r["base_strength"],
                 r["quote_strength"],
@@ -84,8 +75,17 @@ def save_pair_snapshot(conn: sqlite3.Connection, scope: tuple[str, str], as_of: 
                 r["alignment"]["aligned"],
                 r["alignment"]["total"],
                 json.dumps(r["timeframes"]),
-            ),
-        )
+            )
+            for r in rows
+        ],
+        """ON CONFLICT(tenant_id,trading_account_id,pair,as_of) DO UPDATE SET
+             base_strength=excluded.base_strength,quote_strength=excluded.quote_strength,
+             differential=excluded.differential,abs_differential=excluded.abs_differential,
+             relationship=excluded.relationship,dynamics=excluded.dynamics,alignment=excluded.alignment,
+             aligned_count=excluded.aligned_count,timeframe_count=excluded.timeframe_count,
+             tf_differentials_json=excluded.tf_differentials_json""",
+        key=lambda r: r[2],
+    )
     conn.commit()
     return len(rows)
 

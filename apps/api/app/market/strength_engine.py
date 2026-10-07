@@ -50,6 +50,7 @@ BOOTSTRAP_RETRY_SECONDS = 60.0
 MODE_INTEREST_SECONDS = 30.0
 REFERENCE_REFRESH_SECONDS = 60.0
 ON_DEMAND_INTERVAL_SECONDS = _env_float("STRENGTH_ON_DEMAND_SECONDS", 15.0)
+COLD_WAIT_SECONDS = _env_float("STRENGTH_COLD_WAIT_SECONDS", 60.0)
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -127,19 +128,28 @@ class StrengthEngine:
                 self._ctx["provider_status"] = "ERROR"
                 self._ctx["error_code"] = "market_data_sync_failed"
 
+    def allow_on_demand(self) -> None:
+        """Reads will advance this engine, so a missing background worker is not a fault."""
+        self._on_demand = True
+
     def tick_on_demand(self) -> None:
         """Advance the engine inside an API request where no background worker can live (serverless).
 
-        Throttled and non-blocking: concurrent requests return the cached state while one request ticks.
+        Throttled. Concurrent requests return the cached state while one request ticks; with nothing
+        cached yet (cold instance) they wait for that tick instead of answering with an empty matrix.
         """
         if self.running:
             return
         self._on_demand = True
         if time.monotonic() - self._last_demand_mono < ON_DEMAND_INTERVAL_SECONDS:
             return
-        if not self._demand_lock.acquire(blocking=False):
+        with self._lock:
+            cold = self._result is None
+        if not self._demand_lock.acquire(blocking=cold, timeout=COLD_WAIT_SECONDS if cold else -1):
             return
         try:
+            if time.monotonic() - self._last_demand_mono < ON_DEMAND_INTERVAL_SECONDS:
+                return
             self._safe_tick()
         finally:
             self._last_demand_mono = time.monotonic()
@@ -153,7 +163,7 @@ class StrengthEngine:
 
     def _sync_closed_bars(self, repo: MarketRepository, svc: CurrencyStrengthMatrixService) -> bool:
         started = time.monotonic()
-        gw = create_market_data_gateway(repo.conn, context=self._ctx)
+        gw = create_market_data_gateway(repo.conn, context=self._ctx, verify_scope=False)
         repo.provider = gw.provider_id
         repo.snapshot_id = gw.snapshot_id
         repo.account_id = (gw.get_account_context() or {}).get("account_id", "")

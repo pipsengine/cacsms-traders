@@ -103,6 +103,37 @@ def test_serverless_reads_advance_engine_with_throttle(monkeypatch):
     assert engine.payload()['meta']['engine_state'] != 'WORKER_UNAVAILABLE'
 
 
+def test_cold_concurrent_reads_wait_for_the_single_tick():
+    import threading, time
+    engine = strength_engine.StrengthEngine()
+    finished = []
+    def slow_tick():
+        time.sleep(0.3)
+        finished.append(time.monotonic())
+    engine._tick = Mock(side_effect=slow_tick)
+    returned = []
+    def read():
+        engine.tick_on_demand()
+        returned.append(time.monotonic())
+    threads = [threading.Thread(target=read) for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert engine._tick.call_count == 1
+    assert min(returned) >= finished[0]
+
+
+def test_batched_upsert_collapses_duplicate_keys():
+    from apps.api.app.core.database import execute_values
+    c = sqlite3.connect(':memory:')
+    c.execute('CREATE TABLE t(k TEXT PRIMARY KEY, v INTEGER)')
+    rows = [(f'k{i}', i) for i in range(120)] + [('k0', 999)]
+    execute_values(c, 'INSERT INTO t(k,v)', rows, 'ON CONFLICT(k) DO UPDATE SET v=excluded.v', key=lambda r: r[0])
+    assert c.execute('SELECT COUNT(*) FROM t').fetchone()[0] == 120
+    assert c.execute("SELECT v FROM t WHERE k='k0'").fetchone()[0] == 999
+
+
 def test_diagnostics_support_postgres_dictionary_rows(monkeypatch):
     from apps.api.app.routers import ctrader
     monkeypatch.setattr(ctrader, 'ctrader_config', lambda: {'configured': True})

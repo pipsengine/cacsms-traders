@@ -1,7 +1,7 @@
 from __future__ import annotations
 import sqlite3, json
 from datetime import datetime
-from ..core.database import execute_retry
+from ..core.database import execute_retry, execute_values
 from .models import Candle
 from .provenance import scoped_query, values
 def _utc(value):
@@ -119,6 +119,12 @@ class MarketRepository:
  def save_strength(self,p):
   self.record_provenance("strength",p.as_of)
   execute_retry(self.conn,"""INSERT INTO mi_strength_snapshot(currency,timeframe,as_of,value,slope,velocity,acceleration,persistence,confidence,sample_count,quality,score) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(currency,timeframe,as_of) DO UPDATE SET value=excluded.value,slope=excluded.slope,velocity=excluded.velocity,acceleration=excluded.acceleration,persistence=excluded.persistence,confidence=excluded.confidence,sample_count=excluded.sample_count,quality=excluded.quality,score=excluded.score""",(p.currency,p.timeframe,p.as_of.isoformat(),p.value,p.slope,p.velocity,p.acceleration,p.persistence,p.confidence,p.sample_count,p.quality,p.score))
+ def save_strengths(self,points):
+  points=list(points)
+  for stamp in {p.as_of for p in points}: self.record_provenance("strength",stamp)
+  execute_values(self.conn,"INSERT INTO mi_strength_snapshot(currency,timeframe,as_of,value,slope,velocity,acceleration,persistence,confidence,sample_count,quality,score)",
+   [(p.currency,p.timeframe,p.as_of.isoformat(),p.value,p.slope,p.velocity,p.acceleration,p.persistence,p.confidence,p.sample_count,p.quality,p.score) for p in points],
+   "ON CONFLICT(currency,timeframe,as_of) DO UPDATE SET value=excluded.value,slope=excluded.slope,velocity=excluded.velocity,acceleration=excluded.acceleration,persistence=excluded.persistence,confidence=excluded.confidence,sample_count=excluded.sample_count,quality=excluded.quality,score=excluded.score",key=lambda r:r[:3])
  def score_history(self,currency:str,timeframe:str="AVG",limit:int=32)->list[tuple[str,float]]:
   rows=scoped_query(self.conn,"SELECT as_of,score FROM mi_strength_snapshot WHERE currency=? AND timeframe=? AND score IS NOT NULL ORDER BY as_of DESC LIMIT ?",(currency,timeframe,limit),snapshot_id=self.snapshot_id).fetchall()
   return [(str(values(r)[0]),float(values(r)[1])) for r in rows][::-1]
@@ -126,6 +132,12 @@ class MarketRepository:
  def save_relationship(self,p):
   self.record_provenance("relationship",p.as_of)
   execute_retry(self.conn,"""INSERT INTO mi_relationship_snapshot(pair,timeframe,as_of,base_value,quote_value,gap,abs_gap,gap_velocity,gap_acceleration,persistence,state,confidence,inspection_priority,reason_codes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(pair,timeframe,as_of) DO UPDATE SET gap=excluded.gap,abs_gap=excluded.abs_gap,gap_velocity=excluded.gap_velocity,gap_acceleration=excluded.gap_acceleration,persistence=excluded.persistence,state=excluded.state,confidence=excluded.confidence,inspection_priority=excluded.inspection_priority,reason_codes=excluded.reason_codes""",(p.pair,p.timeframe,p.as_of.isoformat(),p.base_value,p.quote_value,p.gap,p.abs_gap,p.gap_velocity,p.gap_acceleration,p.persistence,p.state,p.confidence,p.inspection_priority,json.dumps(p.reason_codes)))
+ def save_relationships(self,points):
+  points=list(points)
+  for stamp in {p.as_of for p in points}: self.record_provenance("relationship",stamp)
+  execute_values(self.conn,"INSERT INTO mi_relationship_snapshot(pair,timeframe,as_of,base_value,quote_value,gap,abs_gap,gap_velocity,gap_acceleration,persistence,state,confidence,inspection_priority,reason_codes)",
+   [(p.pair,p.timeframe,p.as_of.isoformat(),p.base_value,p.quote_value,p.gap,p.abs_gap,p.gap_velocity,p.gap_acceleration,p.persistence,p.state,p.confidence,p.inspection_priority,json.dumps(p.reason_codes)) for p in points],
+   "ON CONFLICT(pair,timeframe,as_of) DO UPDATE SET gap=excluded.gap,abs_gap=excluded.abs_gap,gap_velocity=excluded.gap_velocity,gap_acceleration=excluded.gap_acceleration,persistence=excluded.persistence,state=excluded.state,confidence=excluded.confidence,inspection_priority=excluded.inspection_priority,reason_codes=excluded.reason_codes",key=lambda r:r[:3])
  def latest_matrix(self):
   cur=scoped_query(self.conn,"SELECT MAX(as_of) FROM mi_strength_snapshot").fetchone()
   if not cur or values(cur)[0] is None: return []

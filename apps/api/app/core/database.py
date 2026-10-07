@@ -234,6 +234,23 @@ def execute_retry(conn, sql: str, params=(), *, attempts: int = 8, sleep_seconds
     raise RuntimeError('database is locked or busy')
 
 
+def execute_values(conn, head: str, rows, tail: str = '', *, key=None, chunk: int = 50) -> None:
+    """Multi-row ``INSERT head VALUES (...),(...) tail``: one round trip per chunk instead of per row.
+
+    ``key`` maps a row to its conflict target; Postgres rejects an upsert that touches one row twice,
+    so duplicates are collapsed (last wins)."""
+    rows = [tuple(r) for r in rows]
+    if key is not None:
+        rows = list({key(r): r for r in rows}.values())
+    if not rows:
+        return
+    width = len(rows[0])
+    for start in range(0, len(rows), chunk):
+        batch = rows[start:start + chunk]
+        placeholders = ','.join(['(' + ','.join(['?'] * width) + ')'] * len(batch))
+        execute_retry(conn, f'{head} VALUES {placeholders} {tail}', tuple(v for row in batch for v in row))
+
+
 @contextmanager
 def db():
     conn = connect()

@@ -80,7 +80,8 @@ def provider_context(conn, cfg):
     return out
 
 
-def create_market_data_gateway(conn=None, context=None):
+def create_market_data_gateway(conn=None, context=None, verify_scope=True):
+    """``verify_scope=False`` only when ``context`` was just read from ``conn`` by the caller."""
     from ..core.database import db
     if conn is None:
         with db() as connection:
@@ -90,7 +91,7 @@ def create_market_data_gateway(conn=None, context=None):
     context = context or market_context(conn)
     cfg = {**configuration(conn), **context.get('market_data_scope', {}), 'provider': context['active_provider']}
     from .provider_contract import MarketDataUnavailable
-    if context.get('selection_mode'):
+    if verify_scope and context.get('selection_mode'):
         current = market_context(conn)
         if current.get('active_provider') != context.get('active_provider') or current.get('market_data_scope') != context.get('market_data_scope'):
             raise MarketDataUnavailable('analytical_scope_changed')

@@ -22,7 +22,7 @@ RELATIONSHIP_TIMEFRAMES = ("AVG", "H1", "D1")
 
 def write_relationships(repo: MarketRepository, result) -> int:
     rel_engine = RelationshipEngine()
-    count = 0
+    relationships = []
     as_of = result.as_of
     for tf in RELATIONSHIP_TIMEFRAMES:
         for pair in FX_PAIRS:
@@ -43,10 +43,10 @@ def write_relationships(repo: MarketRepository, result) -> int:
                         confidence=min(1.0, n / 7.0),
                     )
                 )
-            repo.save_relationship(rel_engine.classify(pair, tf, points[0], points[1], [], as_of))
-            count += 1
+            relationships.append(rel_engine.classify(pair, tf, points[0], points[1], [], as_of))
+    repo.save_relationships(relationships)
     repo.conn.commit()
-    return count
+    return len(relationships)
 
 
 def run_intelligence_cycle(*, ingest: bool = True, candle_count: int = 400) -> dict:
