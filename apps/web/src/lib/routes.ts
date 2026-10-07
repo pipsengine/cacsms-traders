@@ -28,6 +28,7 @@ export const LEGACY_ROUTE: Record<
   engines: { page: 'system-control', tab: 'engines' },
   config: { page: 'system-control', tab: 'config' },
   audit: { page: 'system-control', tab: 'audit' },
+  notifications: { page: 'system-control', tab: 'notifications' },
   'strength-matrix': { page: 'strength-intelligence', tab: 'matrix' },
 };
 

@@ -27,7 +27,8 @@ def _is_vercel() -> bool:
 
 def _safe_error_message(exc: Exception) -> str:
     message = str(exc)
-    for name in ("DATABASE_URL", "BOOTSTRAP_PASSWORD", "SUPER_ADMIN_PASSWORD", "CTRADER_CLIENT_SECRET", "API_PROXY_SECRET"):
+    for name in ("DATABASE_URL", "BOOTSTRAP_PASSWORD", "SUPER_ADMIN_PASSWORD", "CTRADER_CLIENT_SECRET", "API_PROXY_SECRET",
+                 "SMTP_PASSWORD", "SMTP_ENCRYPTION_KEY", "CRON_SECRET"):
         secret = os.getenv(name, "")
         if secret:
             message = message.replace(secret, "[REDACTED]")
@@ -95,6 +96,10 @@ def _start_optional_services(app: FastAPI) -> None:
             from .market.outlook.service import get_outlook_service
 
             get_outlook_service().start()
+        from .notifications.worker import enabled as notifications_enabled, get_notification_worker
+
+        if notifications_enabled():
+            get_notification_worker().start()
         if os.getenv("MI_WORKER_ENABLED", "0").strip() in ("1", "true", "yes"):
             from .workers.market_intelligence_worker import MarketIntelligenceWorker
 
@@ -121,6 +126,9 @@ def _stop_optional_services() -> None:
         from .market.outlook.service import get_outlook_service
 
         get_outlook_service().stop()
+        from .notifications.worker import get_notification_worker
+
+        get_notification_worker().stop()
     except Exception as exc:
         _log_startup_failure("Optional autonomous service shutdown", exc)
 
@@ -223,3 +231,6 @@ app.include_router(providers.router)
 
 from .routers import ai_outlook
 app.include_router(ai_outlook.router)
+
+from .routers import notifications
+app.include_router(notifications.router)

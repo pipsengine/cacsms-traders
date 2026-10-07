@@ -1,0 +1,212 @@
+"""Email rendering: subject, responsive HTML and plain-text fallback for alert events and the SMTP test message.
+
+Alerts describe market structure only — never an executed trade, an order or a position change."""
+from __future__ import annotations
+
+import html
+from datetime import datetime, timezone
+from email.message import EmailMessage
+from email.utils import formataddr, formatdate, make_msgid
+from zoneinfo import ZoneInfo
+
+from ..market.channel_events import provider_label
+from .smtp import SmtpConfig
+from .store import ALERT_TYPES
+
+LAGOS = ZoneInfo("Africa/Lagos")
+BRAND = "Cacsms Traders"
+FOOTER = "This is an automated market intelligence alert."
+SAFETY = "Analysis only — no order has been placed, modified or closed. Operating mode: ANALYSIS ONLY."
+TEST_SUBJECT = "[Cacsms Traders] Email Notification Test"
+TEST_BODY = "Cacsms Traders email notification service is configured successfully."
+TONE = {"BULLISH": "#067647", "BEARISH": "#b42318"}
+
+
+def _dp(symbol: str) -> int:
+    return 2 if symbol.startswith("XAU") else 3 if symbol.endswith("JPY") else 5
+
+
+def _px(value, symbol: str) -> str:
+    if value is None:
+        return "—"
+    try:
+        return f"{float(value):,.{_dp(symbol)}f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _time(value: str | None) -> str:
+    if not value:
+        return "—"
+    try:
+        t = datetime.fromisoformat(value)
+    except ValueError:
+        return value
+    return f"{t.strftime('%a %d %b %Y %H:%M')} UTC · {t.astimezone(LAGOS).strftime('%H:%M')} WAT"
+
+
+def _title(word: str | None) -> str:
+    return (word or "—").replace("_", " ").title()
+
+
+def subject(e: dict) -> str:
+    sym, tf, t, m = e["symbol"], e.get("timeframe") or "", e["event_type"], e.get("metadata") or {}
+    if t == "CHANNEL_BREAK":
+        return f"[{BRAND}] {sym} {tf} — {_title(e.get('direction'))} Channel Break"
+    if t == "CHANNEL_TOUCH":
+        return f"[{BRAND}] {sym} {tf} — {'Upper' if m.get('boundary') == 'UPPER' else 'Lower'} Channel Touch"
+    if t == "BREAK_RETEST_CONTINUATION":
+        return f"[{BRAND}] {sym} {tf} — Break & Retest Continuation"
+    if t == "TIT_DETECTED":
+        return f"[{BRAND}] {sym} — TiT {e.get('tit_level') or ''} Detected".replace("  ", " ")
+    return f"[{BRAND}] {sym} — {ALERT_TYPES.get(t, t)}"
+
+
+def _alert_label(e: dict) -> str:
+    m = e.get("metadata") or {}
+    t = e["event_type"]
+    if t == "CHANNEL_TOUCH":
+        return m.get("label") or "Channel Touch"
+    if t == "BREAK_RETEST_CONTINUATION":
+        return m.get("label") or "Trend Continuation"
+    if t == "TIT_DETECTED":
+        return f"Trend-in-Trend {e.get('tit_level') or ''}".strip()
+    return f"{_title(e.get('direction'))} Channel Break"
+
+
+def summary_rows(e: dict) -> list[tuple[str, str]]:
+    sym, m = e["symbol"], e.get("metadata") or {}
+    ctx = m.get("context") or {}
+    context = ctx.get("summary") or m.get("summary") or m.get("trend_context") or "—"
+    if e["event_type"] == "TIT_DETECTED":
+        context = f"{m.get('parent_tf')} parent {_title(m.get('htf_direction'))} · {m.get('counter_trend_tf')} {str(m.get('phase') or '').lower()}"
+    return [
+        ("Alert type", _alert_label(e)),
+        ("Symbol", sym),
+        ("Timeframe", e.get("timeframe") or "—"),
+        ("Direction", _title(e.get("direction"))),
+        ("Price", _px(e.get("price"), sym)),
+        ("Event level", _px(e.get("level"), sym)),
+        ("Market / structural context", context),
+        ("Event time", _time(e.get("event_time"))),
+        ("Data provider", provider_label(e.get("provider"))),
+    ]
+
+
+def detail_rows(e: dict) -> list[tuple[str, str]]:
+    sym, m, t = e["symbol"], e.get("metadata") or {}, e["event_type"]
+    px = lambda k: _px(m.get(k), sym)  # noqa: E731
+    if t == "CHANNEL_BREAK":
+        return [("Channel type", m.get("channel_type") or "—"), ("Channel ID", e.get("channel_id") or "—"),
+                ("Upper boundary", px("upper_boundary")), ("Lower boundary", px("lower_boundary")),
+                ("Broken boundary", px("break_level")), ("Break price (close)", px("break_price")),
+                ("Break candle close", _time(m.get("break_candle_close"))),
+                ("Confirmation", f"{m.get('closes_beyond')} closed {e.get('timeframe')} candles beyond the boundary "
+                                 f"(rule: {m.get('confirm_closes')})"),
+                ("Detected", _time(e.get("detected_at")))]
+    if t == "CHANNEL_TOUCH":
+        dist_atr = m.get("distance_atr")
+        return [("Boundary", f"{'Upper' if m.get('boundary') == 'UPPER' else 'Lower'} channel boundary"),
+                ("Boundary level", px("boundary_level")), ("Touch price", px("touch_price")), ("Candle close", px("close")),
+                ("Distance to boundary", f"{_px(m.get('distance'), sym)}" + (f" ({dist_atr} ATR)" if dist_atr is not None else "")),
+                ("Touch tolerance", f"{px('tolerance')} ({m.get('tolerance_atr')} × ATR)"),
+                ("Trend direction", _title({"UPTREND": "Bullish", "DOWNTREND": "Bearish"}.get(m.get("trend_direction"), "Ranging"))),
+                ("Channel status", m.get("channel_status") or "—"),
+                ("Channel range", f"{px('lower_boundary')} – {px('upper_boundary')}"),
+                ("Detected", _time(e.get("detected_at")))]
+    if t == "BREAK_RETEST_CONTINUATION":
+        return [("Continuation", m.get("label") or "—"), ("Break level", px("break_level")), ("Break time", _time(m.get("break_time"))),
+                ("Retest price", px("retest_price")), ("Retest time", _time(m.get("retest_time"))),
+                ("Continuation candle close", _time(m.get("continuation_close"))),
+                ("Trend context", m.get("trend_context") or "—"), ("Confirmation state", m.get("confirmation_state") or "—"),
+                ("Detected", _time(e.get("detected_at")))]
+    if t == "TIT_DETECTED":
+        zone = m.get("zone") or [None, None]
+        layers = " · ".join(f"{l.get('id')} {l.get('tf')}: {(l.get('trend') or {}).get('label', 'n/a')}"
+                            f"{' (' + l['alignment'] + ')' if l.get('alignment') and l.get('alignment') != '—' else ''}"
+                            for l in m.get("layers") or [] if l.get("available"))
+        return [("TiT level", e.get("tit_level") or "—"), ("HTF direction", _title({"UPTREND": "Bullish", "DOWNTREND": "Bearish"}.get(m.get("htf_direction"), "—"))),
+                ("Parent timeframe", f"{m.get('parent_layer')} {m.get('parent_tf')} ({m.get('parent_state') or '—'})"),
+                ("Counter-trend timeframe", f"{m.get('counter_trend_tf')} — {m.get('counter_trend_type')}, {m.get('phase')} ({m.get('maturity')}% mature)"),
+                ("Current price", _px(e.get("price"), sym)), ("Relevant zone", f"{_px(zone[0], sym)} – {_px(zone[1], sym)}"),
+                ("Channel rejoin level", px("rejoin_level")), ("Objective 1 / 2", f"{px('objective_1')} / {px('objective_2')}"),
+                ("Invalidation", px("invalidation")), ("Layers", layers or "—"),
+                ("Detection reason", m.get("reason") or m.get("summary") or "—"), ("Detected", _time(e.get("detected_at")))]
+    return []
+
+
+def _table(rows: list[tuple[str, str]]) -> str:
+    cells = "".join(
+        f'<tr><td style="padding:9px 14px;border-bottom:1px solid #edf1f7;color:#5b6b82;font-size:12px;text-transform:uppercase;'
+        f'letter-spacing:.04em;width:38%;vertical-align:top">{html.escape(k)}</td>'
+        f'<td style="padding:9px 14px;border-bottom:1px solid #edf1f7;color:#10203d;font-size:14px;font-weight:600">{html.escape(str(v))}</td></tr>'
+        for k, v in rows)
+    return f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse">{cells}</table>'
+
+
+def _html(title: str, tone: str, sections: list[tuple[str, list[tuple[str, str]]]], intro: str | None = None) -> str:
+    body = "".join(
+        f'<tr><td style="padding:18px 22px 6px;font-size:13px;font-weight:700;color:#10203d;text-transform:uppercase;letter-spacing:.06em">'
+        f'{html.escape(name)}</td></tr><tr><td style="padding:0 8px 8px">{_table(rows)}</td></tr>'
+        for name, rows in sections if rows)
+    intro_html = f'<tr><td style="padding:18px 22px 0;font-size:15px;color:#10203d">{html.escape(intro)}</td></tr>' if intro else ""
+    return f"""<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(title)}</title></head>
+<body style="margin:0;padding:0;background:#f2f5fa;font-family:Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f2f5fa;padding:24px 10px">
+<tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:640px;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e1e8f2">
+<tr><td style="background:#0b1f3f;padding:22px">
+<div style="color:#ffffff;font-size:18px;font-weight:800;letter-spacing:.14em">CACSMS TRADERS</div>
+<div style="color:#9fb4d6;font-size:12px;margin-top:4px;letter-spacing:.04em">Autonomous Market Intelligence Alert</div>
+</td></tr>
+<tr><td style="padding:18px 22px 0"><div style="display:inline-block;padding:6px 12px;border-radius:999px;background:{tone}14;color:{tone};font-size:13px;font-weight:700">{html.escape(title)}</div></td></tr>
+{intro_html}
+{body}
+<tr><td style="padding:16px 22px 22px;color:#5b6b82;font-size:12px;line-height:1.6;border-top:1px solid #edf1f7">
+{html.escape(FOOTER)}<br>{html.escape(SAFETY)}
+</td></tr>
+</table></td></tr></table></body></html>"""
+
+
+def _text(title: str, sections: list[tuple[str, list[tuple[str, str]]]], intro: str | None = None) -> str:
+    lines = ["CACSMS TRADERS", "Autonomous Market Intelligence Alert", "", title, ""]
+    if intro:
+        lines += [intro, ""]
+    for name, rows in sections:
+        if not rows:
+            continue
+        lines += [name.upper(), *[f"{k.upper()}: {v}" for k, v in rows], ""]
+    lines += [FOOTER, SAFETY]
+    return "\n".join(lines)
+
+
+def _message(cfg: SmtpConfig, to: str, subj: str, text: str, html_body: str, headers: dict[str, str] | None = None) -> EmailMessage:
+    msg = EmailMessage()
+    msg["From"] = formataddr((cfg.from_name, cfg.from_email))
+    msg["To"] = to
+    msg["Subject"] = subj
+    msg["Date"] = formatdate(localtime=False)
+    msg["Message-ID"] = make_msgid(domain=(cfg.from_email.split("@")[-1] or "cacsms-traders"))
+    msg["Auto-Submitted"] = "auto-generated"
+    msg["X-Auto-Response-Suppress"] = "All"
+    for k, v in (headers or {}).items():
+        msg[k] = v
+    msg.set_content(text)
+    msg.add_alternative(html_body, subtype="html")
+    return msg
+
+
+def alert_message(cfg: SmtpConfig, e: dict, to: str) -> EmailMessage:
+    title = _alert_label(e) + f" · {e['symbol']}" + (f" {e['timeframe']}" if e.get("timeframe") else "")
+    sections = [("Alert summary", summary_rows(e)), ("Event details", detail_rows(e))]
+    tone = TONE.get(e.get("direction") or "", "#1765ef")
+    return _message(cfg, to, subject(e), _text(title, sections), _html(title, tone, sections),
+                    {"X-Cacsms-Alert-Id": e["id"], "X-Cacsms-Alert-Type": e["event_type"]})
+
+
+def test_message(cfg: SmtpConfig, to: str) -> EmailMessage:
+    sections = [("Delivery", [("Sender", cfg.from_email), ("SMTP host", f"{cfg.host}:{cfg.port} ({cfg.security.upper()})"),
+                              ("Sent", _time(datetime.now(timezone.utc).isoformat()))])]
+    return _message(cfg, to, TEST_SUBJECT, _text("Email Notification Test", sections, TEST_BODY),
+                    _html("Email Notification Test", "#1765ef", sections, TEST_BODY))

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Activity, Cable, FileText, Play, Settings, SlidersHorizontal } from 'lucide-react';
+import { Activity, Bell, Cable, FileText, Play, Settings, SlidersHorizontal } from 'lucide-react';
 import { Card } from '../../components/Ui';
 import { TabPanel } from '../../components/PageTabs';
 import { SubTabs } from '../../components/SubTabs';
@@ -13,6 +13,7 @@ import { SystemControlHubHeader } from './SystemControlHubHeader';
 import { SystemControlMT5Panel } from './SystemControlMT5Panel';
 import { SystemControlProviderOverview } from './SystemControlProviderOverview';
 import { SystemControlCTraderPanel } from './SystemControlCTraderPanel';
+import { NotificationsPanel } from '../../features/notifications/NotificationsPanel';
 
 const TABS = [
   { id: 'health', label: 'System Health', icon: Activity },
@@ -20,6 +21,7 @@ const TABS = [
   { id: 'mode', label: 'Operating Mode', icon: Play },
   { id: 'engines', label: 'Engine Control', icon: Settings },
   { id: 'config', label: 'Configuration', icon: SlidersHorizontal },
+  { id: 'notifications', label: 'Notifications', icon: Bell },
   { id: 'audit', label: 'Audit Trail', icon: FileText },
 ] as const;
 
@@ -201,6 +203,10 @@ export function SystemControl({
             />
           </TabPanel>
         ))}
+      </TabPanel>
+
+      <TabPanel active={tab} id="notifications">
+        <NotificationsPanel tenantId={tenantId} />
       </TabPanel>
 
       <TabPanel active={tab} id="audit">

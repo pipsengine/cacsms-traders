@@ -1,0 +1,36 @@
+name: Notification alerts
+
+# Advances the Market Scanner (channel / TiT analysis on closed candles), runs the Alert Engine and drains the
+# email queue on the Vercel deployment, where there are no background threads. The job is idempotent.
+# Repository secrets: CACSMS_APP_URL (e.g. https://cacsms-traders.vercel.app) and CRON_SECRET (same value as Vercel).
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: notification-alerts
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Run notification cycle
+        env:
+          APP_URL: ${{ secrets.CACSMS_APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$APP_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "CACSMS_APP_URL / CRON_SECRET not configured; skipping."
+            exit 0
+          fi
+          code=$(curl -sS -o response.json -w '%{http_code}' --max-time 90 \
+            -H "Authorization: Bearer $CRON_SECRET" "${APP_URL%/}/api/notifications/jobs/run")
+          echo "HTTP $code"
+          head -c 2000 response.json; echo
+          [ "$code" -lt 400 ]

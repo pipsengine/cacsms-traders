@@ -10,6 +10,7 @@ import './styles/market-structure.css';
 import './styles/ai-outlook.css';
 import './styles/h8-bos-btl.css';
 import './styles/system-control-mt5.css';
+import './styles/notifications.css';
 import './styles/responsive-layout.css';
 import './styles/compact-laptop.css';
 import './styles/overview-dashboard.css';

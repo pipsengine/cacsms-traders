@@ -275,6 +275,23 @@ class MarketScannerEngine:
                     repo.record_provenance(kind, self._cycle_at or now)
                 self._persist(conn, rows)
                 self._persist_mono = time.monotonic()
+        if due and connected:
+            self._publish_events(now)
+
+    def _publish_events(self, now: datetime) -> None:
+        """Hand closed-candle channel events to the notification subsystem; its failures never reach the scanner."""
+        try:
+            from ..notifications.worker import enabled, publish_channel_events
+
+            if not enabled():
+                return
+            with self._lock:
+                analysis, provider = dict(self._analysis), self._ctx.get("active_provider")
+            report = publish_channel_events(analysis, provider, now)
+            if report.get("queued") or report.get("suppressed"):
+                log.info("Alert events published: %s", report)
+        except Exception:
+            log.exception("Alert event publication failed")
 
     def _adopt_recent_persist(self, conn, now: datetime, interval: float) -> None:
         """A fresh (serverless) instance must not duplicate a snapshot another instance just persisted."""

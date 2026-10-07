@@ -22,7 +22,8 @@ log = logging.getLogger(__name__)
 
 def _safe_database_error(exc: Exception) -> str:
     message = str(exc)
-    for name in ('DATABASE_URL', 'BOOTSTRAP_PASSWORD', 'SUPER_ADMIN_PASSWORD', 'CTRADER_CLIENT_SECRET', 'API_PROXY_SECRET'):
+    for name in ('DATABASE_URL', 'BOOTSTRAP_PASSWORD', 'SUPER_ADMIN_PASSWORD', 'CTRADER_CLIENT_SECRET', 'API_PROXY_SECRET',
+                 'SMTP_PASSWORD', 'SMTP_ENCRYPTION_KEY', 'CRON_SECRET'):
         secret = os.getenv(name, '')
         if secret:
             message = message.replace(secret, '[REDACTED]')
