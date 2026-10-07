@@ -22,6 +22,7 @@ from .ingestion_runner import MarketIngestionRunner
 from .intelligence_cycle import write_relationships
 from .market_data import create_market_data_gateway, market_context
 from .pair_relationships import Scores, pair_relationships
+from .provenance import scoped_query, values
 from .repository import MarketRepository
 from .store_sync import probe_open_times, store_failures
 from .strength_intel_config import dynamics_lookback_minutes
@@ -332,6 +333,8 @@ class StrengthEngine:
                 signature = tuple(
                     round(result.values[c].get(tf, 0.0), 4) for c in sorted(result.values) for tf in MATRIX_TIMEFRAMES
                 )
+                if self._last_persist_mono == 0.0:
+                    self._adopt_recent_persist(repo, now, now_mono)
                 # Persist only provider-synchronized closed-bar results.
                 persist_due = connected and signature != self._last_persisted_sig and (
                     self._last_persist_mono == 0.0
@@ -364,6 +367,19 @@ class StrengthEngine:
             self._last_tick_ok = datetime.now(timezone.utc)
             self._state = "READY" if connected and self._result and self._result.pairs_loaded == 28 and self._result.historical_ok else "INCOMPLETE_BASKET"
             self._error = None
+
+    def _adopt_recent_persist(self, repo: MarketRepository, now: datetime, now_mono: float) -> None:
+        """A fresh (serverless) instance must not duplicate a snapshot another instance just persisted."""
+        row = scoped_query(repo.conn, "SELECT MAX(as_of) FROM mi_strength_snapshot", snapshot_id=repo.snapshot_id).fetchone()
+        latest = values(row)[0] if row else None
+        if not latest:
+            return
+        at = datetime.fromisoformat(str(latest))
+        at = at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+        age = (now - at).total_seconds()
+        if 0 <= age < SNAPSHOT_INTERVAL_SECONDS:
+            self._last_persist_mono = now_mono - age
+            self._last_persisted_at = at
 
     def _refresh_reference(self, conn, now: datetime, now_mono: float) -> None:
         ref = reference_scores(conn, now - timedelta(minutes=dynamics_lookback_minutes()), snapshot_id=self._ctx.get("snapshot_id"))

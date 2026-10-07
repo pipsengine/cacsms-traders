@@ -14,6 +14,7 @@ class MarketRepository:
   self.provider=provider.lower() if provider else None
   self.snapshot_id=snapshot_id
   self.account_id=""
+  self._provenance_recorded=set()
   self.provider_storage=bool(conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='mi_provider_candle'").fetchone()) if isinstance(conn,sqlite3.Connection) or getattr(conn,'provider',None)=='sqlite' else True
   if self.provider_storage and self.provider is None:
    row=conn.execute("SELECT id,provider FROM mi_provider_snapshot WHERE finalized_at IS NULL LIMIT 1").fetchone()
@@ -32,12 +33,15 @@ class MarketRepository:
   return self.conn.execute(sql,params)
  def record_provenance(self,kind,as_of):
   if self.snapshot_id:
+   stamp=as_of.isoformat() if hasattr(as_of,'isoformat') else as_of
+   # Snapshot rows share one as_of; binding it once per repository avoids three round trips per row.
+   if (kind,stamp,self.snapshot_id) in self._provenance_recorded: return
    scope=self.conn.execute('SELECT finalized_at FROM mi_provider_snapshot WHERE id=?',(self.snapshot_id,)).fetchone()
    if not scope or scope['finalized_at'] is not None: raise ValueError('Analytical snapshot has been finalized')
-   stamp=as_of.isoformat() if hasattr(as_of,'isoformat') else as_of
    self.conn.execute('INSERT INTO mi_analysis_provenance(kind,as_of,snapshot_id) VALUES(?,?,?) ON CONFLICT DO NOTHING',(kind,stamp,self.snapshot_id))
    binding=self.conn.execute('SELECT snapshot_id FROM mi_analysis_provenance WHERE kind=? AND as_of=?',(kind,stamp)).fetchone()
    if binding['snapshot_id']!=self.snapshot_id: raise ValueError('Analysis provenance is immutable')
+   self._provenance_recorded.add((kind,stamp,self.snapshot_id))
  def upsert_candle(self,c):
   if not c.is_closed:return False
   if self.provider_storage:
