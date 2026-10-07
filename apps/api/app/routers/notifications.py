@@ -6,7 +6,7 @@ from __future__ import annotations
 import hmac
 import os
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -249,6 +249,23 @@ def events(tenant_id: str = Query(...), limit: int = Query(100, ge=1, le=500), s
             r["deliveries"] = [{k: d[k] for k in ("recipient_email", "status", "attempt_count", "sent_at", "failure_reason", "next_attempt_at")}
                                for d in store.deliveries_for(r["id"])]
         return {"events": rows}
+
+
+@router.get("/inbox")
+def inbox(tenant_id: str = Query(...), since: str | None = Query(None, max_length=40), limit: int = Query(8, ge=1, le=20),
+          user=Depends(current_user)):
+    """Top-bar bell feed: unread count since the operator last opened it, plus the latest alerts."""
+    now = utcnow()
+    try:
+        seen = datetime.fromisoformat(since) if since else now - timedelta(hours=24)
+    except ValueError:
+        raise HTTPException(400, "since must be an ISO-8601 timestamp")
+    if seen.tzinfo is None:
+        seen = seen.replace(tzinfo=timezone.utc)
+    with db() as conn:
+        require_permission(conn, user, tenant_id, "system.read")
+        out = NotificationStore(conn, tenant_id).inbox(seen.astimezone(timezone.utc).isoformat(), limit)
+    return {**out, "server_time": now.isoformat()}
 
 
 def _cron_authorized(authorization: str | None) -> None:

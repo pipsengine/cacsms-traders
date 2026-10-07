@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Activity, Bell, Cable, FileText, Play, Settings, SlidersHorizontal } from 'lucide-react';
 import { Card } from '../../components/Ui';
 import { TabPanel } from '../../components/PageTabs';
@@ -24,6 +24,13 @@ const TABS = [
   { id: 'notifications', label: 'Notifications', icon: Bell },
   { id: 'audit', label: 'Audit Trail', icon: FileText },
 ] as const;
+
+const ALERT_HISTORY_TAB = 'alert-history';
+
+function tabFor(id?: string): string {
+  if (id === ALERT_HISTORY_TAB) return 'notifications';
+  return TABS.some((t) => t.id === id) ? id! : 'health';
+}
 
 const HEALTH_ROWS = [
   { id: 'api', label: 'API', key: 'api' as const },
@@ -72,7 +79,10 @@ export function SystemControl({
   isPlatformAdmin: boolean;
   autonomousStatus: string;
 }) {
-  const [tab, setTab] = useState(TABS.some((t) => t.id === initialTab) ? initialTab : 'health');
+  const [tab, setTab] = useState(() => tabFor(initialTab));
+  useEffect(() => {
+    if (initialTab) setTab(tabFor(initialTab));
+  }, [initialTab]);
   const [configSub, setConfigSub] = useState('system');
   const [auditSub, setAuditSub] = useState('all');
   const [mt5Sub, setMt5Sub] = useState(() => new URLSearchParams(window.location.search).has('ctrader') ? 'ctrader' : 'overview');
@@ -206,7 +216,7 @@ export function SystemControl({
       </TabPanel>
 
       <TabPanel active={tab} id="notifications">
-        <NotificationsPanel tenantId={tenantId} />
+        <NotificationsPanel tenantId={tenantId} initialSub={initialTab === ALERT_HISTORY_TAB ? 'history' : undefined} />
       </TabPanel>
 
       <TabPanel active={tab} id="audit">

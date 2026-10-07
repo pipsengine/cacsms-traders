@@ -82,6 +82,16 @@ def test_late_analysis_is_still_sent_and_flagged(env):
     assert "Late — completed after market open" in _body(msg)
 
 
+def test_bell_inbox_shows_analysis_summary(env):
+    _recipient()
+    _publish(published_at=LATE, late=True)
+    with _db() as conn:
+        inbox = _store(conn).inbox((NOW - timedelta(days=1)).isoformat())
+    item = inbox["items"][0]
+    assert inbox["unread"] == 1 and item["symbol"] == "ALL" and item["qualified"] == 2 and item["late"] is True
+    assert item["label"] == "AI Analysis Complete"
+
+
 def test_replay_runs_never_alert(env):
     _recipient()
     assert _publish({**RUN, "origin": "REPLAY"}) == {"skipped": "not_live"}

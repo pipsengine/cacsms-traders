@@ -20,8 +20,11 @@ const FALLBACK_TYPES: { key: AlertType; label: string }[] = [
 ];
 const FALLBACK_STATUSES = ['DETECTED', 'VALIDATED', 'QUEUED', 'SENDING', 'SENT', 'FAILED', 'RETRY_PENDING', 'SUPPRESSED', 'DUPLICATE'];
 
-export function NotificationsPanel({ tenantId }: { tenantId: string }) {
-  const [sub, setSub] = React.useState('email');
+export function NotificationsPanel({ tenantId, initialSub }: { tenantId: string; initialSub?: string }) {
+  const [sub, setSub] = React.useState(initialSub ?? 'email');
+  React.useEffect(() => {
+    if (initialSub) setSub(initialSub);
+  }, [initialSub]);
   const [meta, setMeta] = React.useState({ types: FALLBACK_TYPES, statuses: FALLBACK_STATUSES });
 
   React.useEffect(() => {

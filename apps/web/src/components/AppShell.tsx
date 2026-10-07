@@ -4,7 +4,6 @@ import {
   BarChart3,
   BrainCircuit,
   Building2,
-  Bell,
   ChevronDown,
   Search,
   GitBranch,
@@ -24,6 +23,7 @@ import type { AuthUser, Health, Tenant } from '../types';
 import type { Page } from '../lib/routes';
 import { PAGE_CRUMB } from '../lib/routes';
 import { TopBarStatus } from './TopBarStatus';
+import { NotificationBell } from './NotificationBell';
 
 const nav: [string, { page: Page; label: string; icon: React.ReactNode }[]][] = [
   [
@@ -223,10 +223,7 @@ export function AppShell({
               </select>
               <ChevronDown />
             </div>
-            <button type="button" className="top-bell" aria-label="Notifications">
-              <Bell size={18} />
-              <i>3</i>
-            </button>
+            <NotificationBell tenantId={tenantId} navigate={navigate} />
             <button type="button" className="profile-figma" onClick={onOpenProfile}>
               <span className="profile-avatar" aria-hidden>
                 {initials}

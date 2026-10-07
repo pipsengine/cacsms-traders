@@ -17,6 +17,9 @@ ALERT_TYPES = {
 }
 # Platform-wide alerts (not tied to one symbol or timeframe): symbol, timeframe and XAUUSD filters do not apply.
 SYSTEM_ALERT_TYPES = frozenset({"AI_OUTLOOK_PUBLISHED"})
+# Suppression reasons that concern email delivery only: the event still passed the alert rules and belongs in the in-app bell.
+EMAIL_OFF_REASON = "Email notifications are disabled"
+SMTP_NOT_READY_REASON = "SMTP transport not ready"
 EVENT_STATUSES = ("DETECTED", "VALIDATED", "QUEUED", "SENDING", "SENT", "FAILED", "RETRY_PENDING", "SUPPRESSED", "DUPLICATE")
 DUE_STATUSES = ("QUEUED", "RETRY_PENDING")
 SETTINGS_DEFAULTS = {
@@ -197,6 +200,26 @@ class NotificationStore:
         sql += " ORDER BY detected_at DESC LIMIT ?"
         params.append(limit)
         return [event_dict(r) for r in self.conn.execute(sql, params).fetchall()]
+
+    def inbox(self, since: str, limit: int = 8) -> dict:
+        """Top-bar bell: every event that passed the alert rules (emailed or not), newest first."""
+        visible = "tenant_id=? AND (status<>'SUPPRESSED' OR status_reason=? OR status_reason LIKE ?)"
+        scope = (self.tenant, EMAIL_OFF_REASON, SMTP_NOT_READY_REASON + "%")
+        unread = self.conn.execute(f"SELECT COUNT(*) FROM alert_events WHERE {visible} AND detected_at>?", (*scope, since)).fetchone()[0]
+        cols = ("id", "event_type", "symbol", "timeframe", "direction", "status", "detected_at", "metadata_json")
+        rows = self.conn.execute(
+            f"SELECT {','.join(cols)} FROM alert_events WHERE {visible} ORDER BY detected_at DESC LIMIT ?", (*scope, limit)).fetchall()
+        items = []
+        for r in rows:
+            d = _row(r, cols)
+            meta = _json(d.pop("metadata_json"), {})
+            d["label"] = ALERT_TYPES.get(d["event_type"], d["event_type"])
+            d["unread"] = d["detected_at"] > since
+            if d["event_type"] in SYSTEM_ALERT_TYPES:
+                d["qualified"] = (meta.get("counts") or {}).get("qualified")
+                d["late"] = bool(meta.get("late"))
+            items.append(d)
+        return {"unread": int(unread or 0), "items": items}
 
     def update_event(self, eid: str, **fields) -> None:
         history_entry = fields.pop("history_entry", None)

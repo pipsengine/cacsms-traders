@@ -573,3 +573,49 @@ def test_email_settings_api_never_returns_the_password(env, monkeypatch):
         assert test.status_code == 200 and test.json()["result"]["status"] == "SENT" and SECRET not in test.text
     audits = _audits("SMTP_CONFIGURATION_UPDATED")
     assert audits and all(SECRET not in json.dumps(a) for a in audits)
+
+
+def test_bell_inbox_counts_unread_and_skips_suppressed(env, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    for k in ("STRENGTH_ENGINE_ENABLED", "AI_OUTLOOK_SCHEDULER_ENABLED", "NOTIFICATIONS_ENABLED", "MARKET_SCANNER_ENABLED"):
+        monkeypatch.setenv(k, "0")
+    _recipient()
+    with _db() as conn:
+        store = _store(conn)
+        s = store.settings()
+        s["alert_types"]["CHANNEL_TOUCH"] = False
+        store.save_settings(s, "user-cacsms")
+    _process([_event()])
+    _process([_event("CHANNEL_TOUCH", identity="LOWER")], now=NOW + timedelta(minutes=1))
+    from apps.api.app.main import app
+
+    with TestClient(app) as client:
+        r = client.post("/api/auth/login", json={"username": "cacsms", "password": "TestPass!123"})
+        h = {"Authorization": f"Bearer {r.json()['access_token']}"}
+        with _db() as conn:
+            tenant = _tenant(conn)
+        url = "/api/notifications/inbox"
+
+        def inbox(since, headers=h):
+            return client.get(url, headers=headers, params={"tenant_id": tenant, "since": since})
+
+        first = inbox((NOW - timedelta(hours=1)).isoformat()).json()
+        assert first["unread"] == 1 and [i["event_type"] for i in first["items"]] == ["CHANNEL_BREAK"]
+        item = first["items"][0]
+        assert item["unread"] and item["label"] == "Channel Break" and item["symbol"] == "EURUSD" and "metadata_json" not in item
+        read = inbox(item["detected_at"]).json()
+        assert read["unread"] == 0 and not read["items"][0]["unread"]
+        _process([_event(at="2026-10-07T10:00:00+00:00")], now=NOW + timedelta(hours=1))
+        assert inbox(item["detected_at"]).json()["unread"] == 1
+        with _db() as conn:
+            store = _store(conn)
+            s = store.settings()
+            s["email_enabled"] = False
+            store.save_settings(s, "user-cacsms")
+        _process([_event("TIT_DETECTED", at="2026-10-07T11:00:00+00:00")], now=NOW + timedelta(hours=2))
+        latest = inbox(item["detected_at"]).json()
+        assert latest["unread"] == 2 and latest["items"][0]["event_type"] == "TIT_DETECTED" and latest["items"][0]["status"] == "SUPPRESSED"
+        assert inbox("yesterday").status_code == 400
+        client.cookies.clear()
+        assert inbox(item["detected_at"], headers={}).status_code == 401

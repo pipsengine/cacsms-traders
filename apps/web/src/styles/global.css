@@ -54,6 +54,28 @@
 .top-search kbd{margin-left:auto;border:1px solid #d8e1ec;background:#fff;border-radius:5px;padding:3px 7px;font-size:10px;color:#71829a}
 .top-bell{border:0;background:transparent;position:relative;padding:8px;color:#52647d}
 .top-bell i{position:absolute;right:2px;top:2px;background:#f44336;color:#fff;border-radius:10px;font-size:9px;font-style:normal;padding:2px 5px;line-height:1}
+.top-bell{cursor:pointer;border-radius:8px}
+.top-bell:hover,.top-bell[aria-expanded=true]{background:#eef3fb;color:#1765ef}
+.bell-wrap{position:relative}
+.bell-pop{position:absolute;right:0;top:calc(100% + 8px);width:340px;max-width:calc(100vw - 24px);background:#fff;border:1px solid #e3e9f2;border-radius:12px;box-shadow:0 12px 32px rgba(16,32,64,.16);z-index:60;overflow:hidden}
+.bell-head{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid #eef2f7}
+.bell-head b{font-size:13px;color:#14213d}
+.bell-link{border:0;background:none;color:#1765ef;font-size:12px;cursor:pointer;padding:0}
+.bell-list{list-style:none;margin:0;padding:4px 0;max-height:360px;overflow:auto}
+.bell-list li{display:flex;gap:10px;align-items:flex-start;padding:9px 14px}
+.bell-list li.is-unread{background:#f5f8ff}
+.bell-list li div{display:flex;flex-direction:column;gap:2px;min-width:0}
+.bell-list li b{font-size:12.5px;color:#14213d;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bell-list li.is-unread b{font-weight:700}
+.bell-list li span{font-size:11.5px;color:#6b7a90}
+.bell-list li em{font-style:normal;color:#b54708;font-weight:600}
+.bell-dot{flex:none;width:8px;height:8px;border-radius:50%;margin-top:5px;background:#1765ef}
+.bell-dot.is-bullish{background:#12b76a}
+.bell-dot.is-bearish{background:#f04438}
+.bell-empty{margin:0;padding:18px 14px;font-size:12.5px;color:#6b7a90}
+.bell-stale{margin:0;padding:6px 14px;font-size:11.5px;color:#b54708}
+.bell-all{display:block;width:100%;border:0;border-top:1px solid #eef2f7;background:#fafbfd;color:#1765ef;font-size:12.5px;font-weight:600;padding:10px;cursor:pointer}
+.bell-all:hover{background:#f0f5ff}
 .page.sc-hub-page{padding-top:14px}
 .symbol-cloud{font-size:11px;line-height:1.6;color:var(--muted);margin:0}
 .mini-table-wrap{overflow:auto}

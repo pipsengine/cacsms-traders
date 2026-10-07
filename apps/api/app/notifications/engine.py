@@ -12,7 +12,7 @@ from ..market.channel_events import DomainEvent, Observation
 from ..market.scanner_config import GOLD
 from .render import subject
 from .smtp import smtp_config
-from .store import ALERT_TYPES, SYSTEM_ALERT_TYPES, NotificationStore, now_iso
+from .store import ALERT_TYPES, EMAIL_OFF_REASON, SMTP_NOT_READY_REASON, SYSTEM_ALERT_TYPES, NotificationStore, now_iso
 
 
 def dedup_key(e: DomainEvent) -> str:
@@ -29,8 +29,6 @@ def dedup_key(e: DomainEvent) -> str:
 
 
 def suppression_reason(settings: dict, e: DomainEvent, smtp_problems: list[str]) -> str | None:
-    if not settings["email_enabled"]:
-        return "Email notifications are disabled"
     if not settings["alert_types"].get(e.event_type, False):
         return f"{ALERT_TYPES.get(e.event_type, e.event_type)} alerts are disabled"
     if e.event_type not in SYSTEM_ALERT_TYPES:
@@ -40,8 +38,10 @@ def suppression_reason(settings: dict, e: DomainEvent, smtp_problems: list[str])
             return "XAUUSD alerts are disabled"
         if settings["symbols"] and e.symbol not in settings["symbols"]:
             return f"{e.symbol} is not in the alert symbol list"
+    if not settings["email_enabled"]:
+        return EMAIL_OFF_REASON
     if smtp_problems:
-        return "SMTP transport not ready: " + "; ".join(smtp_problems)
+        return f"{SMTP_NOT_READY_REASON}: " + "; ".join(smtp_problems)
     return None
 
 
