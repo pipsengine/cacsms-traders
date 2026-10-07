@@ -181,6 +181,118 @@ export type AttentionItem = { symbol: string; reason: string; tf: string; detail
 export type OpportunityGroup = { key: string; label: string; count: number; examples: string[] };
 export type AlignmentEntry = { symbol: string; base: string; quote: string; strength: Alignment };
 
+// ----- Trend Structure -----
+
+export type TrendTf = 'W' | 'D1' | 'H8' | 'H1';
+export type TrendDirection = 'BULLISH' | 'BEARISH' | null;
+export type TrendCell = (KeyLabel & { regime: string }) | null;
+export type TrendSetupKey = 'CONTINUATION' | 'EXTENSION' | 'REVERSAL_RISK' | 'DEVELOPING' | 'NO_TREND';
+
+export type TrendRow = {
+  symbol: string;
+  base: string;
+  quote: string;
+  name: string;
+  asset: 'Forex' | 'Commodity';
+  digits: number | null;
+  price: number | null;
+  available: boolean;
+  reason?: string;
+  direction?: TrendDirection;
+  cells?: Record<TrendTf, TrendCell>;
+  state?: KeyLabel;
+  strength?: number;
+  age_weeks?: number | null;
+  setup?: TrendSetupKey;
+  pullback?: boolean;
+  reversal_risk?: boolean;
+};
+
+export type TrendCounts = {
+  analysed: number;
+  total: number;
+  trending: number;
+  bullish: number;
+  bearish: number;
+  pullback: number;
+  continuation: number;
+  reversal_risk: number;
+};
+
+export type TrendMeta = ScannerMeta & {
+  trend_settings: { analysis_tf: TrendTf; strong_min: number; continuation_zone: [number, number] } & Record<string, unknown>;
+};
+
+export type TrendPayload = { meta: TrendMeta; counts: TrendCounts; rows: TrendRow[] };
+
+export type TrendGeometry = {
+  leg_start: number;
+  leg_extreme: number;
+  leg_size: number;
+  depth_pct: number;
+  pullback: KeyLabel;
+  zone: [number, number];
+  invalidation: number;
+  objective_1: number;
+  objective_2: number;
+  ratio: number | null;
+  status: KeyLabel;
+};
+
+export type TrendView = {
+  available: true;
+  closed_bar_only: boolean;
+  price: number;
+  direction: TrendDirection;
+  alignment: Alignment;
+  state: KeyLabel;
+  strength: number;
+  components: { alignment: number; structure: number; channel: number; momentum: number };
+  age_weeks: number | null;
+  trend_started_at: string | null;
+  structure_sequence: string[];
+  pullback_cells: TrendTf[];
+  geometry: TrendGeometry | null;
+  reversal_reasons: string[];
+  setup: { key: TrendSetupKey; title: string; subtitle: string };
+  confidence: number;
+  health: {
+    structure_strength: number;
+    channel_position: number | null;
+    momentum_alignment: number;
+    pullback_depth: number | null;
+    trend_continuation: number;
+  };
+  key_levels: { support: number | null; resistance: number | null; basis: string };
+  analysis_tf: TrendTf;
+  anchor: string;
+};
+
+export type TrendMtfRow = { tf: TrendTf; cell: TrendCell; swings: string; channel: string | null };
+
+export type TrendEvent = {
+  tf: TrendTf;
+  at: string;
+  event: string;
+  kind: 'SWING' | 'BOS' | 'CHOCH';
+  direction: 'UP' | 'DOWN';
+  level: number;
+  status: KeyLabel;
+};
+
+export type TrendDetail =
+  | { meta: TrendMeta; available: false; summary: TrendRow }
+  | {
+      meta: TrendMeta;
+      available: true;
+      summary: TrendRow;
+      view: TrendView;
+      mtf: TrendMtfRow[];
+      events: TrendEvent[];
+      channels: Record<TrendTf, ChannelOverlay | null>;
+      last_closed: Record<TrendTf, string | null>;
+    };
+
 export type OverviewPayload = {
   meta: ScannerMeta & { data_as_of: string | null; overview_settings: Record<string, unknown> };
   counts: RegimeCounts & { analysed: number; total: number };

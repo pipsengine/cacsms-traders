@@ -16,7 +16,8 @@ import {
 } from '../features/market-structure/components/RangePanels';
 import { RangeSymbolsTable } from '../features/market-structure/components/RangeSymbolsTable';
 import { StructureOverview } from '../features/market-structure/components/StructureOverview';
-import type { HeaderTf, RangeMeta } from '../features/market-structure/types';
+import { TrendStructure } from '../features/market-structure/components/TrendStructure';
+import type { HeaderTf, RangeMeta, TrendTf } from '../features/market-structure/types';
 
 const TABS = [
   { id: 'overview', label: 'Structure Overview' },
@@ -29,6 +30,7 @@ const HEADER_TFS: HeaderTf[] = ['W', 'D', 'H8', 'H4'];
 const TF_API: Record<HeaderTf, string> = { W: 'W', D: 'D1', H8: 'H8', H4: 'H4' };
 const TF_TITLE: Record<HeaderTf, string> = { W: 'Weekly', D: 'Daily', H8: 'H8', H4: 'H4' };
 const TF_BARS: Record<string, number> = { W: 160, D1: 72, H8: 72, H4: 120 };
+const TREND_BARS: Record<TrendTf, number> = { W: 120, D1: 110, H8: 110, H1: 110 };
 
 function useVisible() {
   const [visible, setVisible] = useState(() => typeof document === 'undefined' || document.visibilityState === 'visible');
@@ -53,8 +55,8 @@ function useShortScreen() {
   return short;
 }
 
-function useCandles(symbol: string, tf: string, enabled: boolean, tick: number) {
-  const loader = useCallback(() => marketStructureApi.candles(symbol, tf, TF_BARS[tf] ?? 90), [symbol, tf, tick]);
+function useCandles(symbol: string, tf: string, enabled: boolean, tick: number, limit = TF_BARS[tf] ?? 90) {
+  const loader = useCallback(() => marketStructureApi.candles(symbol, tf, limit), [symbol, tf, tick, limit]);
   const res = usePollingAsync(loader, [loader], { enabled, intervalMs: 60000 });
   const ok = res.data?.symbol === symbol && res.data.timeframe === tf;
   return { candles: ok ? res.data!.candles : [], loading: res.loading || !ok, error: res.error };
@@ -95,6 +97,14 @@ export function MarketStructure() {
   const detail = usePollingAsync(detailLoader, [detailLoader], { enabled: active, intervalMs: 5000 });
   const overviewLoader = useCallback(() => marketStructureApi.overview(), [tick]);
   const overview = usePollingAsync(overviewLoader, [overviewLoader], { enabled: visible && tab === 'overview', intervalMs: 5000 });
+  const [trendTf, setTrendTf] = useState<TrendTf>('D1');
+  const trendActive = visible && tab === 'trend';
+  const trendsLoader = useCallback(() => marketStructureApi.trends(), [tick]);
+  const trends = usePollingAsync(trendsLoader, [trendsLoader], { enabled: trendActive, intervalMs: 5000 });
+  const trendLoader = useCallback(() => marketStructureApi.trend(symbol), [symbol, tick]);
+  const trend = usePollingAsync(trendLoader, [trendLoader], { enabled: trendActive, intervalMs: 5000 });
+  const trendCandles = useCandles(symbol, trendTf, trendActive, tick, TREND_BARS[trendTf]);
+  const trendDetail = trend.data && trend.data.summary.symbol === symbol ? trend.data : null;
 
   const mainTf = TF_API[tf];
   const main = useCandles(symbol, mainTf, active, tick);
@@ -146,7 +156,7 @@ export function MarketStructure() {
             <small>Last update: {localStamp(meta?.last_cycle_at)}</small>
           </div>
           <button className="mst-refresh" aria-label="Reload analysis" title="Reload latest analysis" onClick={() => setTick((t) => t + 1)}>
-            <RefreshCw size={16} className={list.refreshing || detail.refreshing || overview.refreshing ? 'is-spin' : ''} />
+            <RefreshCw size={16} className={list.refreshing || detail.refreshing || overview.refreshing || trends.refreshing || trend.refreshing ? 'is-spin' : ''} />
           </button>
         </div>
       </header>
@@ -176,6 +186,37 @@ export function MarketStructure() {
               <>
                 <span className="mst-spinner" aria-hidden />
                 Loading structure overview…
+              </>
+            )}
+          </section>
+        )
+      ) : tab === 'trend' ? (
+        trends.data ? (
+          <TrendStructure
+            data={trends.data}
+            detail={trendDetail}
+            detailError={trend.error}
+            symbol={symbol}
+            onSelect={setSymbol}
+            tf={trendTf}
+            onTf={setTrendTf}
+            candles={trendCandles}
+            chartHeight={short ? 250 : 318}
+          />
+        ) : (
+          <section className={`mst-card mst-blocking ${trends.error ? 'is-error' : ''}`}>
+            {trends.error ? (
+              <>
+                <strong>Trend Structure unavailable</strong>
+                <span>{trends.error}</span>
+                <button className="mst-view" onClick={trends.refresh}>
+                  Retry
+                </button>
+              </>
+            ) : (
+              <>
+                <span className="mst-spinner" aria-hidden />
+                Loading trend structure…
               </>
             )}
           </section>

@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { InstrumentIcon } from '../../market-scanner/components/InstrumentIcon';
 import { fmtPrice } from '../../market-scanner/format';
 import type { ChannelOverlay, FractalMark, RangeCore, VCandle } from '../types';
@@ -61,6 +61,8 @@ export function StructureChart({
   height,
   loading,
   error,
+  heading,
+  actions,
 }: {
   symbol: string;
   title: string;
@@ -73,6 +75,8 @@ export function StructureChart({
   height: number;
   loading?: boolean;
   error?: string;
+  heading?: ReactNode;
+  actions?: ReactNode;
 }) {
   const clipId = `mst-clip-${useId().replace(/:/g, '')}`;
   const wrap = useRef<HTMLDivElement>(null);
@@ -165,10 +169,12 @@ export function StructureChart({
   return (
     <section className="mst-card mst-chart-card">
       <header className="mst-chart-head">
-        <strong>
-          <InstrumentIcon base={symbol.slice(0, 3)} quote={symbol.slice(3, 6)} size="sm" /> {symbol} · {title}
-        </strong>
-        <span className="mst-tf-badge">{tfLabel}</span>
+        {heading ?? (
+          <strong>
+            <InstrumentIcon base={symbol.slice(0, 3)} quote={symbol.slice(3, 6)} size="sm" /> {symbol} · {title}
+          </strong>
+        )}
+        {actions ?? <span className="mst-tf-badge">{tfLabel}</span>}
       </header>
       <div className="mst-ohlc">
         {last ? (

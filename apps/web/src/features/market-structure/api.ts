@@ -1,4 +1,4 @@
-import type { OverviewPayload, RangeDetail, RangePayload, VCandle } from './types';
+import type { OverviewPayload, RangeDetail, RangePayload, TrendDetail, TrendPayload, VCandle } from './types';
 import { apiFetch } from '../../lib/api';
 
 const root = '/market-intelligence';
@@ -16,6 +16,8 @@ export const marketStructureApi = {
   overview: () => get<OverviewPayload>('/structure/overview'),
   ranges: () => get<RangePayload>('/structure/range'),
   range: (symbol: string) => get<RangeDetail>(`/structure/range/${encodeURIComponent(symbol)}`),
+  trends: () => get<TrendPayload>('/structure/trend'),
+  trend: (symbol: string) => get<TrendDetail>(`/structure/trend/${encodeURIComponent(symbol)}`),
   candles: (symbol: string, timeframe: string, limit: number) =>
     get<{ symbol: string; timeframe: string; candles: VCandle[] }>(
       `/scanner/${encodeURIComponent(symbol)}/candles?${new URLSearchParams({ timeframe, limit: String(limit) })}`,
