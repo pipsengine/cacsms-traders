@@ -399,3 +399,82 @@ def test_job_lock_is_exclusive_reentrant_and_expires(service_env):
         assert svc.OutlookService().tick(CUTOFF + timedelta(hours=2), replay=False) == {"skipped": "locked"}
     finally:
         ctx.__exit__(None, None, None)
+
+
+def test_latest_summary_reads_match_full_payloads_and_due_gate(service_env):
+    svc = service_env
+    service = svc.OutlookService()
+    now = CUTOFF + timedelta(hours=2)
+    assert service.due(now) == "schedule"
+    service.tick(now, replay=False)
+    ctx, conn, store = _store(svc)
+    try:
+        run = store.run(DAY.isoformat(), "LIVE")
+        full = {o["symbol"]: o for o in store.outlooks(run["id"])}
+        summaries = store.summaries(run["id"])
+        assert {s["symbol"] for s in summaries} == set(full)
+        for s in summaries:
+            o = full[s["symbol"]]
+            assert s["outlook_id"] == o["outlook_id"] and s["status"] == o["status"] and s["qualified"] == bool(o.get("qualified"))
+            assert s["regime"] == (o.get("regime") or {}).get("label") and s["reason"] == o.get("reason")
+            assert s["system_action"] == o.get("system_action") and s["price"] == o.get("price") and s["digits"] == o.get("digits")
+            assert s["confidence"] == (o.get("confidence") or {}).get("primary") and s["expected_direction"] == o.get("expected_direction")
+        published = [s["outlook_id"] for s in summaries if s["status"] == "PUBLISHED"]
+        batched = store.latest_revisions(published)
+        assert batched and set(batched) <= set(published)
+        for oid in published:
+            one = store.latest_revision(oid)
+            assert (batched.get(oid) or {}).get("status") == (one or {}).get("status")
+            assert (batched.get(oid) or {}).get("system_action") == (one or {}).get("system_action")
+        assert store.latest_revisions([]) == {}
+        conn.execute("UPDATE ai_outlook_run SET monitored_at=? WHERE id=?", (now.isoformat(), run["id"]))
+        conn.commit()
+    finally:
+        ctx.__exit__(None, None, None)
+    assert service.due(now + timedelta(seconds=10)) is None
+    assert service.due(now + timedelta(minutes=2)) == "monitor"
+
+
+def test_reads_never_run_the_scheduler_and_catch_up_is_gated(service_env, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    for k in ("STRENGTH_ENGINE_ENABLED", "AI_OUTLOOK_SCHEDULER_ENABLED", "NOTIFICATIONS_ENABLED", "MARKET_SCANNER_ENABLED"):
+        monkeypatch.setenv(k, "0")
+    monkeypatch.setenv("VERCEL", "1")
+    svc = service_env
+    calls = []
+    monkeypatch.setattr(svc.OutlookService, "tick", lambda self, *a, **k: calls.append(k) or {"live": {}})
+    from apps.api.app.main import app
+
+    with TestClient(app) as client:
+        assert client.get("/api/ai-outlook/latest").status_code == 200 and calls == []
+        assert client.post("/api/ai-outlook/jobs/catch-up").status_code == 401
+        token = client.post("/api/auth/login", json={"username": "cacsms", "password": "TestPass!123"}).json()["access_token"]
+        h = {"Authorization": f"Bearer {token}"}
+        monkeypatch.setattr(svc.OutlookService, "due", lambda self, now=None: None)
+        assert client.post("/api/ai-outlook/jobs/catch-up", headers=h).json() == {"ran": False, "reason": None} and calls == []
+        monkeypatch.setattr(svc.OutlookService, "due", lambda self, now=None: "monitor")
+        assert client.post("/api/ai-outlook/jobs/catch-up", headers=h).json() == {"ran": True, "reason": "monitor"}
+        assert calls == [{"replay": False}]
+
+
+def test_latest_falls_back_to_full_payloads_when_summary_sql_fails(service_env, monkeypatch):
+    from apps.api.app.routers import ai_outlook as router
+
+    svc = service_env
+    svc.OutlookService().tick(CUTOFF + timedelta(hours=2), replay=False)
+    ctx, conn, store = _store(svc)
+    try:
+        run = store.run(DAY.isoformat(), "LIVE")
+        fast_rows, fast_revs = router._summaries(store, run["id"])
+
+        def broken(run_id):
+            raise RuntimeError("json operator not supported")
+
+        monkeypatch.setattr(store, "summaries", broken)
+        slow_rows, slow_revs = router._summaries(store, run["id"])
+        pick = lambda rows: sorted(({k: r.get(k) for k in router.ROW_FIELDS} for r in rows), key=lambda r: r["symbol"])
+        assert pick(slow_rows) == pick(fast_rows)
+        assert {k: v.get("status") for k, v in slow_revs.items()} == {k: v.get("status") for k, v in fast_revs.items()}
+    finally:
+        ctx.__exit__(None, None, None)

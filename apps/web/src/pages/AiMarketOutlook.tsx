@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { outlookApi } from '../features/ai-outlook/api';
+import { outlookApi, outlookCache } from '../features/ai-outlook/api';
 import { ChartAnalysis } from '../features/ai-outlook/components/ChartAnalysis';
 import { DailyOutlook } from '../features/ai-outlook/components/DailyOutlook';
 import { HistoricalOutlook } from '../features/ai-outlook/components/HistoricalOutlook';
@@ -48,10 +48,33 @@ export function AiMarketOutlook({ initialTab, onTab }: { initialTab?: string; on
     if (t !== 'chart' && (tf === 'H8' || tf === 'H1' || tf === 'M30') && t !== 'daily') setTf('D1');
   };
 
-  const latestLoader = useCallback(() => outlookApi.latest(), [tick]);
+  const [fresh, setFresh] = useState(0);
+  useEffect(() => {
+    if (!visible) return;
+    let stopped = false;
+    const catchUp = () =>
+      outlookApi
+        .catchUp()
+        .then((r) => {
+          if (!stopped && r.ran) setFresh((n) => n + 1);
+        })
+        .catch(() => undefined);
+    void catchUp();
+    const id = window.setInterval(catchUp, 60000);
+    return () => {
+      stopped = true;
+      window.clearInterval(id);
+    };
+  }, [visible]);
+
+  const [cachedLatest] = useState(() => outlookCache.read('latest'));
+  const [cachedDetail] = useState(() => outlookCache.read('detail'));
+  const latestLoader = useCallback(() => outlookApi.latest(), [tick, fresh]);
   const latest = usePollingAsync(latestLoader, [latestLoader], { enabled: visible, intervalMs: 30000 });
-  const rows = useMemo(() => latest.data?.rows ?? [], [latest.data]);
-  const opportunities = latest.data?.opportunities ?? [];
+  const latestData = latest.data ?? cachedLatest;
+  useEffect(() => outlookCache.write('latest', latest.data), [latest.data]);
+  const rows = useMemo(() => latestData?.rows ?? [], [latestData]);
+  const opportunities = latestData?.opportunities ?? [];
   const isHistory = tab === 'history';
 
   useEffect(() => {
@@ -61,10 +84,12 @@ export function AiMarketOutlook({ initialTab, onTab }: { initialTab?: string; on
   }, [rows, opportunities, symbol, isHistory]);
 
   const active = symbol;
-  const detailLoader = useCallback(() => (active ? outlookApi.symbol(active) : Promise.resolve(null)), [active, tick]);
-  const hasRun = !!latest.data?.run;
+  const detailLoader = useCallback(() => (active ? outlookApi.symbol(active) : Promise.resolve(null)), [active, tick, fresh]);
+  const hasRun = !!latestData?.run;
   const detail = usePollingAsync(detailLoader, [detailLoader], { enabled: visible && hasRun && !!active && !isHistory, intervalMs: 30000 });
-  const o = detail.data && detail.data.outlook.symbol === active ? detail.data.outlook : null;
+  useEffect(() => outlookCache.write('detail', detail.data), [detail.data]);
+  const detailData = detail.data ?? cachedDetail;
+  const o = detailData && detailData.outlook.symbol === active ? detailData.outlook : null;
 
   const mtfLoader = useCallback(() => (active ? outlookApi.mtf(active, null, 42) : Promise.resolve(null)), [active, tick]);
   const mtf = usePollingAsync(mtfLoader, [mtfLoader], { enabled: visible && hasRun && !!active && tab === 'chart', intervalMs: 120000 });
@@ -88,14 +113,14 @@ export function AiMarketOutlook({ initialTab, onTab }: { initialTab?: string; on
   };
   const chartHeight = short ? 300 : 372;
 
-  const run = latest.data?.run ?? null;
-  const schedule = latest.data?.schedule ?? null;
-  const st = runState(latest.data?.current?.state);
+  const run = latestData?.run ?? null;
+  const schedule = latestData?.schedule ?? null;
+  const st = runState(latestData?.current?.state);
 
   const body = () => {
-    if (!latest.data) return latest.error ? <Blocking title="AI Market Outlook unavailable" error={latest.error} /> : <Blocking loading="Loading the latest published outlook…" />;
+    if (!latestData) return latest.error ? <Blocking title="AI Market Outlook unavailable" error={latest.error} /> : <Blocking loading="Loading the latest published outlook…" />;
     if (!run) {
-      const cur = latest.data.current;
+      const cur = latestData.current;
       return (
         <Blocking
           title={cur ? `Daily cycle ${st.label.toLowerCase()} for ${dayLabel(cur.analysis_date)}` : 'No published outlook yet'}
@@ -141,7 +166,7 @@ export function AiMarketOutlook({ initialTab, onTab }: { initialTab?: string; on
           <p>End-of-day AI analysis, multi-timeframe context and next move projection for the upcoming sessions.</p>
         </div>
         <div className="mao-head-right">
-          <StatusCluster run={run} current={latest.data?.current ?? null} schedule={schedule} onReload={() => setTick((t) => t + 1)} busy={latest.refreshing || detail.refreshing} />
+          <StatusCluster run={run} current={latestData?.current ?? null} schedule={schedule} onReload={() => setTick((t) => t + 1)} busy={latest.refreshing || detail.refreshing} />
           {tab !== 'daily' ? <SessionCards plans={sessions} schedule={schedule} captions={CAPTIONS[tab]} /> : null}
         </div>
       </header>
@@ -152,7 +177,7 @@ export function AiMarketOutlook({ initialTab, onTab }: { initialTab?: string; on
             {t.label}
           </button>
         ))}
-        {latest.data?.stale ? <span className="mao-stale">Showing the last published outlook — today’s cycle is {st.label.toLowerCase()}.</span> : null}
+        {latestData?.stale ? <span className="mao-stale">Showing the last published outlook — today’s cycle is {st.label.toLowerCase()}.</span> : null}
       </div>
 
       <div className="mao-toolbar">

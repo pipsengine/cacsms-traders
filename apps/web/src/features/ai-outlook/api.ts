@@ -17,4 +17,27 @@ export const outlookApi = {
     api<MtfPayload>(`${root}/symbol/${encodeURIComponent(symbol)}/mtf${q({ analysis_date: date, limit: String(limit) })}`),
   history: (symbol: string, days: number) => api<HistoryPayload>(`${root}/history${q({ symbol, days: String(days) })}`),
   runNow: () => post<{ run: RunSummary | null; skipped: string | null }>(`${root}/jobs/run`, {}),
+  catchUp: () => post<{ ran: boolean; reason: string | null }>(`${root}/jobs/catch-up`, {}),
+};
+
+const CACHE = { latest: 'cacsms.mao.latest', detail: 'cacsms.mao.detail' } as const;
+
+/** Last good response, kept for this browser tab so a revisit renders instantly while the fresh read is in flight. */
+export const outlookCache = {
+  read<K extends keyof typeof CACHE>(key: K): (K extends 'latest' ? LatestPayload : SymbolPayload) | null {
+    try {
+      const raw = sessionStorage.getItem(CACHE[key]);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  },
+  write(key: keyof typeof CACHE, value: LatestPayload | SymbolPayload | null) {
+    if (!value) return;
+    try {
+      sessionStorage.setItem(CACHE[key], JSON.stringify(value));
+    } catch {
+      /* storage full or unavailable: caching is best-effort */
+    }
+  },
 };

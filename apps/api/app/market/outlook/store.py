@@ -151,6 +151,41 @@ class OutlookRepository:
         oid, payload = values(r)
         return {**json.loads(payload), "outlook_id": oid}
 
+    def summaries(self, run_id: str) -> list[dict]:
+        """Per-instrument summary rows for the published-run table, without transferring every full payload."""
+        cols = "id, symbol, status, qualified, opportunity_rank, opportunity_score, direction, confidence"
+        if getattr(self.conn, "provider", "sqlite") == "sqlite":
+            sql = (f"SELECT {cols}, json_extract(payload_json,'$.regime.label'), json_extract(payload_json,'$.reason'), "
+                   "json_extract(payload_json,'$.system_action'), json_extract(payload_json,'$.price'), json_extract(payload_json,'$.digits'), "
+                   "json_extract(payload_json,'$.late') FROM ai_outlook_symbol WHERE run_id=?")
+        else:
+            sql = (f"SELECT {cols}, p->'regime'->>'label', p->>'reason', (p->'system_action')::text, p->>'price', p->>'digits', p->>'late' "
+                   f"FROM (SELECT {cols}, payload_json::json AS p FROM ai_outlook_symbol WHERE run_id=?) s")
+        out = []
+        for r in self.conn.execute(sql, (run_id,)).fetchall():
+            oid, sym, status, qualified, rank, score, direction, conf, regime, reason, action, price, digits, late = values(r)
+            out.append({"outlook_id": oid, "symbol": sym, "status": status, "qualified": bool(qualified), "opportunity_rank": rank,
+                        "opportunity_score": score, "expected_direction": direction, "confidence": conf, "regime": regime, "reason": reason,
+                        "system_action": json.loads(action) if isinstance(action, str) else action,
+                        "price": None if price is None else float(price), "digits": None if digits is None else int(digits),
+                        "late": None if late is None else late in (True, 1, "true")})
+        return out
+
+    def latest_revisions(self, outlook_ids: list[str]) -> dict[str, dict]:
+        """Newest revision per outlook in one round trip (status and live system action)."""
+        if not outlook_ids:
+            return {}
+        marks = ",".join("?" * len(outlook_ids))
+        rows = self.conn.execute(
+            "SELECT outlook_id, status, detail_json FROM (SELECT outlook_id, status, detail_json, ROW_NUMBER() OVER "
+            f"(PARTITION BY outlook_id ORDER BY observed_at DESC, created_at DESC) AS n FROM ai_outlook_revision WHERE outlook_id IN ({marks})) r "
+            "WHERE n=1", tuple(outlook_ids)).fetchall()
+        out = {}
+        for r in rows:
+            oid, status, detail = values(r)
+            out[str(oid)] = {"status": status, "system_action": json.loads(detail or "{}").get("system_action")}
+        return out
+
     def outlooks(self, run_id: str) -> list[dict]:
         rows = self.conn.execute("SELECT id, payload_json FROM ai_outlook_symbol WHERE run_id=?", (run_id,)).fetchall()
         return [{**json.loads(values(r)[1]), "outlook_id": values(r)[0]} for r in rows]

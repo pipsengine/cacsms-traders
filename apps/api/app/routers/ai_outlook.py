@@ -1,5 +1,6 @@
 """AI Market Outlook (Daily) API — published immutable outlooks, monitoring, history, performance and the scheduler job."""
 import hmac
+import logging
 import os
 import threading
 from datetime import date, timedelta
@@ -17,24 +18,29 @@ from ..market.scanner_engine import SCANNER_UNIVERSE, chart_candles
 from ..market.strength_intel_store import active_scope
 
 router = APIRouter(prefix="/api/ai-outlook", tags=["AI Market Outlook"])
+log = logging.getLogger("cacsms.ai_outlook")
 ROW_FIELDS = ("symbol", "status", "qualified", "opportunity_rank", "opportunity_score", "expected_direction", "regime", "confidence", "reason",
               "system_action", "price", "digits", "late")
 MTF_CHART = ("Y", "YTD", "HY", "Q", "MN", "W", "D1", "H8", "H1", "M30")
 _catchup_lock = threading.Lock()
 
 
-def _catch_up() -> None:
-    """Serverless has no background thread: a read past the close (or a stale monitor) advances the scheduler.
+def _catch_up() -> dict:
+    """Serverless has no background thread, so the open page asks for a pass in its own request (reads never wait on it).
 
-    Locally the scheduler thread owns the cycle, so reads never run it inline."""
+    Locally the scheduler thread owns the cycle."""
     if os.getenv("VERCEL", "").strip() != "1":
-        return
+        return {"ran": False, "reason": "scheduler_thread"}
+    reason = get_outlook_service().due()
+    if reason is None:
+        return {"ran": False, "reason": None}
     if not _catchup_lock.acquire(blocking=False):
-        return
+        return {"ran": False, "reason": "busy"}
     try:
-        get_outlook_service().tick(replay=False)
+        report = get_outlook_service().tick(replay=False)
     finally:
         _catchup_lock.release()
+    return {"ran": "skipped" not in report, "reason": reason}
 
 
 def _store(conn) -> OutlookRepository:
@@ -51,11 +57,18 @@ def _run_for(store: OutlookRepository, analysis_date: str | None) -> dict | None
     return store.latest_published()
 
 
-def _row(o: dict) -> dict:
-    out = {k: o.get(k) for k in ROW_FIELDS}
-    out["confidence"] = (o.get("confidence") or {}).get("primary")
-    out["regime"] = (o.get("regime") or {}).get("label")
-    return out
+def _summaries(store: OutlookRepository, run_id: str) -> tuple[list[dict], dict[str, dict]]:
+    try:
+        rows = store.summaries(run_id)
+        return rows, store.latest_revisions([o["outlook_id"] for o in rows if o["status"] == "PUBLISHED"])
+    except Exception:  # noqa: BLE001 - dialect-specific JSON SQL; the full-payload read is slower but always works
+        log.warning("Outlook summary query failed; falling back to full payloads", exc_info=True)
+        store.conn.rollback()
+    rows = []
+    for o in store.outlooks(run_id):
+        rows.append({**o, "confidence": (o.get("confidence") or {}).get("primary"), "regime": (o.get("regime") or {}).get("label")})
+    revs = {o["outlook_id"]: store.latest_revision(o["outlook_id"]) or {} for o in rows if o["status"] == "PUBLISHED"}
+    return rows, revs
 
 
 def _with_monitoring(store: OutlookRepository, o: dict) -> dict:
@@ -72,7 +85,6 @@ def _symbol(symbol: str) -> str:
 
 def _outlook(symbol: str, analysis_date: str | None) -> tuple[dict, dict]:
     sym = _symbol(symbol)
-    _catch_up()
     with db() as conn:
         store = _store(conn)
         run = _run_for(store, analysis_date)
@@ -97,18 +109,18 @@ def status():
 @router.get("/latest")
 def latest(analysis_date: str | None = Query(None)):
     """Latest published daily outlook: every instrument's status plus the ranked qualified opportunities."""
-    _catch_up()
     with db() as conn:
         store = _store(conn)
         run = _run_for(store, analysis_date)
         live = store.run(get_outlook_service().target_day(utcnow(), outlook_settings()).isoformat(), "LIVE")
         rows = []
         if run:
-            for o in store.outlooks(run["id"]):
-                rev = store.latest_revision(o["outlook_id"]) if o["status"] == "PUBLISHED" else None
-                r = _row(o)
-                r["system_action"] = (rev or {}).get("system_action") or o.get("system_action")
-                r["monitor_status"] = (rev or {}).get("status")
+            summaries, revs = _summaries(store, run["id"])
+            for o in summaries:
+                rev = revs.get(o["outlook_id"]) or {}
+                r = {k: o.get(k) for k in ROW_FIELDS}
+                r["system_action"] = rev.get("system_action") or o.get("system_action")
+                r["monitor_status"] = rev.get("status")
                 rows.append(r)
     rows.sort(key=lambda r: (r["opportunity_rank"] is None, r["opportunity_rank"] or 0, r["symbol"]))
     stale = bool(run) and run["analysis_date"] < schedule_payload()["analysis_date"]
@@ -232,6 +244,12 @@ def daily_job(authorization: str | None = Header(default=None)):
     """Scheduler entry point (Vercel Cron after the D1 close; idempotent — safe to call repeatedly)."""
     _cron_authorized(authorization)
     return get_outlook_service().tick()
+
+
+@router.post("/jobs/catch-up")
+def catch_up(user=Depends(current_user)):
+    """Called by the open page alongside its reads: advances the serverless scheduler only when something is due."""
+    return _catch_up()
 
 
 @router.post("/jobs/run")

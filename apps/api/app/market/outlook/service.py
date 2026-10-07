@@ -196,14 +196,34 @@ class OutlookService:
             run = store.create_run(day.isoformat(), "LIVE", cal.close_time(day).isoformat(), ENGINE_VERSION)
             store.update_run(run["id"], log=_entry("SCHEDULED", f"D1 close {cal.close_time(day).isoformat()} detected"))
             self._audit(conn, store, "AI_OUTLOOK_RUN_SCHEDULED", run["id"], {"analysis_date": run["analysis_date"]})
+        if self._execute_due(run, day, now, s):
+            self.execute(conn, store, store.run_by_id(run["id"]), now, s)  # type: ignore[arg-type]
+            run = store.run_by_id(run["id"])
+        return {"analysis_date": day.isoformat(), "state": run["state"], "run_id": run["id"]}  # type: ignore[index]
+
+    @staticmethod
+    def _execute_due(run: dict, day: date, now: datetime, s: OutlookSettings) -> bool:
         retry_due = run["state"] in ("RETRY", "INSUFFICIENT_DATA", "SCHEDULED") and (not run["next_retry_at"] or run["next_retry_at"] <= now.isoformat())
         stale = run["state"] in ACTIVE_STATES and run["updated_at"] < (now - timedelta(seconds=s.lock_seconds)).isoformat()
         recover = (run["state"] == "FAILED" and run["updated_at"] < (now - timedelta(minutes=FAILED_RECOVERY_MINUTES)).isoformat()
                    and now < cal.close_time(cal.next_trading_day(day)))
-        if retry_due or stale or recover:
-            self.execute(conn, store, store.run_by_id(run["id"]), now, s)  # type: ignore[arg-type]
-            run = store.run_by_id(run["id"])
-        return {"analysis_date": day.isoformat(), "state": run["state"], "run_id": run["id"]}  # type: ignore[index]
+        return retry_due or stale or recover
+
+    def due(self, now: datetime | None = None) -> str | None:
+        """Why a scheduler pass is needed right now (None = nothing to do). One cheap query, so callers can poll it."""
+        now = now or utcnow()
+        s = outlook_settings()
+        day = self.target_day(now, s)
+        with db() as conn:
+            run = OutlookRepository(conn, active_scope(conn)).run(day.isoformat(), "LIVE")
+        if run is None:
+            return "schedule"
+        if self._execute_due(run, day, now, s):
+            return "generate"
+        if run["state"] in ("PUBLISHED", "MONITORING") and (
+                not run["monitored_at"] or run["monitored_at"] <= (now - timedelta(seconds=s.monitor_seconds - 5)).isoformat()):
+            return "monitor"
+        return None
 
     # ----- AIIntelligenceOrchestrator (state machine) -----
 
