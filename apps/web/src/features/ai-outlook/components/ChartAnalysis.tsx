@@ -1,12 +1,18 @@
 import { useMemo, useState } from 'react';
 import { ArrowRight, BarChart3, BrainCircuit, CircleCheck, CircleX, Crosshair, Layers, MapPin, Target, TrendingDown, TrendingUp, TriangleAlert, X } from 'lucide-react';
+import { useLiveCandles } from '../../market-structure/live';
 import { ANNOTATION_GROUPS, DEFAULT_GROUPS, type GroupKey } from '../overlay';
-import type { MtfPayload, Outlook } from '../types';
+import type { Annotation, MtfPayload, Outlook, VCandle } from '../types';
 import { monitorTitle } from './DailyOutlook';
 import { OutlookChart, type CandleState } from './OutlookChart';
-import { Card, Chip, Kpi, MiniCandles, TFS, dirTone, dirWord, pct, px, type OutlookTf } from './shared';
+import { Card, Chip, Kpi, MINI_TFS, MiniCandles, TFS, dirTone, dirWord, pct, px, type OutlookTf } from './shared';
 
-const MINI_TFS: OutlookTf[] = ['Y', 'YTD', 'HY', 'Q', 'MN', 'W', 'D1', 'H8', 'H1'];
+const EMPTY: VCandle[] = [];
+
+function LiveMini({ scope, candles, forming, channel, tone }: { scope: string; candles: VCandle[]; forming: VCandle | null | undefined; channel: Annotation | null; tone: string }) {
+  const bars = useLiveCandles(scope, candles, forming);
+  return <MiniCandles candles={bars.length > candles.length ? bars.slice(bars.length - candles.length) : bars} channel={channel} tone={tone} height={58} />;
+}
 const SUMMARY_TABS = [
   ['technical', 'Technical Analysis'],
   ['structure', 'Structure Analysis'],
@@ -15,7 +21,7 @@ const SUMMARY_TABS = [
 ] as const;
 const MARK_TONE: Record<string, string> = { res: 'is-red', target: 'is-red', erz: 'is-green', sup: 'is-green', inv: 'is-red' };
 
-export function ChartAnalysis({ o, tf, onTf, candles, chartHeight, mtf }: { o: Outlook; tf: OutlookTf; onTf: (t: OutlookTf) => void; candles: CandleState; chartHeight: number; mtf: MtfPayload | null }) {
+export function ChartAnalysis({ o, tf, onTf, candles, chartHeight, mtf, forming }: { o: Outlook; tf: OutlookTf; onTf: (t: OutlookTf) => void; candles: CandleState; chartHeight: number; mtf: MtfPayload | null; forming?: Record<string, VCandle | null> }) {
   const dp = o.digits;
   const up = o.expected_direction !== 'BEARISH';
   const word = dirWord(o.expected_direction);
@@ -101,7 +107,7 @@ export function ChartAnalysis({ o, tf, onTf, candles, chartHeight, mtf }: { o: O
                     <b>{t}</b>
                     <Chip tone={tag === 'Pullback' ? 'is-rose' : tag === 'Bullish' ? 'is-green' : tag === 'Bearish' ? 'is-red' : 'is-gray'}>{tag}</Chip>
                   </header>
-                  <MiniCandles candles={mtf?.candles?.[t] ?? []} channel={channelFor(t)} tone={r?.dir === -1 ? 'red' : 'blue'} height={58} />
+                  <LiveMini scope={`${o.symbol}|${t}`} candles={mtf?.candles?.[t] ?? EMPTY} forming={forming?.[t]} channel={channelFor(t)} tone={r?.dir === -1 ? 'red' : 'blue'} />
                 </button>
               );
             })}

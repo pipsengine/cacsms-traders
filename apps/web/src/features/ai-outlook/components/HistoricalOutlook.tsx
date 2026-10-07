@@ -3,7 +3,7 @@ import { ArrowLeftRight, Award, BarChart3, ChartCandlestick, Lightbulb, ListChec
 import { StructureChart, type ChartOverlay } from '../../market-structure/components/StructureChart';
 import { InstrumentIcon } from '../../market-scanner/components/InstrumentIcon';
 import type { HistoryPayload, HistoryRow, Performance, VCandle } from '../types';
-import type { CandleState } from './OutlookChart';
+import { LivePill, barLabel, type CandleState } from './OutlookChart';
 import { Card, Chip, Kpi, Spark, dayLabel, dirTone, dirWord, pct, px } from './shared';
 
 export const HISTORY_RANGES = [
@@ -188,7 +188,8 @@ export function HistoricalOutlook({
             tf="D1"
             candles={candles.candles}
             digits={digits}
-            lastPrice={candles.candles.at(-1)?.c ?? null}
+            lastPrice={candles.price ?? candles.candles.at(-1)?.c ?? null}
+            barLabel={barLabel(candles)}
             height={chartHeight}
             loading={candles.loading}
             error={candles.error ?? undefined}
@@ -196,7 +197,7 @@ export function HistoricalOutlook({
             className="mao-chart"
             heading={
               <strong>
-                <InstrumentIcon base={symbol.slice(0, 3)} quote={symbol.slice(3, 6)} size="sm" /> {symbol} – Historical Daily Outlook (Last {days} Days)
+                <InstrumentIcon base={symbol.slice(0, 3)} quote={symbol.slice(3, 6)} size="sm" /> {symbol} – Historical Daily Outlook (Last {days} Days) <LivePill live={candles.live} />
               </strong>
             }
             actions={<span className="mst-tf-badge">D1</span>}

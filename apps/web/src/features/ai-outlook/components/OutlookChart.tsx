@@ -1,11 +1,25 @@
 import { useMemo, type ReactNode } from 'react';
 import { InstrumentIcon } from '../../market-scanner/components/InstrumentIcon';
 import { StructureChart } from '../../market-structure/components/StructureChart';
+import type { LiveState } from '../../market-structure/live';
 import { buildOverlay, futureBarsFor, legendFor, type GroupKey, type OverlayMode, DEFAULT_GROUPS } from '../overlay';
 import type { Outlook, VCandle } from '../types';
 import { CANDLE_LIMIT, TFS, type OutlookTf } from './shared';
 
-export type CandleState = { candles: VCandle[]; loading: boolean; error: string | null };
+/** Closed candles plus the live forming bar; ``price`` is the latest tick (null when the feed has no quote). */
+export type CandleState = { candles: VCandle[]; loading: boolean; error: string | null; price?: number | null; live?: LiveState; forming?: boolean };
+
+export const barLabel = (c: CandleState) => (c.forming ? 'forming bar · live' : undefined);
+
+export function LivePill({ live }: { live?: LiveState }) {
+  if (!live) return null;
+  return (
+    <span className={`mao-live is-${live.tone}`} title={live.title}>
+      <i />
+      {live.label}
+    </span>
+  );
+}
 
 export function OutlookChart({
   o,
@@ -43,7 +57,8 @@ export function OutlookChart({
         tf={tf}
         candles={candles.candles}
         digits={o.digits}
-        lastPrice={o.price}
+        lastPrice={candles.price ?? candles.candles.at(-1)?.c ?? o.price}
+        barLabel={barLabel(candles)}
         height={height}
         loading={candles.loading}
         error={candles.error ?? undefined}
@@ -57,7 +72,7 @@ export function OutlookChart({
         className="mao-chart"
         heading={
           <strong>
-            <InstrumentIcon base={o.symbol.slice(0, 3)} quote={o.symbol.slice(3, 6)} size="sm" /> {o.symbol} – {title}
+            <InstrumentIcon base={o.symbol.slice(0, 3)} quote={o.symbol.slice(3, 6)} size="sm" /> {o.symbol} – {title} <LivePill live={candles.live} />
           </strong>
         }
         actions={

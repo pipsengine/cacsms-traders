@@ -108,18 +108,63 @@ def credential(tenant_id: str, user=Depends(current_user)):
         return dict(token=token,expires_at=expiry)
 
 
+class QuoteFrame(BaseModel):
+    """Quotes-only upload between full heartbeats: keeps live prices current without re-sending history."""
+    model_config = ConfigDict(extra='forbid')
+    quotes: list[Quote] = Field(min_length=1,max_length=29)
+    broker_utc_offset_seconds: int = Field(default=0,ge=-50400,le=50400)
+    @model_validator(mode='after')
+    def valid_times(self):
+        offset = self.broker_utc_offset_seconds
+        if offset % 900:
+            raise ValueError('Broker clock offset must use quarter-hour increments')
+        for q in self.quotes:
+            if (offset and q.broker_time is None) or (q.broker_time is not None and q.broker_time-q.time != offset):
+                raise ValueError('Broker timestamp does not match its UTC offset')
+        return self
+
+
+def _authorize(conn, tenant_id, token):
+    # Serialize rotation/revocation and uploads for this tenant.
+    conn.execute('UPDATE system_settings SET value_json=value_json WHERE key=?', (bridge.key(tenant_id,'credential'),))
+    cred = bridge.read(conn,tenant_id,'credential')
+    if not cred.get('hash') or not secrets.compare_digest(cred['hash'],token_hash(token)) or datetime.fromisoformat(cred['expires_at']) <= datetime.now(timezone.utc):
+        raise HTTPException(401,'MT5 bridge credential expired or revoked; reconnect from the platform.')
+    owner = conn.execute('SELECT * FROM users WHERE id=?', (cred['user_id'],)).fetchone()
+    if not owner or owner['status'] != 'ACTIVE':
+        raise HTTPException(403,'MT5 bridge owner is inactive.')
+    require_permission(conn,dict(owner),tenant_id,'connections.manage')
+    return cred
+
+
+def _merge_quotes(old, new):
+    """Newest tick per symbol wins, so a slower full heartbeat never rolls back a fresher quotes-only frame."""
+    merged = {q['symbol']: q for q in old or []}
+    for q in new:
+        if q['time'] >= merged.get(q['symbol'],{}).get('time',0):
+            merged[q['symbol']] = q
+    return list(merged.values())
+
+
+@router.post('/quotes')
+def quotes(tenant_id: str, body: QuoteFrame, x_mt5_bridge_token: str = Header(default='')):
+    with db() as conn:
+        cred = _authorize(conn,tenant_id,x_mt5_bridge_token)
+        state = bridge.read(conn,tenant_id,'state')
+        if not cred.get('account_id') or state.get('generation') != cred.get('generation') or state.get('account_id') != cred['account_id']:
+            raise HTTPException(409,'Send a full heartbeat before quote frames.')
+        if body.broker_utc_offset_seconds != state.get('broker_utc_offset_seconds',0):
+            raise HTTPException(409,'Broker clock offset changed; send a full heartbeat.')
+        stamp = iso()
+        state.update(quotes=_merge_quotes(state.get('quotes'),[q.model_dump() for q in body.quotes]),received_at=stamp,quotes_at=stamp,connected=True)
+        bridge.save(conn,tenant_id,'state',state)
+        return dict(ok=True,received_at=stamp)
+
+
 @router.post('/heartbeat')
 def heartbeat(tenant_id: str, body: Heartbeat, x_mt5_bridge_token: str = Header(default='')):
     with db() as conn:
-        # Serialize rotation/revocation and uploads for this tenant.
-        conn.execute('UPDATE system_settings SET value_json=value_json WHERE key=?', (bridge.key(tenant_id,'credential'),))
-        cred = bridge.read(conn,tenant_id,'credential')
-        if not cred.get('hash') or not secrets.compare_digest(cred['hash'],token_hash(x_mt5_bridge_token)) or datetime.fromisoformat(cred['expires_at']) <= datetime.now(timezone.utc):
-            raise HTTPException(401,'MT5 bridge credential expired or revoked; reconnect from the platform.')
-        owner = conn.execute('SELECT * FROM users WHERE id=?', (cred['user_id'],)).fetchone()
-        if not owner or owner['status'] != 'ACTIVE':
-            raise HTTPException(403,'MT5 bridge owner is inactive.')
-        require_permission(conn,dict(owner),tenant_id,'connections.manage')
+        cred = _authorize(conn,tenant_id,x_mt5_bridge_token)
         account_id = f'{tenant_id}/{body.account.server}/{body.account.login}'
         if cred.get('account_id') and (cred['account_id'] != account_id or cred.get('environment') != body.account.trade_mode):
             raise HTTPException(409,'MT5 account changed; reconnect to authorize the new account.')
@@ -129,7 +174,8 @@ def heartbeat(tenant_id: str, body: Heartbeat, x_mt5_bridge_token: str = Header(
         stamp = iso()
         old = bridge.read(conn,tenant_id,'state')
         state = dict(account=body.account.model_dump(),account_id=account_id,terminal_path=body.terminal_path,
-                     received_at=stamp,connected=True,generation=cred['generation'],quotes=[q.model_dump() for q in body.quotes],broker_utc_offset_seconds=body.broker_utc_offset_seconds)
+                     received_at=stamp,connected=True,generation=cred['generation'],broker_utc_offset_seconds=body.broker_utc_offset_seconds,
+                     quotes=_merge_quotes(old.get('quotes') if old.get('account_id') == account_id else None,[q.model_dump() for q in body.quotes]))
         bridge.save(conn,tenant_id,'state',state)
         bridge.sync_registry(conn,tenant_id,state)
         # Bounded batches avoid one Neon round-trip per bar.

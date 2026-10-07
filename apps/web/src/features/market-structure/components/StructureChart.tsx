@@ -163,6 +163,7 @@ export function StructureChart({
   selected,
   zoomable = false,
   defaultSpan,
+  barLabel = 'last closed bar',
 }: {
   symbol: string;
   title: string;
@@ -189,6 +190,7 @@ export function StructureChart({
   zoomable?: boolean;
   /** Bars shown before the user zooms (the rest of the loaded history stays reachable by zooming out or panning). */
   defaultSpan?: number;
+  barLabel?: string;
 }) {
   const uid = useId().replace(/:/g, '');
   const clipId = `mst-clip-${uid}`;
@@ -505,7 +507,7 @@ export function StructureChart({
                 {chgPct!.toFixed(2)}%)
               </span>
             ) : null}
-            <small> last closed bar</small>
+            <small> {barLabel}</small>
           </>
         ) : (
           <span className="mst-muted">—</span>

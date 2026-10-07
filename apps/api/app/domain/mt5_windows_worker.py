@@ -1,6 +1,7 @@
 """Read-only Windows MT5 attachment and outbound heartbeat worker."""
 import json
 import math
+import os
 import threading
 import urllib.error
 import urllib.request
@@ -10,6 +11,15 @@ from ..market.constants import FX_PAIRS_28
 
 CLOUD_ORIGINS = {'https://cacsms-traders.vercel.app','http://localhost:8000','http://127.0.0.1:8000'}
 M1_TAIL_BARS = 5
+HEARTBEAT_SECONDS = 15
+
+
+def quote_seconds():
+    """Quotes-only push cadence for live charts (MT5_QUOTE_PUSH_SECONDS; 0 disables)."""
+    try:
+        return max(0.0, float(os.getenv('MT5_QUOTE_PUSH_SECONDS', '1') or 0))
+    except ValueError:
+        return 1.0
 
 
 def valid_bar(r):
@@ -35,6 +45,7 @@ class WindowsBridge:
         self.lock = threading.RLock()
         self.stop = threading.Event()
         self.thread = None
+        self.quote_thread = None
         self.session = None
         self.error = None
         self.frame = 0
@@ -98,12 +109,32 @@ class WindowsBridge:
         return dict(account=dict(login=str(account.login),server=account.server,company=account.company,currency=account.currency,
                                 trade_mode={0:'DEMO',1:'PROP_FIRM',2:'LIVE'}.get(account.trade_mode,'LIVE'),balance=float(account.balance),equity=float(account.equity),margin=float(account.margin),free_margin=float(account.margin_free),leverage=int(account.leverage)),terminal_path=self.terminal,quotes=quotes,candles=candles,broker_utc_offset_seconds=offset)
 
-    def upload(self, payload):
+    def _request(self, endpoint, payload, timeout):
         session = self.session
-        url = session['origin']+'/api/tenants/'+quote(session['tenant_id'],safe='')+'/mt5-bridge/heartbeat'
+        if not session:
+            raise RuntimeError('MT5 bridge is not connected.')
+        url = session['origin']+'/api/tenants/'+quote(session['tenant_id'],safe='')+'/mt5-bridge/'+endpoint
         request = urllib.request.Request(url,json.dumps(payload,allow_nan=False).encode(),{'Content-Type':'application/json','X-MT5-Bridge-Token':session['token']},method='POST')
+        return urllib.request.build_opener(NoRedirect()).open(request,timeout=timeout)
+
+    def push_quotes(self, payload):
+        """Quotes-only frame. Returns False when the server cannot accept them (older API); never stops the bridge."""
+        frame = dict(quotes=payload['quotes'],broker_utc_offset_seconds=payload['broker_utc_offset_seconds'])
+        if not frame['quotes']:
+            return True
         try:
-            with urllib.request.build_opener(NoRedirect()).open(request,timeout=30) as response:
+            with self._request('quotes',frame,10) as response:
+                return bool(json.load(response).get('ok'))
+        except urllib.error.HTTPError as exc:
+            if exc.code in (404,405):
+                return False
+            return True
+        except (urllib.error.URLError,OSError,ValueError):
+            return True
+
+    def upload(self, payload):
+        try:
+            with self._request('heartbeat',payload,30) as response:
                 result = json.load(response)
                 if not result.get('ok'):
                     raise RuntimeError('Cloud rejected the MT5 heartbeat.')
@@ -126,10 +157,11 @@ class WindowsBridge:
         if origin not in CLOUD_ORIGINS or not isinstance(tenant_id,str) or not 1 <= len(tenant_id) <= 128 or not isinstance(token,str) or not 32 <= len(token) <= 128:
             raise ValueError('Invalid bridge pairing request')
         self.stop.set()
-        if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=35)
-            if self.thread.is_alive():
-                raise RuntimeError('Previous bridge request is still finishing. Retry Connect shortly.')
+        for worker in (self.thread, self.quote_thread):
+            if worker and worker.is_alive():
+                worker.join(timeout=35)
+                if worker.is_alive():
+                    raise RuntimeError('Previous bridge request is still finishing. Retry Connect shortly.')
         with self.lock:
             account = self.attach()
             self.broker_utc_offset_seconds = None
@@ -145,16 +177,32 @@ class WindowsBridge:
             if not self.thread or not self.thread.is_alive():
                 self.thread = threading.Thread(target=self.run,daemon=True)
                 self.thread.start()
+            interval = quote_seconds()
+            if interval and (not self.quote_thread or not self.quote_thread.is_alive()):
+                self.quote_thread = threading.Thread(target=self.quote_loop,args=(interval,),daemon=True)
+                self.quote_thread.start()
             return {'ok':True,'connected':True,'received_at':result['received_at'],'execution_available':False}
 
+    def quote_loop(self, interval):
+        """Latest ticks between history heartbeats; the MT5 SDK is only touched under the lock, uploads happen outside it."""
+        while not self.stop.wait(interval):
+            try:
+                with self.lock:
+                    payload = self.sample(history=False) if self.session else None
+                if payload and not self.push_quotes(payload):
+                    return
+            except Exception:  # noqa: BLE001 - the heartbeat loop reports bridge errors
+                continue
+
     def run(self):
-        while not self.stop.wait(15):
-            with self.lock:
-                try:
-                    self.upload(self.sample())
-                    self.error = None
-                except Exception as exc:
-                    self.error = str(exc)
+        while not self.stop.wait(HEARTBEAT_SECONDS):
+            try:
+                with self.lock:
+                    payload = self.sample()
+                self.upload(payload)
+                self.error = None
+            except Exception as exc:
+                self.error = str(exc)
         with self.lock:
             self.session = None
         # Credential remains in memory only; never write credentials or broker passwords.

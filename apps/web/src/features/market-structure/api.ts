@@ -10,6 +10,7 @@ import type {
   TrendPayload,
   VCandle,
 } from './types';
+import type { LivePayload } from './live';
 import { apiFetch } from '../../lib/api';
 
 const root = '/market-intelligence';
@@ -36,6 +37,7 @@ export const marketStructureApi = {
     get<FractalDetail>(`/structure/fractals/${encodeURIComponent(symbol)}?${q({ timeframe })}`),
   bos: () => get<BosPayload>('/structure/bos'),
   bosDetail: (symbol: string, timeframe: string) => get<BosDetail>(`/structure/bos/${encodeURIComponent(symbol)}?${q({ timeframe })}`),
+  live: (symbol: string, timeframes: string) => get<LivePayload>(`/scanner/${encodeURIComponent(symbol)}/live?${q({ timeframes })}`),
   candles: (symbol: string, timeframe: string, limit: number) =>
     get<{ symbol: string; timeframe: string; candles: VCandle[] }>(
       `/scanner/${encodeURIComponent(symbol)}/candles?${q({ timeframe, limit: String(limit) })}`,

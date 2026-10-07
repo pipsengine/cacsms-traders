@@ -279,3 +279,13 @@
   .mao-main, .mao-main.is-wide-side, .mao-row3, .mao-row3.is-even, .mao-row3.is-chart, .mao-row2 { grid-template-columns: minmax(0, 1fr); }
   .mao-toolbar .mao-sessions { margin-left: 0; }
 }
+
+/* live tick indicator in chart headings */
+.mao-live{display:inline-flex;align-items:center;gap:5px;margin-left:8px;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;line-height:16px;vertical-align:middle;white-space:nowrap;font-variant-numeric:tabular-nums}
+.mao-live i{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+.mao-live.is-live{background:#ecfdf3;color:#16865a}
+.mao-live.is-live i{animation:mao-live-pulse 1s ease-in-out infinite}
+.mao-live.is-delayed{background:#fff8e6;color:#b76e00}
+.mao-live.is-off{background:#f2f4f7;color:#667085}
+@keyframes mao-live-pulse{0%,100%{opacity:1}50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.mao-live.is-live i{animation:none}}

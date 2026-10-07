@@ -5,10 +5,12 @@ import { DailyOutlook } from '../features/ai-outlook/components/DailyOutlook';
 import { HistoricalOutlook } from '../features/ai-outlook/components/HistoricalOutlook';
 import { KeyLevels } from '../features/ai-outlook/components/KeyLevels';
 import { ScenarioAnalysis } from '../features/ai-outlook/components/ScenarioAnalysis';
-import { HISTORY_LIMIT, NoOpportunity, SessionCards, StatusCluster, SymbolPicker, TfBar, dayLabel, runState, type OutlookTf } from '../features/ai-outlook/components/shared';
+import type { CandleState } from '../features/ai-outlook/components/OutlookChart';
+import { HISTORY_LIMIT, MINI_TFS, NoOpportunity, SessionCards, StatusCluster, SymbolPicker, TfBar, dayLabel, runState, type OutlookTf } from '../features/ai-outlook/components/shared';
 import { usePollingAsync } from '../features/market-intelligence/hooks/useMarketIntelligence';
 import { Blocking } from '../features/market-structure/components/StructureUi';
 import { useCandles, useShortScreen, useVisible } from '../features/market-structure/hooks';
+import { liveState, useLive, useLiveCandles } from '../features/market-structure/live';
 
 const TABS = [
   { id: 'daily', label: 'Daily Outlook' },
@@ -73,7 +75,17 @@ export function AiMarketOutlook({ initialTab, onTab }: { initialTab?: string; on
   const chartTf: OutlookTf = isHistory ? 'D1' : tf;
   const limit = isHistory ? 400 : HISTORY_LIMIT[tf];
   const c = useCandles(active ?? 'XAUUSD', chartTf, visible && !!active, tick, limit);
-  const candles = { candles: c.candles, loading: c.loading, error: c.error ?? null };
+  const liveTfs = useMemo(() => (tab === 'chart' ? [chartTf, ...MINI_TFS] : [chartTf]), [tab, chartTf]);
+  const live = useLive(active, liveTfs, visible && !!active);
+  const liveBars = useLiveCandles(`${active}|${chartTf}`, c.candles, live.data?.forming?.[chartTf]);
+  const candles: CandleState = {
+    candles: liveBars,
+    loading: c.loading,
+    error: c.error ?? null,
+    price: live.data?.quote?.price ?? null,
+    live: active ? liveState(live.data, live.error) : undefined,
+    forming: liveBars.length > 0 && liveBars.at(-1) !== c.candles.at(-1),
+  };
   const chartHeight = short ? 300 : 372;
 
   const run = latest.data?.run ?? null;
@@ -113,7 +125,7 @@ export function AiMarketOutlook({ initialTab, onTab }: { initialTab?: string; on
     const props = { o, tf, onTf: setTf, candles, chartHeight };
     if (tab === 'scenarios') return <ScenarioAnalysis {...props} />;
     if (tab === 'levels') return <KeyLevels {...props} />;
-    if (tab === 'chart') return <ChartAnalysis {...props} mtf={mtf.data && mtf.data.symbol === active ? mtf.data : null} />;
+    if (tab === 'chart') return <ChartAnalysis {...props} mtf={mtf.data && mtf.data.symbol === active ? mtf.data : null} forming={live.data?.forming} />;
     return <DailyOutlook {...props} />;
   };
 

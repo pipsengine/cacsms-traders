@@ -8,6 +8,7 @@ from ..market.constants import CSM_CURRENCIES
 from ..market.csm_engine import CalculationMode
 from ..market.csm_service import CurrencyStrengthMatrixService
 from ..market.ingestion_runner import MarketIngestionRunner
+from ..market.live import live_snapshot
 from ..market.intelligence_cycle import run_intelligence_cycle
 from ..market.market_data import create_market_data_gateway, market_context
 from ..market.repository import MarketRepository
@@ -224,6 +225,15 @@ def market_scanner_candles(symbol: str, timeframe: str = Query("D1"), limit: int
     """Closed candles from the persisted market data store for the scanner detail chart."""
     try:
         return chart_candles(symbol, timeframe, limit)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/scanner/{symbol}/live")
+def market_scanner_live(symbol: str, timeframes: str = Query("D1", max_length=120)):
+    """Latest tick and the forming bar per chart timeframe (display only; never stored or analysed)."""
+    try:
+        return live_snapshot(symbol, timeframes.split(","))
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
