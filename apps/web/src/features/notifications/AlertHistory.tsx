@@ -5,6 +5,20 @@ import { get } from '../../lib/api';
 import { fmtPrice, fmtTime, providerLabel, statusTone } from './format';
 import type { AlertEvent, AlertType } from './types';
 
+function OutlookSummary({ meta }: { meta: Record<string, unknown> }) {
+  const counts = (meta.counts ?? {}) as { published?: number; qualified?: number };
+  const top = ((meta.opportunities ?? []) as { symbol: string; direction?: string }[])
+    .map((o) => `${o.symbol} ${(o.direction ?? '').toLowerCase()}`.trim())
+    .join(', ');
+  return (
+    <>
+      <div><span>Timing</span><b>{meta.late ? 'Late — after market open' : 'Before market open'}</b></div>
+      <div><span>Analysed / qualified</span><b>{counts.published ?? 0} / {counts.qualified ?? 0}</b></div>
+      {top && <div><span>Top opportunities</span><b>{top}</b></div>}
+    </>
+  );
+}
+
 export function AlertHistory({ tenantId, types, statuses }: {
   tenantId: string;
   types: { key: AlertType; label: string }[];
@@ -58,7 +72,7 @@ export function AlertHistory({ tenantId, types, statuses }: {
       </div>
       {error && <Notice title="Alert history" text={error} tone="warning" />}
       {rows.length === 0 ? (
-        <Empty title={loading ? 'Loading…' : 'No alerts yet'} text="Alerts appear here when the engines confirm a channel break, touch, break & retest continuation or TiT setup on closed candles." />
+        <Empty title={loading ? 'Loading…' : 'No alerts yet'} text="Alerts appear here when the engines confirm a channel break, touch, break & retest continuation or TiT setup on closed candles, and when the daily AI analysis completes." />
       ) : (
         <div className="table-wrap">
           <table className="nt-table">
@@ -73,7 +87,7 @@ export function AlertHistory({ tenantId, types, statuses }: {
                   <tr className="nt-row" onClick={() => setOpen(open === e.id ? null : e.id)}>
                     <td>{fmtTime(e.event_time)}</td>
                     <td>{label(e.event_type)}{e.tit_level ? ` · ${e.tit_level}` : ''}</td>
-                    <td><b>{e.symbol}</b></td>
+                    <td><b>{e.symbol === 'ALL' ? 'All pairs' : e.symbol}</b></td>
                     <td>{e.timeframe}</td>
                     <td>{e.direction ?? '—'}</td>
                     <td>{fmtPrice(e.price, e.symbol)} / {fmtPrice(e.level, e.symbol)}</td>
@@ -87,6 +101,7 @@ export function AlertHistory({ tenantId, types, statuses }: {
                         <div className="detail-list">
                           <div><span>Detected</span><b>{fmtTime(e.detected_at)}</b></div>
                           <div><span>Sent</span><b>{fmtTime(e.sent_at)}</b></div>
+                          {e.event_type === 'AI_OUTLOOK_PUBLISHED' && <OutlookSummary meta={e.metadata} />}
                           {e.status_reason && <div><span>Reason</span><b>{e.status_reason}</b></div>}
                           {e.failure_reason && <div><span>Last failure</span><b>{e.failure_reason}</b></div>}
                         </div>

@@ -289,6 +289,8 @@ class OutlookService:
                              log=_entry("PUBLISHED", f"Immutable outlook published: {counts['published']} analysed, {counts['qualified']} qualified, "
                                                      f"{counts['insufficient']} insufficient data, {counts['failed']} failed"))
             self._audit(conn, store, "AI_OUTLOOK_PUBLISHED", rid, {"analysis_date": day.isoformat(), "origin": origin, "snapshot_id": sid, **counts})
+            if origin == "LIVE":
+                self._notify_published(conn, store.run_by_id(rid) or run, outs, counts, published_at, published_at > asian)
         except Exception as exc:
             log.exception("AI outlook run %s failed", rid)
             conn.rollback()
@@ -298,6 +300,17 @@ class OutlookService:
                              log=_entry("FAILED" if final else "RETRY", f"{type(exc).__name__}: {exc}"[:300]))
             self._audit(conn, store, "AI_OUTLOOK_RUN_FAILED", rid, {"error": str(exc)[:300], "attempts": attempts, "final": final})
         return store.run_by_id(rid)  # type: ignore[return-value]
+
+    def _notify_published(self, conn, run: dict, outs: list[dict], counts: dict, published_at: str, late: bool) -> None:
+        """Queue the "AI Analysis Complete" email; the published outlook is already committed and never depends on mail."""
+        try:
+            from ...notifications.outlook_alert import publish_outlook_published
+
+            publish_outlook_published(conn, run, outs, counts, published_at, late)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            log.warning("AI analysis complete alert could not be queued for run %s", run.get("id"), exc_info=True)
 
     def _audit(self, conn, store: OutlookRepository, action: str, rid: str, after: dict) -> None:
         try:

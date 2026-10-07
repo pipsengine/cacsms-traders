@@ -16,6 +16,7 @@ const FALLBACK_TYPES: { key: AlertType; label: string }[] = [
   { key: 'CHANNEL_TOUCH', label: 'Channel Touch' },
   { key: 'BREAK_RETEST_CONTINUATION', label: 'Break & Retest / Trend Continuation' },
   { key: 'TIT_DETECTED', label: 'TiT Detected' },
+  { key: 'AI_OUTLOOK_PUBLISHED', label: 'AI Analysis Complete' },
 ];
 const FALLBACK_STATUSES = ['DETECTED', 'VALIDATED', 'QUEUED', 'SENDING', 'SENT', 'FAILED', 'RETRY_PENDING', 'SUPPRESSED', 'DUPLICATE'];
 

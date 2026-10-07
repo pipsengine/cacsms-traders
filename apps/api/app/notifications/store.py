@@ -13,7 +13,10 @@ ALERT_TYPES = {
     "CHANNEL_TOUCH": "Channel Touch",
     "BREAK_RETEST_CONTINUATION": "Break & Retest / Trend Continuation",
     "TIT_DETECTED": "Trend-in-Trend (TiT)",
+    "AI_OUTLOOK_PUBLISHED": "AI Analysis Complete",
 }
+# Platform-wide alerts (not tied to one symbol or timeframe): symbol, timeframe and XAUUSD filters do not apply.
+SYSTEM_ALERT_TYPES = frozenset({"AI_OUTLOOK_PUBLISHED"})
 EVENT_STATUSES = ("DETECTED", "VALIDATED", "QUEUED", "SENDING", "SENT", "FAILED", "RETRY_PENDING", "SUPPRESSED", "DUPLICATE")
 DUE_STATUSES = ("QUEUED", "RETRY_PENDING")
 SETTINGS_DEFAULTS = {

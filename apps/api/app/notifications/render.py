@@ -4,6 +4,7 @@ Alerts describe market structure only — never an executed trade, an order or a
 from __future__ import annotations
 
 import html
+import os
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, make_msgid
@@ -49,8 +50,33 @@ def _title(word: str | None) -> str:
     return (word or "—").replace("_", " ").title()
 
 
+def _day(value: str | None) -> str:
+    try:
+        return datetime.fromisoformat(value).strftime("%a %d %b %Y") if value else "—"
+    except ValueError:
+        return value or "—"
+
+
+def _wat(value: str | None) -> str:
+    try:
+        return datetime.fromisoformat(value).astimezone(LAGOS).strftime("%H:%M WAT") if value else "—"
+    except ValueError:
+        return value or "—"
+
+
+def app_link(path: str) -> str | None:
+    base = os.getenv("APP_PUBLIC_URL", "").strip().rstrip("/")
+    if not base and os.getenv("VERCEL_PROJECT_PRODUCTION_URL", "").strip():
+        base = "https://" + os.getenv("VERCEL_PROJECT_PRODUCTION_URL", "").strip().rstrip("/")
+    return f"{base}/#/{path}" if base.startswith(("https://", "http://")) else None
+
+
 def subject(e: dict) -> str:
     sym, tf, t, m = e["symbol"], e.get("timeframe") or "", e["event_type"], e.get("metadata") or {}
+    if t == "AI_OUTLOOK_PUBLISHED":
+        n = (m.get("counts") or {}).get("qualified", 0)
+        return (f"[{BRAND}] {'[Late] ' if m.get('late') else ''}AI Analysis Complete — Outlook for {_day(m.get('outlook_for'))} "
+                f"({n} qualified {'opportunity' if n == 1 else 'opportunities'})")
     if t == "CHANNEL_BREAK":
         return f"[{BRAND}] {sym} {tf} — {_title(e.get('direction'))} Channel Break"
     if t == "CHANNEL_TOUCH":
@@ -144,12 +170,16 @@ def _table(rows: list[tuple[str, str]]) -> str:
     return f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse">{cells}</table>'
 
 
-def _html(title: str, tone: str, sections: list[tuple[str, list[tuple[str, str]]]], intro: str | None = None) -> str:
+def _html(title: str, tone: str, sections: list[tuple[str, list[tuple[str, str]]]], intro: str | None = None,
+          link: tuple[str, str] | None = None) -> str:
     body = "".join(
         f'<tr><td style="padding:18px 22px 6px;font-size:13px;font-weight:700;color:#10203d;text-transform:uppercase;letter-spacing:.06em">'
         f'{html.escape(name)}</td></tr><tr><td style="padding:0 8px 8px">{_table(rows)}</td></tr>'
         for name, rows in sections if rows)
     intro_html = f'<tr><td style="padding:18px 22px 0;font-size:15px;color:#10203d">{html.escape(intro)}</td></tr>' if intro else ""
+    if link:
+        body += (f'<tr><td style="padding:10px 22px 18px"><a href="{html.escape(link[1], quote=True)}" style="display:inline-block;padding:10px 18px;'
+                 f'border-radius:8px;background:#1765ef;color:#ffffff;font-size:14px;font-weight:700;text-decoration:none">{html.escape(link[0])}</a></td></tr>')
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(title)}</title></head>
 <body style="margin:0;padding:0;background:#f2f5fa;font-family:Segoe UI,Roboto,Helvetica,Arial,sans-serif">
@@ -169,7 +199,8 @@ def _html(title: str, tone: str, sections: list[tuple[str, list[tuple[str, str]]
 </table></td></tr></table></body></html>"""
 
 
-def _text(title: str, sections: list[tuple[str, list[tuple[str, str]]]], intro: str | None = None) -> str:
+def _text(title: str, sections: list[tuple[str, list[tuple[str, str]]]], intro: str | None = None,
+          link: tuple[str, str] | None = None) -> str:
     lines = ["CACSMS TRADERS", "Autonomous Market Intelligence Alert", "", title, ""]
     if intro:
         lines += [intro, ""]
@@ -177,6 +208,8 @@ def _text(title: str, sections: list[tuple[str, list[tuple[str, str]]]], intro: 
         if not rows:
             continue
         lines += [name.upper(), *[f"{k.upper()}: {v}" for k, v in rows], ""]
+    if link:
+        lines += [f"{link[0]}: {link[1]}", ""]
     lines += [FOOTER, SAFETY]
     return "\n".join(lines)
 
@@ -197,7 +230,57 @@ def _message(cfg: SmtpConfig, to: str, subj: str, text: str, html_body: str, hea
     return msg
 
 
+def outlook_sections(e: dict) -> tuple[str, list[tuple[str, list[tuple[str, str]]]]]:
+    m = e.get("metadata") or {}
+    c = m.get("counts") or {}
+    asian = _wat(m.get("asian_open"))
+    timing = (f"Late — completed after market open (Asian session opened {asian})" if m.get("late")
+              else f"On time — ready before market open (Asian session opens {asian})")
+    summary = [
+        ("Analysis", f"D1 close of {_day(m.get('analysis_date'))}"),
+        ("Outlook for", _day(m.get("outlook_for"))),
+        ("Completed", _time(m.get("published_at"))),
+        ("Timing", timing),
+        ("Instruments analysed", f"{c.get('published', 0)} of {m.get('total') or '—'}"),
+        ("Qualified opportunities", str(c.get("qualified", 0))),
+        ("Insufficient data / failed", f"{c.get('insufficient', 0)} / {c.get('failed', 0)}"),
+        ("Data provider", provider_label(e.get("provider"))),
+    ]
+    sections = [("Analysis summary", summary)]
+    for o in m.get("opportunities") or []:
+        sym = o.get("symbol") or ""
+        conf = o.get("confidence")
+        head = f"#{o.get('rank') or '—'} {sym} — {_title(o.get('direction'))}" + (f" ({float(conf):.0f}% confidence)" if conf is not None else "")
+        lo, hi = (o.get("erz") or [None, None])[:2]
+        score = o.get("score")
+        sections.append((head, [
+            ("Expected next move", o.get("next_move") or "—"),
+            ("Expected reaction zone (ERZ)", f"{_px(lo, sym)} – {_px(hi, sym)}"),
+            ("Targets", " / ".join(_px(t, sym) for t in o.get("targets") or []) or "—"),
+            ("Invalidation", _px(o.get("invalidation"), sym)),
+            ("Opportunity score", f"{float(score):.0f}" if score is not None else "—"),
+        ]))
+    if not m.get("opportunities"):
+        sections.append(("Opportunities", [("Qualified opportunities", "None today — no instrument met the qualification threshold")]))
+    intro = ("Today's AI market analysis finished after the market opened. The outlook below is still available for review."
+             if m.get("late") else "Today's AI market analysis is complete and ready for review before the market opens.")
+    return intro, sections
+
+
+def outlook_message(cfg: SmtpConfig, e: dict, to: str) -> EmailMessage:
+    m = e.get("metadata") or {}
+    title = ("Late · " if m.get("late") else "") + "AI Analysis Complete"
+    intro, sections = outlook_sections(e)
+    url = app_link("ai-market-outlook/daily")
+    link = ("Open AI Market Outlook", url) if url else None
+    tone = "#b54708" if m.get("late") else "#1765ef"
+    return _message(cfg, to, subject(e), _text(title, sections, intro, link), _html(title, tone, sections, intro, link),
+                    {"X-Cacsms-Alert-Id": e["id"], "X-Cacsms-Alert-Type": e["event_type"]})
+
+
 def alert_message(cfg: SmtpConfig, e: dict, to: str) -> EmailMessage:
+    if e["event_type"] == "AI_OUTLOOK_PUBLISHED":
+        return outlook_message(cfg, e, to)
     title = _alert_label(e) + f" · {e['symbol']}" + (f" {e['timeframe']}" if e.get("timeframe") else "")
     sections = [("Alert summary", summary_rows(e)), ("Event details", detail_rows(e))]
     tone = TONE.get(e.get("direction") or "", "#1765ef")

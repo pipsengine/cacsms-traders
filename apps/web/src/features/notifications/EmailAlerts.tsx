@@ -12,6 +12,7 @@ const TYPE_HINTS: Record<AlertType, string> = {
   CHANNEL_TOUCH: 'Price reaches a boundary zone; re-arms after leaving it',
   BREAK_RETEST_CONTINUATION: 'Break, retest and held continuation',
   TIT_DETECTED: 'Trend-in-Trend setup across the L1–L4 hierarchy',
+  AI_OUTLOOK_PUBLISHED: 'Daily AI analysis is ready before market open, with the top opportunities',
 };
 
 const settingsBody = (s: AlertSettings) => ({
@@ -167,7 +168,7 @@ export function EmailAlerts({ tenantId }: { tenantId: string }) {
           <div className="card-title">
             <div>
               <h2>Alert rules</h2>
-              <p>Which confirmed, closed-candle events are emailed. All four alert types are enabled by default.</p>
+              <p>Which confirmed, closed-candle events and AI analysis updates are emailed. All alert types are enabled by default.</p>
             </div>
             {!data.can_manage && <Status value="READ_ONLY" />}
           </div>

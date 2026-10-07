@@ -1,4 +1,4 @@
-export type AlertType = 'CHANNEL_BREAK' | 'CHANNEL_TOUCH' | 'BREAK_RETEST_CONTINUATION' | 'TIT_DETECTED';
+export type AlertType = 'CHANNEL_BREAK' | 'CHANNEL_TOUCH' | 'BREAK_RETEST_CONTINUATION' | 'TIT_DETECTED' | 'AI_OUTLOOK_PUBLISHED';
 
 export type AlertSettings = {
   email_enabled: boolean;
