@@ -96,8 +96,9 @@ class NormalizedProvider:
             self._health.update(healthy=fresh, market_data_available=fresh, last_error=None if fresh else 'stale_or_missing_candles')
             if fresh:
                 self._health['last_market_data'] = datetime.now(timezone.utc).isoformat()
-        if self.observer and end is None:
-            self.observer(success=True, data_available=fresh, error=None if fresh else 'stale_or_missing_candles')
+        # One stale series must not mark the whole provider unavailable; provider liveness has its own probes.
+        if self.observer and end is None and fresh:
+            self.observer(success=True, data_available=True, error=None)
         return result
 
     def closed_candles(self, symbol, timeframe, count=400):

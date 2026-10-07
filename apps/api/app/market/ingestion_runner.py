@@ -42,10 +42,11 @@ class MarketIngestionRunner:
             accepted += int(self.repo.upsert_candle(row))
         self.repo.conn.commit()
         last = h8[-1].close_time if h8 else None
-        from .ingestion import missing_candles
-        missing = missing_candles(h1)
+        from .ingestion import RECENT_GAP_BARS, broker_offset, missing_candles, recent_gaps
+        offset = broker_offset(self.gateway)
+        missing = missing_candles(h1, offset)
         self._save_quality(store, "H8", last, missing_bars=missing)
-        error = 'missing_candles' if missing else 'stale_candles' if assess(store, 'H8', last).state == 'STALE' else 'missing_candles' if not h8 else None
+        error = 'missing_candles' if recent_gaps(h1, offset, window=RECENT_GAP_BARS * 8) else 'stale_candles' if assess(store, 'H8', last).state == 'STALE' else 'missing_candles' if not h8 else None
         return {"symbol": store, "timeframe": "H8", "accepted": accepted, "rejected": 0, **({'error': error} if error else {})}
 
     def sync_pair_timeframe(self, pair: str, timeframe: str) -> dict:

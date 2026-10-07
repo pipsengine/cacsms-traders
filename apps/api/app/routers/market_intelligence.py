@@ -1,3 +1,5 @@
+import os
+
 from fastapi import APIRouter, HTTPException, Query
 
 from ..core.database import db
@@ -16,10 +18,17 @@ from ..market.strength_intel_store import active_scope, latest_pair_snapshot
 router = APIRouter(prefix="/api/market-intelligence", tags=["Market Intelligence"])
 
 
+def _advance(engine: StrengthEngine) -> None:
+    """Serverless deployments have no background worker, so reads advance the engine (throttled)."""
+    if os.getenv("STRENGTH_ENGINE_ENABLED", "1").strip().lower() not in ("0", "false", "no"):
+        engine.tick_on_demand()
+
+
 def _ready_engine() -> StrengthEngine:
     engine = get_strength_engine()
     if engine.engine_meta() is None or not engine.running:
         engine.seed_from_db()
+        _advance(engine)
     return engine
 
 
@@ -56,6 +65,7 @@ def matrix(
         raise HTTPException(400, f"Unknown calculation mode: {calculation_mode}") from exc
     engine = get_strength_engine()
     engine.seed_from_db()
+    _advance(engine)
     payload = engine.payload(sort_by, mode)
     if payload is None:
         engine.seed_from_db()

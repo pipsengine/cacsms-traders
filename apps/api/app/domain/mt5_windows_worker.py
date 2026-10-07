@@ -1,5 +1,6 @@
 """Read-only Windows MT5 attachment and outbound heartbeat worker."""
 import json
+import math
 import threading
 import urllib.error
 import urllib.request
@@ -8,6 +9,18 @@ from urllib.parse import quote
 from ..market.constants import FX_PAIRS_28
 
 CLOUD_ORIGINS = {'https://cacsms-traders.vercel.app','http://localhost:8000','http://127.0.0.1:8000'}
+M1_TAIL_BARS = 5
+
+
+def valid_bar(r):
+    o,h,l,c = (float(r[k]) for k in ('open','high','low','close'))
+    return all(math.isfinite(v) and v > 0 for v in (o,h,l,c)) and h >= max(o,c,l) and l <= min(o,c,h)
+
+
+def valid_suffix(rows):
+    """Bars after the newest corrupt one: one bad historical bar must not reject the whole upload or leave a gap."""
+    rows = list(rows)
+    return rows[next((i+1 for i in range(len(rows)-1,-1,-1) if not valid_bar(rows[i])),0):]
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -61,11 +74,13 @@ class WindowsBridge:
                 quotes.append(dict(symbol=symbol,provider_symbol=broker,bid=float(tick.bid),ask=float(tick.ask),time=int(tick.time),digits=int(metadata.digits),tick_size=float(metadata.trade_tick_size or metadata.point),pip_size=float(metadata.point)*(10 if metadata.digits in (3,5) else 1)))
             if not history:
                 continue
-            constant = getattr(self.sdk,'TIMEFRAME_'+('MN1' if tf=='MN' else tf))
-            rows = self.sdk.copy_rates_from_pos(broker,constant,1,400)
-            if rows is not None:
-                for r in rows:
-                    candles.append(dict(symbol=symbol,timeframe=tf,time=int(r['time']),open=float(r['open']),high=float(r['high']),low=float(r['low']),close=float(r['close']),tick_volume=int(r['tick_volume']),spread=float(r['spread'])))
+            # M1 goes stale faster than the 9-frame rotation, so every frame also carries a short M1 tail.
+            for frame_tf, count in ((tf, 400),) if tf == 'M1' else ((tf, 400), ('M1', M1_TAIL_BARS)):
+                constant = getattr(self.sdk,'TIMEFRAME_'+('MN1' if frame_tf=='MN' else frame_tf))
+                rows = self.sdk.copy_rates_from_pos(broker,constant,1,count)
+                if rows is not None:
+                    for r in valid_suffix(rows):
+                        candles.append(dict(symbol=symbol,timeframe=frame_tf,time=int(r['time']),open=float(r['open']),high=float(r['high']),low=float(r['low']),close=float(r['close']),tick_volume=int(r['tick_volume']),spread=float(r['spread'])))
         after = self.sdk.account_info()
         if after is None or f'{after.server}/{after.login}' != identity:
             raise RuntimeError('MT5 account changed during sampling. Reconnect from the platform.')

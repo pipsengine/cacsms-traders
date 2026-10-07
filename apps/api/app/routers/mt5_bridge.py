@@ -136,6 +136,14 @@ def heartbeat(tenant_id: str, body: Heartbeat, x_mt5_bridge_token: str = Header(
             opened = datetime.fromtimestamp(bar.time,timezone.utc)
             bars[(bar.symbol,bar.timeframe,bar.time)] = (bar.symbol,bar.timeframe,opened.isoformat(),candle_close(opened,bar.timeframe,body.broker_utc_offset_seconds).isoformat(),bar.open,bar.high,bar.low,bar.close,bar.tick_volume,bar.spread,'mt5',account_id,1)
         values = list(bars.values())
+        # Each uploaded series is a contiguous broker window: drop stored rows inside it that the broker no longer has
+        # (e.g. bars recorded on broker time before UTC normalization) so gaps and duplicates cannot persist.
+        windows = {}
+        for symbol,timeframe,opened,*_ in values:
+            low,high = windows.get((symbol,timeframe),(opened,opened))
+            windows[(symbol,timeframe)] = (min(low,opened),max(high,opened))
+        for (symbol,timeframe),(low,high) in windows.items():
+            conn.execute("DELETE FROM mi_provider_candle WHERE source='mt5' AND account_id=? AND symbol=? AND timeframe=? AND open_time>=? AND open_time<=?", (account_id,symbol,timeframe,low,high))
         for offset in range(0,len(values),200):
             batch = values[offset:offset+200]
             placeholders = ','.join(['('+','.join(['?']*13)+')']*len(batch))

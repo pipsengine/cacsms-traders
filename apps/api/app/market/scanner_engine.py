@@ -150,7 +150,7 @@ class MarketScannerEngine:
         if bootstrap:
             self._gold_bootstrapped = True
 
-    def _analyze(self, repo: MarketRepository, now: datetime, connected: bool) -> None:
+    def _analyze(self, repo: MarketRepository, now: datetime, connected: bool, broker_utc_offset_seconds: int = 0) -> None:
         s = settings()
         out: dict[str, dict] = {}
         for sym in SCANNER_UNIVERSE:
@@ -170,7 +170,8 @@ class MarketScannerEngine:
             invalid = []
             for tf in STRUCTURE_TIMEFRAMES:
                 history = bars[tf]
-                if len(history) < 2 or assess(sym,tf,candle_close(history[-1].t,tf) if history else None).state == 'STALE' or any(missing_between(a.t,b.t,tf) for a,b in zip(history,history[1:])):
+                offset = broker_utc_offset_seconds
+                if len(history) < 2 or assess(sym,tf,candle_close(history[-1].t,tf,offset) if history else None).state == 'STALE' or any(missing_between(a.t,b.t,tf,offset) for a,b in zip(history,history[1:])):
                     invalid.append(tf)
             if invalid:
                 out[sym] = {'excluded': 'Missing or stale closed history: ' + ', '.join(invalid)}
@@ -246,7 +247,8 @@ class MarketScannerEngine:
                     except Exception as exc:
                         self._gold_error = str(exc)
                         log.warning("XAUUSD ingestion failed: %s", exc)
-                self._analyze(repo, now, connected)
+                from .ingestion import broker_offset
+                self._analyze(repo, now, connected, broker_offset(gw) if gw is not None else 0)
                 self._cycle_mono = time.monotonic()
             if gw is not None:
                 self._refresh_quotes(gw)

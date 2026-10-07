@@ -46,6 +46,7 @@ STALE_AFTER_SECONDS = 120.0
 BOOTSTRAP_RETRY_SECONDS = 60.0
 MODE_INTEREST_SECONDS = 30.0
 REFERENCE_REFRESH_SECONDS = 60.0
+ON_DEMAND_INTERVAL_SECONDS = _env_float("STRENGTH_ON_DEMAND_SECONDS", 15.0)
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -80,6 +81,9 @@ class StrengthEngine:
         self._reference: tuple[datetime, Scores] | None = None
         self._reference_mono = 0.0
         self._scores_sig: tuple | None = None
+        self._on_demand = False
+        self._demand_lock = threading.Lock()
+        self._last_demand_mono = 0.0
 
     @property
     def running(self) -> bool:
@@ -105,16 +109,37 @@ class StrengthEngine:
         except Exception:
             log.exception("Strength score backfill failed")
         while not self._stop.is_set():
-            try:
-                self._tick()
-            except Exception as exc:
-                log.exception("Strength engine tick failed")
-                with self._lock:
-                    self._state = "ERROR"
-                    self._error = str(exc)
-                    self._ctx["provider_status"] = "ERROR"
-                    self._ctx["error_code"] = "market_data_sync_failed"
+            self._safe_tick()
             self._stop.wait(POLL_SECONDS)
+
+    def _safe_tick(self) -> None:
+        try:
+            self._tick()
+        except Exception as exc:
+            log.exception("Strength engine tick failed")
+            with self._lock:
+                self._state = "ERROR"
+                self._error = str(exc)
+                self._ctx["provider_status"] = "ERROR"
+                self._ctx["error_code"] = "market_data_sync_failed"
+
+    def tick_on_demand(self) -> None:
+        """Advance the engine inside an API request where no background worker can live (serverless).
+
+        Throttled and non-blocking: concurrent requests return the cached state while one request ticks.
+        """
+        if self.running:
+            return
+        self._on_demand = True
+        if time.monotonic() - self._last_demand_mono < ON_DEMAND_INTERVAL_SECONDS:
+            return
+        if not self._demand_lock.acquire(blocking=False):
+            return
+        try:
+            self._safe_tick()
+        finally:
+            self._last_demand_mono = time.monotonic()
+            self._demand_lock.release()
 
     def _probe(self, gw, tf: str) -> int | None:
         try:
@@ -363,7 +388,7 @@ class StrengthEngine:
             if not ctx['market_data_ready']:
                 self._result = None
                 self._state = ctx['provider_status']
-            elif not self.running:
+            elif not self.running and not self._on_demand:
                 self._state = 'WORKER_UNAVAILABLE'
             elif not same_scope:
                 self._state = 'SYNCING'

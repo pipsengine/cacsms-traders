@@ -65,6 +65,14 @@ def test_broker_three_hour_clock_is_normalized_without_refreshing_stale_ticks():
     assert worker.sample(history=False)['quotes'][0]['time']==stamp-300
 
 
+def test_corrupt_historical_bar_is_dropped_with_everything_older():
+    from apps.api.app.domain.mt5_windows_worker import valid_suffix
+    bar = lambda low: {'open':1.1,'high':1.2,'low':low,'close':1.15}
+    rows = [bar(1.0), bar(0.0), bar(1.0), bar(1.05)]
+    assert valid_suffix(rows) == rows[2:]
+    assert valid_suffix(rows[2:]) == rows[2:]
+
+
 def test_weekend_ticks_are_never_shifted_to_the_present():
     terminal = sdk()
     terminal.symbols_get.return_value=[SimpleNamespace(name='EURUSD')]

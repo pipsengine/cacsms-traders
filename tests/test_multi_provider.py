@@ -11,7 +11,7 @@ from apps.api.app.market.provider_manager import ProviderManager, select_provide
 from apps.api.app.market.models import Candle, StrengthPoint
 from apps.api.app.market.repository import MarketRepository
 from apps.api.app.market.normalized_provider import NormalizedProvider, candle_close
-from apps.api.app.market.ingestion import CandleIngestionService, missing_candles
+from apps.api.app.market.ingestion import CandleIngestionService, missing_between, missing_candles, recent_gaps
 from apps.api.app.market.h8_aggregate import aggregate_h8_from_h1
 from apps.api.app.domain.execution_binding import bind_campaign
 from apps.api.app.market.constants import FX_PAIRS_28, MATRIX_TIMEFRAMES
@@ -122,6 +122,43 @@ def test_missing_and_stale_candles_are_reported_not_fabricated(conn):
     assert conn.execute('SELECT COUNT(*) FROM mi_provider_candle').fetchone()[0] == 2
     gateway.closed_candles.return_value = [candle(), candle(opened=T0 + timedelta(hours=1))]
     assert CandleIngestionService(gateway, MarketRepository(conn, provider='mt5')).sync('EURUSD', 'H1')['error'] == 'stale_candles'
+
+
+def test_broker_clock_weekends_and_months_are_not_gaps():
+    offset = 10800
+    utc = lambda *a: datetime(*a, tzinfo=timezone.utc) - timedelta(seconds=offset)
+    assert missing_between(utc(2026, 10, 2, 23), utc(2026, 10, 5, 0), 'H1', offset) == 0
+    assert missing_between(utc(2026, 10, 2, 23, 45), utc(2026, 10, 5, 0), 'M15', offset) == 0
+    assert missing_between(utc(2026, 10, 2), utc(2026, 10, 5), 'D1', offset) == 0
+    assert missing_between(utc(2026, 8, 1), utc(2026, 9, 1), 'MN', offset) == 0
+    assert missing_between(utc(2026, 10, 5, 10), utc(2026, 10, 5, 12), 'H1', offset) == 1
+    assert missing_between(utc(2025, 12, 24), utc(2025, 12, 26), 'D1', offset) == 0
+    assert missing_between(utc(2025, 12, 31), utc(2026, 1, 2), 'D1', offset) == 0
+
+
+def test_only_recent_gaps_block_and_lone_tickless_intraday_bars_are_tolerated():
+    hourly = [candle(opened=T0 + timedelta(hours=i)) for i in (0, 2, *range(3, 20))]
+    assert missing_candles(hourly) == 1 and recent_gaps(hourly) == 0
+    assert recent_gaps(hourly[-5:] + [candle(opened=T0 + timedelta(hours=21))]) == 1
+    minutes = [candle(opened=T0 + timedelta(minutes=m), tf='M1') for m in (0, 1, 3, 4, 7)]
+    assert recent_gaps(minutes) == 2
+
+
+def test_stale_series_does_not_mark_provider_unavailable():
+    adapter = Mock()
+    adapter.closed_candles.return_value = [candle()]
+    observer = Mock()
+    NormalizedProvider(adapter, 'mt5', observer=observer).get_closed_candles('EURUSD', 'H1')
+    assert all(call.kwargs.get('data_available', True) for call in observer.call_args_list)
+
+
+def test_persisted_bridge_candles_are_not_rewritten(conn):
+    adapter = Mock(candles_persisted=True)
+    adapter.closed_candles.return_value = [candle(opened=NOW.replace(minute=0, second=0, microsecond=0) - timedelta(hours=2))]
+    repo = MarketRepository(conn, provider='mt5')
+    result = CandleIngestionService(NormalizedProvider(adapter, 'mt5'), repo).sync('EURUSD', 'H1')
+    assert result['accepted'] == 1
+    assert conn.execute('SELECT COUNT(*) FROM mi_provider_candle').fetchone()[0] == 0
 
 
 def test_h8_refuses_mixed_sources_and_noncontiguous_bars():

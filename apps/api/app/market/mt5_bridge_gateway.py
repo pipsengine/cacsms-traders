@@ -6,6 +6,8 @@ from .provider_contract import MarketDataUnavailable
 
 
 class MT5BridgeGateway:
+    candles_persisted = True
+
     def __init__(self, conn, tenant_id):
         self.conn, self.tenant_id = conn, tenant_id
 

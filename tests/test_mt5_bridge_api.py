@@ -78,6 +78,26 @@ def test_bridge_rejects_live_bar_and_stale_heartbeat_fails_closed(client):
         assert market_context(conn)['active_provider'] is None
 
 
+def test_uploaded_window_replaces_bars_the_broker_no_longer_has(client):
+    tenant,headers,bridge_headers = pairing(client)
+    url = f'/api/tenants/{tenant}/mt5-bridge/heartbeat'
+    body = payload()
+    first = body['candles'][0]
+    body['candles'] = [{**first,'time':first['time']-3600*i} for i in (4,0)]
+    response = client.post(url,headers=bridge_headers,json=body)
+    assert response.status_code == 200, response.text
+    account_id = response.json()['account_id']
+    from apps.api.app.core.database import db
+    def stored():
+        with db() as conn:
+            return [r['open_time'] for r in conn.execute("SELECT open_time FROM mi_provider_candle WHERE account_id=? AND symbol='EURUSD' AND timeframe='H1' ORDER BY open_time",(account_id,)).fetchall()]
+    assert len(stored()) == 2
+    body['candles'] = [{**first,'time':first['time']-3600*i} for i in (5,3,2,1,0)]
+    assert client.post(url,headers=bridge_headers,json=body).status_code == 200
+    expected = [datetime.fromtimestamp(first['time']-3600*i,timezone.utc).isoformat() for i in (5,3,2,1,0)]
+    assert stored() == expected
+
+
 def test_bridge_accepts_normalized_broker_time_and_preserves_month_boundary(client):
     tenant,headers,bridge_headers=pairing(client)
     body=payload()

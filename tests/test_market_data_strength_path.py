@@ -87,6 +87,22 @@ def test_stopped_worker_returns_diagnostics_without_seed_calculation(monkeypatch
     assert engine.payload()['matrix'] == []
 
 
+def test_serverless_reads_advance_engine_with_throttle(monkeypatch):
+    c = connection()
+    @contextmanager
+    def db():
+        yield c
+    monkeypatch.setattr(strength_engine, 'db', db)
+    monkeypatch.setattr(strength_engine, 'market_context', lambda c: dict(active_provider='mt5', market_data_ready=True, provider_status='CONNECTED'))
+    engine = strength_engine.StrengthEngine()
+    engine._tick = Mock()
+    engine.tick_on_demand()
+    engine.tick_on_demand()
+    assert engine._tick.call_count == 1
+    engine.seed_from_db()
+    assert engine.payload()['meta']['engine_state'] != 'WORKER_UNAVAILABLE'
+
+
 def test_diagnostics_support_postgres_dictionary_rows(monkeypatch):
     from apps.api.app.routers import ctrader
     monkeypatch.setattr(ctrader, 'ctrader_config', lambda: {'configured': True})
