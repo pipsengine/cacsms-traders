@@ -154,12 +154,15 @@ class OutlookRepository:
     def summaries(self, run_id: str) -> list[dict]:
         """Per-instrument summary rows for the published-run table, without transferring every full payload."""
         cols = "id, symbol, status, qualified, opportunity_rank, opportunity_score, direction, confidence"
+        # Every extracted column needs an alias: PostgreSQL dict rows would otherwise collapse them all into "?column?".
         if getattr(self.conn, "provider", "sqlite") == "sqlite":
-            sql = (f"SELECT {cols}, json_extract(payload_json,'$.regime.label'), json_extract(payload_json,'$.reason'), "
-                   "json_extract(payload_json,'$.system_action'), json_extract(payload_json,'$.price'), json_extract(payload_json,'$.digits'), "
-                   "json_extract(payload_json,'$.late') FROM ai_outlook_symbol WHERE run_id=?")
+            sql = (f"SELECT {cols}, json_extract(payload_json,'$.regime.label') AS regime_label, json_extract(payload_json,'$.reason') AS reason, "
+                   "json_extract(payload_json,'$.system_action') AS system_action, json_extract(payload_json,'$.price') AS price, "
+                   "json_extract(payload_json,'$.digits') AS digits, json_extract(payload_json,'$.late') AS late "
+                   "FROM ai_outlook_symbol WHERE run_id=?")
         else:
-            sql = (f"SELECT {cols}, p->'regime'->>'label', p->>'reason', (p->'system_action')::text, p->>'price', p->>'digits', p->>'late' "
+            sql = (f"SELECT {cols}, p->'regime'->>'label' AS regime_label, p->>'reason' AS reason, (p->'system_action')::text AS system_action, "
+                   "p->>'price' AS price, p->>'digits' AS digits, p->>'late' AS late "
                    f"FROM (SELECT {cols}, payload_json::json AS p FROM ai_outlook_symbol WHERE run_id=?) s")
         out = []
         for r in self.conn.execute(sql, (run_id,)).fetchall():

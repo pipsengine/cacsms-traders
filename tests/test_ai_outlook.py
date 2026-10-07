@@ -427,6 +427,14 @@ def test_latest_summary_reads_match_full_payloads_and_due_gate(service_env):
             assert (batched.get(oid) or {}).get("status") == (one or {}).get("status")
             assert (batched.get(oid) or {}).get("system_action") == (one or {}).get("system_action")
         assert store.latest_revisions([]) == {}
+        raw = conn._raw
+        before = raw.row_factory
+        raw.row_factory = lambda cur, row: {d[0]: v for d, v in zip(cur.description, row)}
+        try:
+            assert store.summaries(run["id"]) == summaries
+            assert store.latest_revisions(published) == batched
+        finally:
+            raw.row_factory = before
         conn.execute("UPDATE ai_outlook_run SET monitored_at=? WHERE id=?", (now.isoformat(), run["id"]))
         conn.commit()
     finally:
