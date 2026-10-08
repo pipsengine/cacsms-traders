@@ -7,11 +7,11 @@ import { StagePipeline } from '../features/autonomous/components/StagePipeline';
 import { StageDetails } from '../features/autonomous/components/StageDetails';
 import { OpportunitiesTable } from '../features/autonomous/components/OpportunitiesTable';
 import { HistoryDrawer } from '../features/autonomous/components/HistoryDrawer';
-import type { Opportunity, StageFilters, StageKey } from '../features/autonomous/types';
+import type { Opportunity, StageFilters, StageKey, StageSummary } from '../features/autonomous/types';
 
 const LIVE_MS = 1000;
 const CATCH_UP_MS = 15000;
-const STAGE_KEY = 'ae_stage';
+const PIN_KEY = 'ae_stage_pin';
 const STAGE_KEYS: StageKey[] = [
   'MARKET_DATA',
   'INTELLIGENCE',
@@ -26,6 +26,18 @@ const STAGE_KEYS: StageKey[] = [
   'LEARNING',
 ];
 
+/** Furthest stage that still has open work. Channel is not the end of the pipeline. */
+function furthestLive(stages: StageSummary[]): StageKey | null {
+  const order: StageKey[] = ['RISK', 'CONFIRMATION', 'OPPORTUNITY'];
+  const by = new Map(stages.map((s) => [s.key, s]));
+  for (const key of order) {
+    const s = by.get(key);
+    if (!s || s.status === 'PENDING') continue;
+    if (s.active > 0 || s.waiting > 0 || s.status === 'RUNNING') return key;
+  }
+  return null;
+}
+
 function usePageVisible() {
   const [visible, setVisible] = useState(() => typeof document === 'undefined' || document.visibilityState === 'visible');
   useEffect(() => {
@@ -38,10 +50,11 @@ function usePageVisible() {
 
 export function AutonomousEngine() {
   const visible = usePageVisible();
-  const [stage, setStage] = useState<StageKey>(() => {
-    const saved = localStorage.getItem(STAGE_KEY) as StageKey | null;
-    return saved && STAGE_KEYS.includes(saved) ? saved : 'CHANNEL';
+  const [pinned, setPinned] = useState<StageKey | null>(() => {
+    const saved = localStorage.getItem(PIN_KEY) as StageKey | null;
+    return saved && STAGE_KEYS.includes(saved) ? saved : null;
   });
+  const [stage, setStage] = useState<StageKey>(pinned ?? 'OPPORTUNITY');
   const [filters, setFilters] = useState<StageFilters>({ symbol: '', timeframe: '', provider: '' });
   const [history, setHistory] = useState<Opportunity | 'ALL' | null>(null);
   const [resumeError, setResumeError] = useState('');
@@ -84,12 +97,22 @@ export function AutonomousEngine() {
   }, [visible]);
 
   const select = (k: StageKey) => {
+    setPinned(k);
     setStage(k);
-    localStorage.setItem(STAGE_KEY, k);
+    localStorage.setItem(PIN_KEY, k);
+  };
+  const follow = () => {
+    setPinned(null);
+    localStorage.removeItem(PIN_KEY);
   };
 
   const data = overview.data;
   const stages = data?.stages ?? [];
+  const live = furthestLive(stages);
+  useEffect(() => {
+    if (pinned) return;
+    if (live) setStage(live);
+  }, [pinned, live]);
   const summary = stages.find((s) => s.key === stage) ?? null;
   const safety = data?.safety;
   const critical = safety && (safety.status === 'CRITICAL' || safety.status === 'HALTED');
@@ -136,7 +159,16 @@ export function AutonomousEngine() {
       ) : null}
       </div>
 
-      <StagePipeline stages={stages} selected={stage} onSelect={select} loading={overview.loading} />
+      <div className="ae-pipeline-bar">
+        <StagePipeline stages={stages} selected={stage} live={live} onSelect={select} loading={overview.loading} />
+        {pinned ? (
+          <button type="button" className="ae-follow" onClick={follow}>
+            Follow live stage
+          </button>
+        ) : (
+          <span className="ae-follow is-on">Following the live stage</span>
+        )}
+      </div>
 
       <StageDetails
         summary={summary}

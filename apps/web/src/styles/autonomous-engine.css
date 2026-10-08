@@ -80,6 +80,11 @@ td.ae-clip.is-task { max-width: 150px; }
 .ae-stage { --stage: #2563eb; position: relative; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 14px 8px 12px; background: #fff; border: 1px solid var(--ae-line); border-radius: 14px; box-shadow: var(--ae-shadow); cursor: pointer; text-align: center; font: inherit; color: inherit; min-width: 0; min-height: 156px; transition: box-shadow .15s, transform .15s, border-color .15s; }
 .ae-stage:hover { transform: translateY(-1px); box-shadow: 0 8px 20px rgba(16, 24, 40, .08); }
 .ae-stage.is-selected { border: 2px solid var(--stage); box-shadow: 0 8px 22px color-mix(in srgb, var(--stage) 18%, transparent); }
+.ae-stage.is-live:not(.is-selected)::after { content: 'Live'; position: absolute; top: 6px; right: 6px; font-size: 9px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; color: var(--stage); }
+.ae-pipeline-bar { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; min-width: 0; }
+.ae-pipeline-bar .ae-pipeline { width: 100%; }
+.ae-follow { border: 1px solid var(--ae-line); background: #fff; color: #1765ef; border-radius: 999px; padding: 3px 10px; font-size: 11px; font-weight: 700; cursor: pointer; }
+.ae-follow.is-on { color: #0f766e; cursor: default; }
 .ae-stage.is-stale { opacity: .82; }
 .ae-stage strong { font-size: 12.5px; line-height: 1.2; min-height: 30px; display: flex; align-items: center; font-weight: 800; color: #0f172a; }
 .ae-stage-icon { position: relative; width: 40px; height: 40px; margin-top: 4px; border-radius: 50%; display: grid; place-items: center; color: var(--stage); background: color-mix(in srgb, var(--stage) 12%, #fff); }
@@ -182,6 +187,7 @@ td.ae-clip.is-task { max-width: 150px; }
 .ae-chart-plot { min-width: 0; min-height: 0; height: 100%; }
 .ae-chart-sym { color: #64748b; font-weight: 700; }
 .ae-structure-chart.mst-card { border: 0; box-shadow: none; padding: 0; background: transparent; }
+.ae-structure-chart .mst-zoom { opacity: 1; }
 .ae-structure-chart .mst-chart-head { display: none; }
 .ae-chart-stats { margin: 4px 0 0; display: flex; flex-direction: column; gap: 0; font-size: 12px; }
 .ae-chart-stats div { display: flex; justify-content: space-between; gap: 8px; align-items: center; padding: 7px 0; border-bottom: 1px solid #f1f5f9; }

@@ -47,11 +47,13 @@ export const STAGE_ICON: Record<StageKey, ReactNode> = {
 export function StagePipeline({
   stages,
   selected,
+  live,
   onSelect,
   loading,
 }: {
   stages: StageSummary[];
   selected: StageKey;
+  live?: StageKey | null;
   onSelect: (k: StageKey) => void;
   loading: boolean;
 }) {
@@ -76,7 +78,7 @@ export function StagePipeline({
           <button
             type="button"
             key={s.key}
-            className={`ae-stage ${selected === s.key ? 'is-selected' : ''} ${s.stale ? 'is-stale' : ''}`}
+            className={`ae-stage ${selected === s.key ? 'is-selected' : ''} ${live === s.key ? 'is-live' : ''} ${s.stale ? 'is-stale' : ''}`}
             style={{ '--stage': s.color } as CSSProperties}
             onClick={() => onSelect(s.key)}
             aria-pressed={selected === s.key}
