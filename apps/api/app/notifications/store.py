@@ -205,7 +205,10 @@ class NotificationStore:
         """Top-bar bell: every event that passed the alert rules (emailed or not), newest first."""
         visible = "tenant_id=? AND (status<>'SUPPRESSED' OR status_reason=? OR status_reason LIKE ?)"
         scope = (self.tenant, EMAIL_OFF_REASON, SMTP_NOT_READY_REASON + "%")
-        unread = self.conn.execute(f"SELECT COUNT(*) FROM alert_events WHERE {visible} AND detected_at>?", (*scope, since)).fetchone()[0]
+        counted = self.conn.execute(
+            f"SELECT COUNT(*) AS unread FROM alert_events WHERE {visible} AND detected_at>?", (*scope, since)
+        ).fetchone()
+        unread = values(counted)[0] if counted else 0
         cols = ("id", "event_type", "symbol", "timeframe", "direction", "status", "detected_at", "metadata_json")
         rows = self.conn.execute(
             f"SELECT {','.join(cols)} FROM alert_events WHERE {visible} ORDER BY detected_at DESC LIMIT ?", (*scope, limit)).fetchall()
@@ -214,6 +217,8 @@ class NotificationStore:
             d = _row(r, cols)
             meta = _json(d.pop("metadata_json"), {})
             d["label"] = ALERT_TYPES.get(d["event_type"], d["event_type"])
+            detected = d["detected_at"]
+            d["detected_at"] = detected if isinstance(detected, str) else detected.isoformat()
             d["unread"] = d["detected_at"] > since
             if d["event_type"] in SYSTEM_ALERT_TYPES:
                 d["qualified"] = (meta.get("counts") or {}).get("qualified")

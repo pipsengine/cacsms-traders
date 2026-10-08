@@ -6,6 +6,7 @@ CTRADER_REDIRECT_URI, CTRADER_ENVIRONMENT). Neither they nor the issued tokens a
 from __future__ import annotations
 
 import datetime
+import hmac
 import json
 import logging
 import os
@@ -19,7 +20,7 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
@@ -49,7 +50,18 @@ TOKEN_URL = "https://openapi.ctrader.com/apps/token"
 STATE_TTL = datetime.timedelta(minutes=10)
 REGISTERED_REDIRECT_URI = "https://cacsms-traders.vercel.app/api/connections/ctrader/callback"
 APP_RETURN = "/?ctrader={result}#/system-control/mt5"
-ACCOUNT_DISCOVERY_TIMEOUT = 22
+ACCOUNT_DISCOVERY_TIMEOUT = 14
+LIVE_AUTH_TIMEOUT = 12
+DISCOVERY_COOLDOWN = datetime.timedelta(seconds=45)
+DISCOVERY_IN_FLIGHT = datetime.timedelta(seconds=20)
+RETRY_LATER = {"transport_timeout", "provider_timeout", "provider_unavailable"}
+PROVIDER_MESSAGES = {
+    "transport_timeout": "cTrader did not open a broker connection. No trading account was authenticated.",
+    "provider_timeout": "cTrader did not return the authorized account list in time. No account was marked connected.",
+    "provider_unavailable": "cTrader account discovery failed before a broker session was confirmed.",
+    "no_authorized_accounts": "cTrader returned no authorized trading accounts.",
+    "account_auth_timeout": "The account list was received, but account authentication did not finish.",
+}
 
 
 class CTraderProviderError(RuntimeError):
@@ -268,7 +280,9 @@ def status(tenant_id: str = Query(...), user=Depends(current_user)):
             "environment": account["environment"] if account["environment"] in ("demo", "live") else "demo",
             "currency": account["currency_code"],
             "authorization": (
-                row["authorization_status"]
+                account["authorization_status"]
+                if account["authorization_status"] != "AUTHORIZED"
+                else row["authorization_status"]
                 if row is not None and row["authorization_status"] != "AUTHORIZED"
                 else "UNVERIFIED"
                 if row is not None and row["connection_status"] != "CONNECTED"
@@ -311,6 +325,7 @@ def status(tenant_id: str = Query(...), user=Depends(current_user)):
         "last_error_code": APP_INACTIVE if inactive else row["last_error_code"] if row else None,
         "accounts": safe_accounts,
         "diagnostics": _diagnostics(config_error, app_state, dict(row) if row else None, safe_accounts, provider_status),
+        "discovery": _stored_discovery(row),
         "execution_available": False,
     }
 
@@ -364,35 +379,100 @@ def _refresh(cfg: dict, refresh_token: str) -> dict:
     )
 
 
-def _discover_accounts(access_token: str) -> list[dict]:
+def _provider_message(code: str) -> str:
+    return PROVIDER_MESSAGES.get(code, "cTrader account discovery is temporarily unavailable")
+
+
+def account_was_authenticated(account: dict) -> bool:
+    """Legacy discovery results without an explicit flag were already account-authenticated."""
+    if "authenticated" not in account:
+        return True
+    return bool(account.get("authenticated"))
+
+
+def discovery_connection_status(accounts: list[dict]) -> str:
+    if not accounts:
+        return "NO_ACCOUNTS"
+    if any(account_was_authenticated(account) for account in accounts):
+        return "CONNECTED"
+    return "DEGRADED"
+
+
+def _run_worker(payload: dict, timeout: int) -> dict:
     worker = Path(ctrader_discovery_worker.__file__).resolve()
     try:
         result = subprocess.run(
             [sys.executable, str(worker)],
-            input=json.dumps({"environment": "demo", "access_token": access_token}),
+            input=json.dumps(payload),
             capture_output=True,
             text=True,
-            timeout=ACCOUNT_DISCOVERY_TIMEOUT,
+            timeout=timeout,
             check=False,
         )
     except subprocess.TimeoutExpired:
-        raise CTraderProviderError("provider_timeout") from None
+        return {"accounts": [], "error": "provider_timeout", "stage": "worker", "market_data": "unverified"}
     except OSError:
-        raise CTraderProviderError("provider_unavailable") from None
+        return {"accounts": [], "error": "provider_unavailable", "stage": "worker", "market_data": "unverified"}
     marker = next((line[len("CTRADER_RESULT:"):] for line in reversed(result.stdout.splitlines()) if line.startswith("CTRADER_RESULT:")), None)
     if marker is None:
-        raise CTraderProviderError("provider_unavailable")
+        return {"accounts": [], "error": "provider_unavailable", "stage": "worker", "market_data": "unverified"}
     try:
-        payload = json.loads(marker)
+        body = json.loads(marker)
     except ValueError:
-        raise CTraderProviderError("invalid_provider_response") from None
-    if result.returncode or payload.get("error"):
-        raise CTraderProviderError(str(payload.get("error") or "provider_unavailable"))
-    accounts = payload.get("accounts")
-    if not isinstance(accounts, list) or not accounts:
-        raise CTraderProviderError("no_demo_accounts")
+        return {"accounts": [], "error": "invalid_provider_response", "stage": "worker", "market_data": "unverified"}
+    if not isinstance(body, dict):
+        return {"accounts": [], "error": "invalid_provider_response", "stage": "worker", "market_data": "unverified"}
+    return body
+
+
+def _discover_accounts(access_token: str) -> list[dict]:
+    demo = _run_worker({"environment": "demo", "access_token": access_token, "action": "discover"}, ACCOUNT_DISCOVERY_TIMEOUT)
+    accounts = demo.get("accounts") if isinstance(demo.get("accounts"), list) else []
+    error = str(demo.get("error") or "")
+    fatal = {APP_INACTIVE, "CH_ACCESS_TOKEN_INVALID", "invalid_grant", "not_configured", "invalid_provider_response"}
+    diagnostic = {key: demo.get(key) for key in ("stage", "market_data", "error", "host")}
+    if error in fatal or (error and not accounts):
+        _discover_accounts.last_diagnostic = diagnostic
+        raise CTraderProviderError(error or "provider_unavailable")
+    live_ids = [
+        account["ctid_trader_account_id"]
+        for account in accounts
+        if account.get("environment") == "live" and not account_was_authenticated(account)
+    ]
+    market_data = demo.get("market_data") or "unverified"
+    if live_ids:
+        live = _run_worker(
+            {"environment": "live", "access_token": access_token, "action": "authenticate", "account_ids": live_ids},
+            LIVE_AUTH_TIMEOUT,
+        )
+        by_id = {
+            item.get("ctid_trader_account_id"): item
+            for item in (live.get("accounts") or [])
+            if isinstance(item, dict)
+        }
+        for account in accounts:
+            extra = by_id.get(account.get("ctid_trader_account_id"))
+            if not extra:
+                continue
+            if extra.get("authenticated"):
+                account["authenticated"] = True
+                account.pop("auth_error", None)
+            elif extra.get("auth_error"):
+                account["auth_error"] = extra["auth_error"]
+        if live.get("market_data") == "ok":
+            market_data = "ok"
     if any(account.get("environment") not in ("demo", "live") or not account.get("ctid_trader_account_id") for account in accounts):
         raise CTraderProviderError("invalid_provider_response")
+    if not accounts:
+        raise CTraderProviderError("no_authorized_accounts")
+    _discover_accounts.last_diagnostic = {
+        "stage": "market_data" if market_data == "ok" else "account_auth",
+        "market_data": market_data,
+        "error": None,
+        "host": demo.get("host") or "demo",
+        "authenticated_accounts": sum(1 for account in accounts if account_was_authenticated(account)),
+        "discovered_accounts": len(accounts),
+    }
     return accounts
 
 
@@ -432,8 +512,15 @@ def _persist_tokens(tenant_id: str, user_id: str, payload: dict) -> None:
         write_audit(c, tenant_id, user_id, "CTRADER_OAUTH_COMPLETED", "CtraderConnection", tenant_id, after={"environment": "demo", "scope": "accounts"})
 
 
+def _discovery_diagnostic() -> dict:
+    diagnostic = getattr(_discover_accounts, "last_diagnostic", None)
+    return diagnostic if isinstance(diagnostic, dict) else {}
+
+
 def _persist_accounts(tenant_id: str, user_id: str, accounts: list[dict]) -> None:
     timestamp = iso()
+    connection_status = discovery_connection_status(accounts)
+    diagnostic = json.dumps({**_discovery_diagnostic(), "connection_status": connection_status})
     with db() as c:
         record_application_state(c, 'ACTIVE')
         c.execute(
@@ -445,14 +532,15 @@ def _persist_accounts(tenant_id: str, user_id: str, accounts: list[dict]) -> Non
                 """INSERT INTO ctrader_accounts(
                      tenant_id,ctid_trader_account_id,trader_login,broker_name,account_type,environment,currency_code,
                      authorization_status,last_synced_at,created_at,updated_at)
-                   VALUES(?,?,?,?,?,?,?,'AUTHORIZED',?,?,?)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(tenant_id,ctid_trader_account_id) DO UPDATE SET
                      trader_login=excluded.trader_login,broker_name=excluded.broker_name,account_type=excluded.account_type,
-                     environment=excluded.environment,currency_code=excluded.currency_code,authorization_status='AUTHORIZED',
+                     environment=excluded.environment,currency_code=excluded.currency_code,authorization_status=excluded.authorization_status,
                      last_synced_at=excluded.last_synced_at,updated_at=excluded.updated_at""",
                 (
                     tenant_id, str(account["ctid_trader_account_id"]), account.get("trader_login"), account.get("broker_name"),
-                    account.get("account_type"), account.get("environment") or "demo", account.get("currency_code"), timestamp, timestamp, timestamp,
+                    account.get("account_type"), account.get("environment") or "demo", account.get("currency_code"),
+                    "AUTHORIZED" if account_was_authenticated(account) else "DISCOVERED", timestamp, timestamp, timestamp,
                 ),
             )
             write_audit(
@@ -464,11 +552,13 @@ def _persist_accounts(tenant_id: str, user_id: str, accounts: list[dict]) -> Non
                 tenant_id,
                 after={"environment": account.get("environment") or "demo", "broker": account.get("broker_name"), "account_type": account.get("account_type")},
             )
+        success_at = timestamp if connection_status == "CONNECTED" else None
         c.execute(
-            """UPDATE ctrader_connections SET authorization_status='AUTHORIZED',connection_status='CONNECTED',
-                 permission_scope='accounts',last_successful_connection_at=?,last_sync_at=?,last_error_code=NULL,updated_at=?
+            """UPDATE ctrader_connections SET authorization_status='AUTHORIZED',connection_status=?,
+                 permission_scope='accounts',last_successful_connection_at=COALESCE(?,last_successful_connection_at),
+                 last_sync_at=?,last_error_code=NULL,last_diagnostic_json=?,last_attempt_at=?,updated_at=?
                WHERE tenant_id=? AND environment='demo'""",
-            (timestamp, timestamp, timestamp, tenant_id),
+            (connection_status, success_at, timestamp, diagnostic, timestamp, timestamp, tenant_id),
         )
 
 
@@ -489,10 +579,11 @@ def _record_failure(
             record_application_state(c, 'APP_INACTIVE')
         elif application_state(c) == 'AUTHORIZING':
             record_application_state(c, 'UNKNOWN')
+        diagnostic = json.dumps({**_discovery_diagnostic(), "error": code[:80], "connection_status": connection_status})
         c.execute(
             """UPDATE ctrader_connections SET connection_status=?,authorization_status=COALESCE(?,authorization_status),
-                 last_error_code=?,updated_at=? WHERE tenant_id=? AND environment='demo'""",
-            (connection_status, authorization_status, code[:80], timestamp, tenant_id),
+                 last_error_code=?,last_diagnostic_json=?,last_attempt_at=?,updated_at=? WHERE tenant_id=? AND environment='demo'""",
+            (connection_status, authorization_status, code[:80], diagnostic, timestamp, timestamp, tenant_id),
         )
         if authorization_status == "REAUTH_REQUIRED":
             c.execute(
@@ -623,6 +714,80 @@ def callback(code: str | None = None, state: str | None = None, error: str | Non
     return _back("connected")
 
 
+def _stored_discovery(row) -> dict:
+    if row is None:
+        return {}
+    raw = dict(row).get("last_diagnostic_json")
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {key: parsed.get(key) for key in ("stage", "market_data", "error", "host", "connection_status", "authenticated_accounts", "discovered_accounts")}
+
+
+def _sync_block(row: dict) -> HTTPException | None:
+    attempted = _expiry(row.get("last_attempt_at"))
+    if row.get("connection_status") == "DISCOVERING" and attempted and now() - attempted < DISCOVERY_IN_FLIGHT:
+        return HTTPException(409, "Account discovery is already running")
+    if row.get("last_error_code") in RETRY_LATER and attempted and now() - attempted < DISCOVERY_COOLDOWN:
+        remaining = int((DISCOVERY_COOLDOWN - (now() - attempted)).total_seconds())
+        return HTTPException(503, _provider_message(row["last_error_code"]), headers={"Retry-After": str(max(remaining, 1))})
+    return None
+
+
+def _begin_discovery(tenant_id: str) -> None:
+    timestamp = iso()
+    with db() as c:
+        c.execute(
+            """UPDATE ctrader_connections SET connection_status='DISCOVERING',last_attempt_at=?,updated_at=?
+               WHERE tenant_id=? AND environment='demo'""",
+            (timestamp, timestamp, tenant_id),
+        )
+
+
+def _sync_authorized_connection(tenant_id: str, user_id: str, row: dict, cfg: dict) -> dict:
+    blocked = _sync_block(row)
+    if blocked:
+        raise blocked
+    _begin_discovery(tenant_id)
+    row = _refresh_if_needed(row, cfg)
+    if row["authorization_status"] != "AUTHORIZED":
+        raise HTTPException(409, "cTrader authorization must be renewed")
+    try:
+        access = decrypt_ctrader_token(row["access_token"])
+        accounts = _discover_accounts(access)
+        _persist_accounts(tenant_id, user_id, accounts)
+    except ValueError:
+        _record_failure(tenant_id, user_id, "reauthorization_required", "REAUTH_REQUIRED", authorization_status="REAUTH_REQUIRED")
+        raise HTTPException(409, "cTrader authorization must be renewed") from None
+    except CTraderProviderError as exc:
+        if exc.code == "no_authorized_accounts":
+            _record_failure(tenant_id, user_id, exc.code, "NO_ACCOUNTS")
+            return {"status": "NO_ACCOUNTS", "accounts_discovered": 0, "connected": False}
+        status = "DISCOVERY_FAILED"
+        _record_failure(tenant_id, user_id, exc.code, status)
+        retry = exc.code in RETRY_LATER
+        headers = {"Retry-After": str(int(DISCOVERY_COOLDOWN.total_seconds()))} if retry else None
+        raise HTTPException(503, _provider_message(exc.code), headers=headers) from None
+    except Exception as exc:
+        log.warning("cTrader account sync failed; error_type=%s", type(exc).__name__)
+        try:
+            _record_failure(tenant_id, user_id, "account_persistence_failed", "PERSISTENCE_FAILED")
+        except Exception:
+            log.warning("cTrader sync failure state could not be recorded; error_type=%s", type(exc).__name__)
+        raise HTTPException(503, "cTrader account discovery could not be saved") from None
+    return {
+        "status": discovery_connection_status(accounts),
+        "accounts_discovered": len(accounts),
+        "connected": discovery_connection_status(accounts) == "CONNECTED",
+        "market_data": _discovery_diagnostic().get("market_data") or "unverified",
+    }
+
+
 @router.post("/accounts/sync")
 def sync_accounts(x: AuthorizeRequest, user=Depends(current_user)):
     cfg = ctrader_config()
@@ -634,23 +799,7 @@ def sync_accounts(x: AuthorizeRequest, user=Depends(current_user)):
         if row is None or row["authorization_status"] != "AUTHORIZED":
             raise HTTPException(409, "Authorize cTrader before synchronizing accounts")
         row = _encrypt_connection_tokens(c, dict(row))
-    row = _refresh_if_needed(row, cfg)
-    if row["authorization_status"] != "AUTHORIZED":
-        raise HTTPException(503, "cTrader authorization must be renewed")
-    try:
-        access = decrypt_ctrader_token(row["access_token"])
-        accounts = _discover_accounts(access)
-        _persist_accounts(x.tenant_id, user["id"], accounts)
-    except ValueError:
-        _record_failure(
-            x.tenant_id, user["id"], "reauthorization_required", "REAUTH_REQUIRED",
-            authorization_status="REAUTH_REQUIRED",
-        )
-        raise HTTPException(409, "cTrader authorization must be renewed") from None
-    except CTraderProviderError as exc:
-        _record_failure(x.tenant_id, user["id"], exc.code)
-        raise HTTPException(503, "cTrader account discovery is temporarily unavailable") from None
-    return {"status": "CONNECTED", "accounts_discovered": len(accounts)}
+    return _sync_authorized_connection(x.tenant_id, user["id"], row, cfg)
 
 
 @router.post("/disconnect")
@@ -670,3 +819,30 @@ def disconnect(x: AuthorizeRequest, user=Depends(current_user)):
         )
         write_audit(c, x.tenant_id, user["id"], "CTRADER_DISCONNECTED", "CtraderConnection", x.tenant_id, after={"environment": "demo"})
     return {"status": "DISCONNECTED"}
+
+
+@router.get("/jobs/recover")
+def recover_connections(authorization: str | None = Header(default=None)):
+    """Hourly recovery for authorized connections that are not connected. Does not require a browser session."""
+    secret = os.getenv("CRON_SECRET", "").strip()
+    if secret and not hmac.compare_digest(authorization or "", f"Bearer {secret}"):
+        raise HTTPException(401, "Invalid cron credentials")
+    cfg = ctrader_config()
+    if cfg is None:
+        return {"attempted": 0, "reason": "not_configured"}
+    with db() as c:
+        rows = c.execute(
+            """SELECT * FROM ctrader_connections WHERE environment='demo' AND authorization_status='AUTHORIZED'
+               AND connection_status!='CONNECTED' ORDER BY updated_at LIMIT 1"""
+        ).fetchall()
+    attempted = 0
+    for raw in rows:
+        row = dict(raw)
+        if _sync_block(row):
+            return {"attempted": 0, "reason": "cooldown"}
+        attempted += 1
+        try:
+            _sync_authorized_connection(row["tenant_id"], row.get("connected_by") or row["tenant_id"], row, cfg)
+        except HTTPException as exc:
+            log.warning("cTrader recovery did not connect; status=%s", exc.status_code)
+    return {"attempted": attempted}

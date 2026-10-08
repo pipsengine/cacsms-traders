@@ -12,7 +12,8 @@
   },
   "crons": [
     { "path": "/api/ai-outlook/jobs/daily", "schedule": "10 21 * * 1-5" },
-    { "path": "/api/ai-outlook/jobs/daily", "schedule": "10 22 * * 1-5" }
+    { "path": "/api/ai-outlook/jobs/daily", "schedule": "10 22 * * 1-5" },
+    { "path": "/api/connections/ctrader/jobs/recover", "schedule": "17 * * * *" }
   ],
   "rewrites": [
     {

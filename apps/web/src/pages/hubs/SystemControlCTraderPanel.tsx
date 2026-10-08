@@ -1,7 +1,7 @@
 import React from 'react';
 import { Cable, RefreshCcw, Unplug } from 'lucide-react';
 import { Card, Notice, Status } from '../../components/Ui';
-import { get, post } from '../../lib/api';
+import { ApiError, get, post } from '../../lib/api';
 
 type CTraderAccount = {
   account: string | null;
@@ -31,6 +31,7 @@ type CTraderStatus = {
   accounts: CTraderAccount[];
   diagnostics?: { code: string; status: string; detail: string }[];
   execution_available?: boolean;
+  discovery?: { stage?: string; market_data?: string; error?: string | null; authenticated_accounts?: number; discovered_accounts?: number };
 };
 
 function fmt(value?: string | null) {
@@ -65,6 +66,8 @@ export function SystemControlCTraderPanel({
   const [success, setSuccess] = React.useState('');
   const authorizationAvailable = data?.authorization_status === 'AUTHORIZED';
   const canManage = data?.can_manage ?? false;
+  const syncing = React.useRef(false);
+  const [syncCooldownUntil, setSyncCooldownUntil] = React.useState(0);
 
   const callbackResult = React.useRef<string | null>(null);
   const load = React.useCallback(async () => {
@@ -89,6 +92,12 @@ export function SystemControlCTraderPanel({
       setLoading(false);
     }
   }, [tenantId]);
+
+  React.useEffect(() => {
+    if (Date.now() >= syncCooldownUntil) return;
+    const id = window.setTimeout(() => setSyncCooldownUntil(0), syncCooldownUntil - Date.now());
+    return () => window.clearTimeout(id);
+  }, [syncCooldownUntil]);
 
   React.useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -117,18 +126,31 @@ export function SystemControlCTraderPanel({
   }
 
   async function syncAccounts() {
-    if (!tenantId) return;
+    if (!tenantId || syncing.current || Date.now() < syncCooldownUntil) return;
+    syncing.current = true;
     setActing(true);
     setError('');
     setSuccess('');
     try {
-      await post('/connections/ctrader/accounts/sync', { tenant_id: tenantId });
-      setSuccess('Demo account details synchronized.');
+      const result = await post<{ status: string; accounts_discovered: number; connected: boolean; market_data?: string }>(
+        '/connections/ctrader/accounts/sync',
+        { tenant_id: tenantId },
+      );
+      setSuccess(
+        result.connected
+          ? `cTrader authenticated ${result.accounts_discovered} account${result.accounts_discovered === 1 ? '' : 's'}.`
+          : result.status === 'NO_ACCOUNTS'
+            ? 'cTrader returned no authorized trading accounts.'
+            : 'Accounts were listed, but broker authentication did not succeed.',
+      );
       await load();
       onRefreshGlobal();
     } catch (err) {
+      if (err instanceof ApiError && err.status === 503) setSyncCooldownUntil(Date.now() + 45_000);
       setError(err instanceof Error ? err.message : 'cTrader account discovery failed.');
+      await load();
     } finally {
+      syncing.current = false;
       setActing(false);
     }
   }
@@ -194,10 +216,11 @@ export function SystemControlCTraderPanel({
           </div>
         </div>
       ))}
+      {data?.discovery?.market_data && <p className="muted">Market data check: {data.discovery.market_data.replaceAll('_', ' ')}.</p>}
       {data?.last_error_code && <p className="muted">Last provider result: {data.last_error_code.replaceAll('_', ' ')}.</p>}
       {authorizationAvailable ? (
         <div className="sc-subtabs">
-          <button type="button" className="sc-btnSecondary sc-btnSmall" disabled={!canManage || acting} onClick={() => void syncAccounts()}>
+          <button type="button" className="sc-btnSecondary sc-btnSmall" disabled={!canManage || acting || Date.now() < syncCooldownUntil} onClick={() => void syncAccounts()}>
             <RefreshCcw /> Sync accounts
           </button>
           <button type="button" className="sc-btnSecondary sc-btnSmall" disabled={!canManage || acting} onClick={() => void disconnect()}>

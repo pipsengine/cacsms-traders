@@ -723,6 +723,163 @@ def test_fresh_provider_rejection_stays_inactive(client, monkeypatch):
     assert "grantingaccess" in started.json()["authorize_url"]
 
 
+def _authorized_ctrader_row(client):
+    from datetime import timedelta
+    from apps.api.app.core.database import db
+    from apps.api.app.core.security import encrypt_ctrader_token, iso, now
+
+    login = client.post("/api/auth/login", json=ADMIN).json()
+    tenant_id = login["user"]["memberships"][0]["tenant_id"]
+    with db() as conn:
+        conn.execute(
+            """INSERT INTO ctrader_connections(id,tenant_id,environment,access_token,refresh_token,token_type,expires_at,connected_by,created_at,updated_at,
+                 authorization_status,connection_status,token_key_version,permission_scope)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                "sync-row", tenant_id, "demo", encrypt_ctrader_token("stored-access"), encrypt_ctrader_token("stored-refresh"),
+                "bearer", iso(now() + timedelta(hours=2)), login["user"]["id"], iso(), iso(),
+                "AUTHORIZED", "DISCOVERY_FAILED", 1, "accounts",
+            ),
+        )
+    return login, tenant_id
+
+
+def test_discovery_status_requires_account_authentication():
+    from apps.api.app.routers.ctrader import discovery_connection_status
+
+    assert discovery_connection_status([]) == "NO_ACCOUNTS"
+    assert discovery_connection_status([{"authenticated": False}]) == "DEGRADED"
+    assert discovery_connection_status([{"authenticated": True}]) == "CONNECTED"
+    assert discovery_connection_status([{"ctid_trader_account_id": "legacy"}]) == "CONNECTED"
+
+
+def test_sync_transport_timeout_is_not_connected_and_does_not_retry(client, monkeypatch):
+    _ctrader_env(monkeypatch)
+    from apps.api.app.routers import ctrader
+
+    monkeypatch.setattr(ctrader, "probe_application", lambda: "ACTIVE")
+    calls = {"n": 0}
+
+    def timeout(_token):
+        calls["n"] += 1
+        ctrader._discover_accounts.last_diagnostic = {"stage": "transport", "error": "transport_timeout", "market_data": "unverified"}
+        raise ctrader.CTraderProviderError("transport_timeout")
+
+    monkeypatch.setattr(ctrader, "_discover_accounts", timeout)
+    _login, tenant_id = _authorized_ctrader_row(client)
+    first = client.post("/api/connections/ctrader/accounts/sync", headers=CLIENT_HEADER, json={"tenant_id": tenant_id})
+    second = client.post("/api/connections/ctrader/accounts/sync", headers=CLIENT_HEADER, json={"tenant_id": tenant_id})
+    status = client.get("/api/connections/ctrader/status", params={"tenant_id": tenant_id}).json()
+
+    assert first.status_code == 503
+    assert "did not open a broker connection" in first.text
+    assert first.headers["retry-after"]
+    assert second.status_code == 503
+    assert calls["n"] == 1
+    assert status["connected"] is False
+    assert status["connection_status"] == "DISCOVERY_FAILED"
+    assert status["discovery"]["stage"] == "transport"
+    assert "stored-access" not in first.text
+
+
+def test_sync_empty_account_list_is_not_a_broker_connection(client, monkeypatch):
+    _ctrader_env(monkeypatch)
+    from apps.api.app.routers import ctrader
+
+    monkeypatch.setattr(ctrader, "probe_application", lambda: "ACTIVE")
+    monkeypatch.setattr(ctrader, "_discover_accounts", lambda _token: (_ for _ in ()).throw(ctrader.CTraderProviderError("no_authorized_accounts")))
+    _login, tenant_id = _authorized_ctrader_row(client)
+    response = client.post("/api/connections/ctrader/accounts/sync", headers=CLIENT_HEADER, json={"tenant_id": tenant_id})
+    status = client.get("/api/connections/ctrader/status", params={"tenant_id": tenant_id}).json()
+    assert response.status_code == 200
+    assert response.json() == {"status": "NO_ACCOUNTS", "accounts_discovered": 0, "connected": False}
+    assert status["connected"] is False
+    assert status["connection_status"] == "NO_ACCOUNTS"
+
+
+def test_sync_lists_accounts_without_marking_connected_until_authenticated(client, monkeypatch):
+    _ctrader_env(monkeypatch)
+    from apps.api.app.routers import ctrader
+
+    monkeypatch.setattr(ctrader, "probe_application", lambda: "ACTIVE")
+    monkeypatch.setattr(
+        ctrader,
+        "_discover_accounts",
+        lambda _token: [{"ctid_trader_account_id": "acct-1", "trader_login": "100200", "environment": "demo", "authenticated": False}],
+    )
+    _login, tenant_id = _authorized_ctrader_row(client)
+    response = client.post("/api/connections/ctrader/accounts/sync", headers=CLIENT_HEADER, json={"tenant_id": tenant_id})
+    status = client.get("/api/connections/ctrader/status", params={"tenant_id": tenant_id}).json()
+    assert response.status_code == 200
+    assert response.json()["connected"] is False
+    assert response.json()["status"] == "DEGRADED"
+    assert status["connected"] is False
+    assert status["accounts"][0]["authorization"] == "DISCOVERED"
+
+
+def test_sync_marks_connected_only_after_account_authentication(client, monkeypatch):
+    _ctrader_env(monkeypatch)
+    from apps.api.app.routers import ctrader
+
+    monkeypatch.setattr(ctrader, "probe_application", lambda: "ACTIVE")
+    monkeypatch.setattr(
+        ctrader,
+        "_discover_accounts",
+        lambda _token: [{"ctid_trader_account_id": "acct-2", "trader_login": "300400", "environment": "live", "authenticated": True}],
+    )
+    ctrader._discover_accounts.last_diagnostic = {"stage": "market_data", "market_data": "ok", "error": None}
+    _login, tenant_id = _authorized_ctrader_row(client)
+    response = client.post("/api/connections/ctrader/accounts/sync", headers=CLIENT_HEADER, json={"tenant_id": tenant_id})
+    status = client.get("/api/connections/ctrader/status", params={"tenant_id": tenant_id}).json()
+    assert response.status_code == 200
+    assert response.json()["connected"] is True
+    assert response.json()["market_data"] == "ok"
+    assert status["connected"] is True
+    assert status["connection_status"] == "CONNECTED"
+    assert status["accounts"][0]["environment"] == "live"
+
+
+def test_sync_database_failure_does_not_leak_the_database_error(client, monkeypatch):
+    _ctrader_env(monkeypatch)
+    from apps.api.app.routers import ctrader
+
+    monkeypatch.setattr(
+        ctrader,
+        "_discover_accounts",
+        lambda _token: [{"ctid_trader_account_id": "acct-3", "environment": "demo", "authenticated": True}],
+    )
+
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("relation ctrader_accounts does not exist token=stored-access")
+
+    monkeypatch.setattr(ctrader, "_persist_accounts", broken)
+    _login, tenant_id = _authorized_ctrader_row(client)
+    response = client.post("/api/connections/ctrader/accounts/sync", headers=CLIENT_HEADER, json={"tenant_id": tenant_id})
+    assert response.status_code == 503
+    assert "could not be saved" in response.text
+    assert "stored-access" not in response.text
+    assert "ctrader_accounts" not in response.text
+
+
+def test_sync_expired_token_requires_reauthorization(client, monkeypatch):
+    from datetime import timedelta
+    from apps.api.app.core.database import db
+    from apps.api.app.core.security import iso, now
+    from apps.api.app.routers import ctrader
+
+    _ctrader_env(monkeypatch)
+    monkeypatch.setattr(ctrader, "_refresh", lambda *_args: (_ for _ in ()).throw(ctrader.CTraderProviderError("invalid_grant")))
+    called = {"n": 0}
+    monkeypatch.setattr(ctrader, "_discover_accounts", lambda _token: called.__setitem__("n", called["n"] + 1))
+    _login, tenant_id = _authorized_ctrader_row(client)
+    with db() as conn:
+        conn.execute("UPDATE ctrader_connections SET expires_at=? WHERE tenant_id=?", (iso(now() - timedelta(minutes=5)), tenant_id))
+    response = client.post("/api/connections/ctrader/accounts/sync", headers=CLIENT_HEADER, json={"tenant_id": tenant_id})
+    assert response.status_code == 409
+    assert "renewed" in response.text
+    assert called["n"] == 0
+
+
 def test_discovered_live_account_is_stored(client, monkeypatch):
     _ctrader_env(monkeypatch)
     from apps.api.app.core.database import db

@@ -4,6 +4,7 @@ import { ApiError, get } from '../lib/api';
 import type { Page } from '../lib/routes';
 
 const POLL_MS = 30_000;
+const MAX_BACKOFF_MS = 120_000;
 
 type InboxItem = {
   id: string;
@@ -58,17 +59,33 @@ export function NotificationBell({ tenantId, navigate }: { tenantId: string; nav
     setDenied(false);
   }, [tenantId]);
 
+  const inflight = React.useRef(false);
+  const failures = React.useRef(0);
+  const nextAttempt = React.useRef(0);
+
   const load = React.useCallback(async () => {
-    if (!tenantId) return;
+    if (!tenantId || inflight.current || Date.now() < nextAttempt.current) return;
+    inflight.current = true;
     const q = new URLSearchParams({ tenant_id: tenantId });
     if (seen) q.set('since', seen);
     try {
       setInbox(await get<Inbox>(`/notifications/inbox?${q}`));
       setDenied(false);
       setStale(false);
+      failures.current = 0;
+      nextAttempt.current = 0;
     } catch (err) {
-      if (err instanceof ApiError && (err.status === 401 || err.status === 403)) setDenied(true);
-      else setStale(true);
+      if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+        setDenied(true);
+        nextAttempt.current = Date.now() + MAX_BACKOFF_MS;
+      } else {
+        setStale(true);
+        failures.current += 1;
+        const delay = Math.min(POLL_MS * 2 ** Math.min(failures.current, 3), MAX_BACKOFF_MS);
+        nextAttempt.current = Date.now() + delay;
+      }
+    } finally {
+      inflight.current = false;
     }
   }, [tenantId, seen]);
 
@@ -81,11 +98,9 @@ export function NotificationBell({ tenantId, navigate }: { tenantId: string; nav
       if (document.visibilityState === 'visible') void load();
     };
     document.addEventListener('visibilitychange', onVisible);
-    window.addEventListener('focus', onVisible);
     return () => {
       window.clearInterval(id);
       document.removeEventListener('visibilitychange', onVisible);
-      window.removeEventListener('focus', onVisible);
     };
   }, [load]);
 

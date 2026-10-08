@@ -44,7 +44,7 @@ def main() -> int:
         print("CTRADER_RESULT:{\"error\":\"demo_only\"}", flush=True)
         return 1
     action = request_data.get("action", "discover")
-    if action not in ("discover", "symbols", "history", "quote", "verify_application"):
+    if action not in ("discover", "authenticate", "symbols", "history", "quote", "verify_application"):
         print("CTRADER_RESULT:{\"error\":\"unsupported_action\"}", flush=True)
         return 1
 
@@ -54,7 +54,9 @@ def main() -> int:
             ProtoOAAccountAuthReq,
             ProtoOAApplicationAuthReq,
             ProtoOAAssetListReq,
+            ProtoOAErrorRes,
             ProtoOAGetAccountListByAccessTokenReq,
+            ProtoOAGetAccountListByAccessTokenRes,
             ProtoOAGetTrendbarsReq,
             ProtoOASymbolsListReq,
             ProtoOASymbolByIdReq,
@@ -75,14 +77,19 @@ def main() -> int:
         print("CTRADER_RESULT:{\"error\":\"not_configured\"}", flush=True)
         return 1
 
-    result: dict = {"accounts": [], "symbols": [], "candles": [], "missing_symbols": [], "error": None}
-    account_metadata: dict[str, dict] = {}
-    pending_candles = 0
     reactor_instance = reactor
     host = EndPoints.PROTOBUF_LIVE_HOST if environment == "live" else EndPoints.PROTOBUF_DEMO_HOST
+    result: dict = {
+        "accounts": [], "symbols": [], "candles": [], "missing_symbols": [], "error": None,
+        "stage": "transport", "market_data": "unverified", "host": host,
+    }
+    account_metadata: dict[str, dict] = {}
+    pending_candles = 0
     client = Client(host, EndPoints.PROTOBUF_PORT, TcpProtocol)
     timeout_call = None
     finished = False
+    connected_flag = {"ok": False}
+    list_seen = {"done": False}
 
     def finish(error: str | None = None) -> None:
         nonlocal finished
@@ -97,11 +104,22 @@ def main() -> int:
 
     def failed(failure) -> None:
         message = str(getattr(failure, 'value', failure))
+        if result["accounts"]:
+            result["stage"] = "account_auth"
+            finish(None)
+            return
         if __package__:
             from .ctrader_application_state import APP_INACTIVE, provider_error_code
         else:
             from ctrader_application_state import APP_INACTIVE, provider_error_code
-        finish(APP_INACTIVE if provider_error_code(message) == APP_INACTIVE or APP_INACTIVE in message else 'provider_unavailable')
+        if provider_error_code(message) == APP_INACTIVE or APP_INACTIVE in message:
+            finish(APP_INACTIVE)
+            return
+        lowered = message.lower()
+        if "timeout" in lowered or "cancelled" in lowered:
+            finish("provider_timeout" if connected_flag["ok"] else "transport_timeout")
+            return
+        finish("provider_unavailable")
 
     def send(message):
         return client.send(message).addCallback(lambda reply: decode_response(reply, Protobuf.extract))
@@ -218,6 +236,13 @@ def main() -> int:
     spot_prices = {}
 
     def on_message(_client, message):
+        if message.payloadType == ProtoOAErrorRes().payloadType and not list_seen["done"]:
+            error = Protobuf.extract(message)
+            failed(type("Failure", (), {"value": RuntimeError(f"{error.errorCode} {getattr(error, 'description', '')}")})())
+            return
+        if message.payloadType == ProtoOAGetAccountListByAccessTokenRes().payloadType:
+            on_account_list(Protobuf.extract(message))
+            return
         if action != 'quote' or message.payloadType != ProtoOASpotEvent().payloadType:
             return
         event = Protobuf.extract(message)
@@ -315,36 +340,110 @@ def main() -> int:
         if pending_candles == 0:
             finish()
 
+    def remember_account(account) -> dict:
+        environment_name = "live" if getattr(account, "isLive", False) else "demo"
+        login = str(account.traderLogin) if account.HasField("traderLogin") and account.traderLogin else None
+        record = {
+            "ctid_trader_account_id": str(account.ctidTraderAccountId),
+            "trader_login": login,
+            "broker_name": None,
+            "account_type": None,
+            "currency_code": None,
+            "environment": environment_name,
+            "authenticated": False,
+        }
+        result["accounts"].append(record)
+        return record
+
+    def mark_authenticated(account_id: str, ok: bool, auth_error: str | None = None) -> None:
+        for item in result["accounts"]:
+            if item["ctid_trader_account_id"] == account_id:
+                item["authenticated"] = ok
+                if auth_error:
+                    item["auth_error"] = auth_error
+
+    def auth_failure_code(failure) -> str:
+        message = str(getattr(failure, "value", failure))
+        if __package__:
+            from .ctrader_application_state import provider_error_code
+        else:
+            from ctrader_application_state import provider_error_code
+        lowered = message.lower()
+        if "timeout" in lowered or "cancelled" in lowered:
+            return "account_auth_timeout"
+        return provider_error_code(message)[:80]
+
+    def verify_market_data(account_id: str) -> None:
+        symbols_req = ProtoOASymbolsListReq()
+        symbols_req.ctidTraderAccountId = int(account_id)
+        def accepted(response) -> None:
+            result["market_data"] = "ok" if list(response.symbol) else "empty"
+            result["stage"] = "market_data"
+            finish(None)
+        def rejected(failure) -> None:
+            result["market_data"] = "unavailable"
+            result["stage"] = "market_data"
+            finish(None)
+        send(symbols_req).addCallbacks(accepted, rejected)
+
+    def authorize_next(pending: list) -> None:
+        if not pending:
+            authenticated = next((item for item in result["accounts"] if item.get("authenticated")), None)
+            if authenticated and action == "discover":
+                verify_market_data(authenticated["ctid_trader_account_id"])
+                return
+            result["stage"] = "account_auth"
+            finish(None)
+            return
+        account = pending.pop(0)
+        account_id = str(account.ctidTraderAccountId)
+        auth_req = ProtoOAAccountAuthReq()
+        auth_req.ctidTraderAccountId = account.ctidTraderAccountId
+        auth_req.accessToken = access_token
+        def accepted(_auth, aid=account_id) -> None:
+            mark_authenticated(aid, True)
+            authorize_next(pending)
+        def rejected(failure, aid=account_id) -> None:
+            mark_authenticated(aid, False, auth_failure_code(failure))
+            authorize_next(pending)
+        send(auth_req).addCallbacks(accepted, rejected)
+
     def on_account_list(response) -> None:
+        if list_seen["done"]:
+            return
+        list_seen["done"] = True
+        result["stage"] = "account_list"
         listed = list(response.ctidTraderAccount)
         requested_account_id = str(request_data.get("account_id", ""))
+        requested_ids = {str(item) for item in request_data.get("account_ids", []) if str(item)}
         if requested_account_id:
             listed = [account for account in listed if str(account.ctidTraderAccountId) == requested_account_id]
+        if requested_ids:
+            listed = [account for account in listed if str(account.ctidTraderAccountId) in requested_ids]
         if environment == "demo" and action in ("symbols", "history", "quote"):
             listed = [account for account in listed if not account.isLive] or listed
         if environment == "live" and action in ("symbols", "history", "quote"):
             listed = [account for account in listed if account.isLive] or listed
         if not listed:
-            finish("no_demo_accounts")
+            finish("no_authorized_accounts" if action in ("discover", "authenticate") else "no_demo_accounts")
             return
-        demo_accounts = listed
-        if action in ("symbols", "history", "quote"):
-            selected = demo_accounts[0]
-            account_id = str(selected.ctidTraderAccountId)
-            auth_req = ProtoOAAccountAuthReq()
-            auth_req.ctidTraderAccountId = selected.ctidTraderAccountId
-            auth_req.accessToken = access_token
-            send(auth_req).addCallbacks(lambda auth: on_account_authorized(account_id, auth), failed)
+        if action in ("discover", "authenticate"):
+            host_matches = []
+            for account in listed:
+                record = remember_account(account)
+                same_host = (record["environment"] == "live") == (environment == "live")
+                if same_host:
+                    host_matches.append(account)
+                else:
+                    record["auth_error"] = "live_host_required" if record["environment"] == "live" else "demo_host_required"
+            authorize_next(host_matches)
             return
-        for account in demo_accounts:
-            account_id = str(account.ctidTraderAccountId)
-            account_metadata[account_id] = {"account": account, "trader": None, "assets": None}
-            auth_req = ProtoOAAccountAuthReq()
-            auth_req.ctidTraderAccountId = account.ctidTraderAccountId
-            auth_req.accessToken = access_token
-            send(auth_req).addCallbacks(
-                lambda auth, aid=account_id: on_account_authorized(aid, auth), failed
-            )
+        selected = listed[0]
+        account_id = str(selected.ctidTraderAccountId)
+        auth_req = ProtoOAAccountAuthReq()
+        auth_req.ctidTraderAccountId = selected.ctidTraderAccountId
+        auth_req.accessToken = access_token
+        send(auth_req).addCallbacks(lambda auth: on_account_authorized(account_id, auth), failed)
 
     def on_app_authorized(_response) -> None:
         if action == "verify_application":
@@ -356,14 +455,31 @@ def main() -> int:
         send(accounts_req).addCallbacks(on_account_list, failed)
 
     def on_connected(connected_client) -> None:
+        connected_flag["ok"] = True
+        result["stage"] = "application_auth"
         app_auth = ProtoOAApplicationAuthReq()
         app_auth.clientId = client_id
         app_auth.clientSecret = client_secret
         send(app_auth).addCallbacks(on_app_authorized, failed)
 
+    def overall_timeout() -> None:
+        if finished:
+            return
+        if result["accounts"]:
+            result["stage"] = result.get("stage") or "account_list"
+            result["market_data"] = result.get("market_data") or "unverified"
+            finish(None)
+            return
+        finish("provider_timeout" if connected_flag["ok"] else "transport_timeout")
+
+    def transport_deadline() -> None:
+        if not connected_flag["ok"]:
+            finish("transport_timeout")
+
     client.setConnectedCallback(on_connected)
     client.setMessageReceivedCallback(on_message)
-    timeout_call = reactor_instance.callLater(18, finish, "provider_timeout")
+    timeout_call = reactor_instance.callLater(12, overall_timeout)
+    reactor_instance.callLater(8, transport_deadline)
     client.startService()
     reactor_instance.run()
     print("CTRADER_RESULT:" + json.dumps(result, separators=(",", ":")), flush=True)

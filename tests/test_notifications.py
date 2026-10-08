@@ -575,6 +575,32 @@ def test_email_settings_api_never_returns_the_password(env, monkeypatch):
     assert audits and all(SECRET not in json.dumps(a) for a in audits)
 
 
+def test_inbox_count_accepts_dictionary_rows(env):
+    """Production PostgreSQL returns dict rows. COUNT(*) has no column 0."""
+
+    class DictionaryCursor:
+        def __init__(self, cursor):
+            self.cursor = cursor
+
+        def fetchone(self):
+            row = self.cursor.fetchone()
+            return dict(row) if row else None
+
+        def fetchall(self):
+            return [dict(row) for row in self.cursor.fetchall()]
+
+    class DictionaryConnection:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def execute(self, *args):
+            return DictionaryCursor(self.conn.execute(*args))
+
+    with _db() as conn:
+        inbox = _store(DictionaryConnection(conn), _tenant(conn)).inbox("2026-01-01T00:00:00+00:00")
+    assert inbox["unread"] == 0 and inbox["items"] == []
+
+
 def test_bell_inbox_counts_unread_and_skips_suppressed(env, monkeypatch):
     from fastapi.testclient import TestClient
 
