@@ -530,7 +530,9 @@ def callback(code: str | None = None, state: str | None = None, error: str | Non
             _record_failure(st["tenant_id"], st["user_id"], exc.code)
         except Exception as audit_exc:
             log.warning("cTrader discovery failure state could not be recorded; error_type=%s", type(audit_exc).__name__)
-        return _back('app_inactive' if exc.code == APP_INACTIVE else "discovery_failed")
+        with db() as c:
+            inactive = exc.code == APP_INACTIVE or application_state(c) == 'APP_INACTIVE'
+        return _back('app_inactive' if inactive else "discovery_failed")
     except Exception as exc:
         log.warning("cTrader account persistence failed; error_type=%s", type(exc).__name__)
         try:

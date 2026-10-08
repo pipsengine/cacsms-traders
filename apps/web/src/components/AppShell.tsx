@@ -177,18 +177,18 @@ export function AppShell({
               <div className="side-status-row">
                 <i
                   className={`side-dot ${
-                    health?.market_data?.provider_status === 'CONNECTED'
-                      ? 'green'
-                      : 'red'
+                    !health ? '' : health.market_data?.provider_status === 'CONNECTED' ? 'green' : 'red'
                   }`}
                   aria-hidden
                 />
                 <div>
                   <span>Market data</span>
                   <b>
-                    {health?.market_data?.provider_status === 'CONNECTED'
-                      ? `${health?.market_data?.active_provider === 'ctrader' ? 'cTrader' : health?.market_data?.active_provider} · CONNECTED`
-                      : `${health?.market_data?.active_provider === 'ctrader' ? 'cTrader' : health?.market_data?.active_provider || 'NO PROVIDER'} · ${health?.market_data?.provider_status || 'UNAVAILABLE'}`}
+                    {!health
+                      ? 'Checking…'
+                      : health.market_data?.provider_status === 'CONNECTED'
+                        ? `${health.market_data.active_provider === 'ctrader' ? 'cTrader' : health.market_data.active_provider} · CONNECTED`
+                        : `${health.market_data?.active_provider === 'ctrader' ? 'cTrader' : health.market_data?.active_provider || 'NO PROVIDER'} · ${health.market_data?.provider_status || 'UNAVAILABLE'}`}
                   </b>
                 </div>
               </div>

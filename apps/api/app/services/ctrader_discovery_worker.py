@@ -94,8 +94,12 @@ def main() -> int:
         reactor_instance.callLater(0, reactor_instance.stop)
 
     def failed(failure) -> None:
-        message = str(getattr(failure, 'value', ''))
-        finish('CTRADER_APP_INACTIVE' if message == 'CTRADER_APP_INACTIVE' else 'provider_unavailable')
+        message = str(getattr(failure, 'value', failure))
+        if __package__:
+            from .ctrader_application_state import APP_INACTIVE, provider_error_code
+        else:
+            from ctrader_application_state import APP_INACTIVE, provider_error_code
+        finish(APP_INACTIVE if provider_error_code(message) == APP_INACTIVE or APP_INACTIVE in message else 'provider_unavailable')
 
     def send(message):
         return client.send(message).addCallback(lambda reply: decode_response(reply, Protobuf.extract))

@@ -11,6 +11,7 @@ export function SystemControlHubHeader({
   enginesLabel: string;
 }) {
   const apiOk = health?.api === 'HEALTHY';
+  const healthLabel = health == null ? 'Checking' : apiOk ? 'Healthy' : 'Degraded';
   const mode = (summary?.mode ?? 'ANALYSIS_ONLY').replaceAll('_', ' ');
   const enginesStopped = enginesLabel.toLowerCase().includes('stopped') || enginesLabel.toLowerCase().includes('degraded');
 
@@ -31,10 +32,10 @@ export function SystemControlHubHeader({
         </div>
         <div className="sc-summaryStrip">
           <div>
-            <i className={`sc-dot ${apiOk ? 'green' : 'red'}`} />
+            <i className={`sc-dot ${health == null ? '' : apiOk ? 'green' : 'red'}`} />
             <span>
               System Health
-              <b className={apiOk ? 'sc-ok' : 'sc-bad'}>{apiOk ? 'Healthy' : 'Degraded'}</b>
+              <b className={health == null ? '' : apiOk ? 'sc-ok' : 'sc-bad'}>{healthLabel}</b>
             </span>
           </div>
           <div>

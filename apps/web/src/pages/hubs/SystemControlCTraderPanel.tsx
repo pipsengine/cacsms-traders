@@ -64,13 +64,23 @@ export function SystemControlCTraderPanel({
   const authorizationAvailable = data?.authorization_status === 'AUTHORIZED';
   const canManage = data?.can_manage ?? false;
 
+  const callbackResult = React.useRef<string | null>(null);
   const load = React.useCallback(async () => {
     if (!tenantId) return;
     setLoading(true);
     try {
       const status = await get<CTraderStatus>(`/connections/ctrader/status?tenant_id=${encodeURIComponent(tenantId)}`);
       setData(status);
-      setError('');
+      const result = callbackResult.current;
+      callbackResult.current = null;
+      if (result && status.provider_status !== 'APP_INACTIVE') {
+        const message = CALLBACK_MESSAGES[result];
+        if (message?.success) setSuccess(message.success);
+        if (message?.error) setError(message.error);
+        else setError('');
+      } else {
+        setError('');
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load cTrader connection status.');
     } finally {
@@ -79,19 +89,14 @@ export function SystemControlCTraderPanel({
   }, [tenantId]);
 
   React.useEffect(() => {
-    void load();
-  }, [load]);
-
-  React.useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const result = params.get('ctrader');
-    if (!result) return;
-    const message = CALLBACK_MESSAGES[result];
-    if (message?.success) setSuccess(message.success);
-    if (message?.error) setError(message.error);
-    params.delete('ctrader');
-    const query = params.toString();
-    window.history.replaceState(null, '', `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`);
+    if (result) {
+      callbackResult.current = result;
+      params.delete('ctrader');
+      const query = params.toString();
+      window.history.replaceState(null, '', `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`);
+    }
     void load();
   }, [load]);
 
@@ -160,9 +165,9 @@ export function SystemControlCTraderPanel({
       <div className="detail-list">
         <div><span>Provider</span><b>cTrader</b></div>
         <div><span>Environment</span><b>Demo</b></div>
-        <div><span>Provider status</span><b>{data?.provider_status?.replaceAll('_', ' ') ?? 'Unknown'}</b></div>
-        <div><span>Connection health</span><b>{loading ? 'Checking…' : data?.connection_status?.replaceAll('_', ' ') ?? 'Unknown'}</b></div>
-        <div><span>Authorization</span><b>{data?.authorization_status?.replaceAll('_', ' ') ?? 'Unknown'}</b></div>
+        <div><span>Provider status</span><b>{data?.provider_status?.replaceAll('_', ' ') ?? (loading ? 'Checking…' : 'Unknown')}</b></div>
+        <div><span>Connection health</span><b>{data?.connection_status?.replaceAll('_', ' ') ?? (loading ? 'Checking…' : 'Unknown')}</b></div>
+        <div><span>Authorization</span><b>{data?.authorization_status?.replaceAll('_', ' ') ?? (loading ? 'Checking…' : 'Unknown')}</b></div>
         <div><span>Last successful connection</span><b>{fmt(data?.last_successful_connection_at)}</b></div>
         <div><span>Last synchronization</span><b>{fmt(data?.last_sync_at)}</b></div>
       </div>
