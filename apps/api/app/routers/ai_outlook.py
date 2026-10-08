@@ -26,6 +26,12 @@ MTF_CHART = ("Y", "YTD", "HY", "Q", "MN", "W", "D1", "H8", "H1", "M30")
 _catchup_lock = threading.Lock()
 
 
+def _flush_mail() -> dict:
+    from ..notifications.outlook_alert import flush_outlook_mail
+
+    return flush_outlook_mail()
+
+
 def _catch_up() -> dict:
     """Serverless has no background thread, so the open page asks for a pass in its own request (reads never wait on it).
 
@@ -262,13 +268,15 @@ def _cron_authorized(authorization: str | None) -> None:
 def daily_job(authorization: str | None = Header(default=None)):
     """Scheduler entry point (Vercel Cron after the D1 close; idempotent — safe to call repeatedly)."""
     _cron_authorized(authorization)
-    return get_outlook_service().tick()
+    report = get_outlook_service().tick()
+    report["mail"] = _flush_mail()
+    return report
 
 
 @router.post("/jobs/catch-up")
 def catch_up(user=Depends(current_user)):
     """Called by the open page alongside its reads: advances the serverless scheduler only when something is due."""
-    return _catch_up()
+    return {**_catch_up(), "mail": _flush_mail()}
 
 
 @router.post("/jobs/run")

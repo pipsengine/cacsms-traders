@@ -119,6 +119,29 @@ def test_recipient_type_filter_applies(env):
     assert sorted(m["To"] for m in FakeSMTP.all_sent()) == ["all@example.com", "outlook@example.com"]
 
 
+def test_publish_sends_the_email_itself(env):
+    from apps.api.app.market.outlook.service import OutlookService
+
+    _recipient()
+    with _db() as conn:
+        OutlookService()._notify_published(conn, RUN, OUTLOOKS, COUNTS, ON_TIME, False)
+    assert len(FakeSMTP.all_sent()) == 1
+    assert "AI Analysis Complete" in FakeSMTP.all_sent()[0]["Subject"]
+
+
+def test_flush_sends_a_queued_email_once_and_backfill_does_not_duplicate(env):
+    from datetime import datetime, timezone
+
+    from apps.api.app.notifications.outlook_alert import flush_outlook_mail
+
+    _recipient()
+    assert _publish(now=datetime.now(timezone.utc))["queued"] == 1
+    assert FakeSMTP.all_sent() == []
+    assert flush_outlook_mail()["dispatch"]["sent"] == 1
+    assert len(FakeSMTP.all_sent()) == 1
+    assert flush_outlook_mail()["dispatch"]["sent"] == 0
+
+
 def test_alert_failure_never_breaks_the_outlook_run(env, monkeypatch):
     from apps.api.app.market.outlook.service import OutlookService
     from apps.api.app.notifications import outlook_alert

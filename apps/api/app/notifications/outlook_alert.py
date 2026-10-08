@@ -75,3 +75,44 @@ def publish_outlook_published(conn, run: dict, outlooks: list[dict], counts: dic
     tenant, account = alert_scope(conn)
     event = outlook_event(run, outlooks, counts, published_at, late, provider)
     return AlertEngine(conn, tenant, account).process([event], [], now or datetime.now(timezone.utc))
+
+
+def flush_outlook_mail() -> dict:
+    """Send anything waiting, and queue the latest live publish if it never produced an alert.
+
+    On Vercel nothing runs between HTTP requests, so a queued email is never sent unless a request delivers it.
+    """
+    import logging
+
+    from ..core.database import db
+    from ..market.outlook.store import DONE_STATES, OutlookRepository
+    from ..market.strength_intel_store import active_scope
+    from .worker import dispatch, enabled
+
+    log = logging.getLogger("cacsms.ai_outlook")
+    queue: dict = {"skipped": "notifications_disabled"}
+    if enabled():
+        try:
+            with db() as conn:
+                store = OutlookRepository(conn, active_scope(conn))
+                run = store.latest_published()
+                if run and run.get("origin") == "LIVE" and run.get("state") in DONE_STATES:
+                    outs = store.outlooks(run["id"])
+                    published_at = run.get("published_at") or ""
+                    asian = cal.session_windows(cal.close_time(date.fromisoformat(run["analysis_date"])))[0]["start"]
+                    counts = {k: int(run.get(src) or 0) for k, src in (
+                        ("published", "symbols_published"), ("qualified", "qualified"),
+                        ("insufficient", "symbols_insufficient"), ("failed", "symbols_failed"))}
+                    queue = publish_outlook_published(conn, run, outs, counts, published_at, bool(published_at and published_at > asian))
+                    conn.commit()
+                else:
+                    queue = {"skipped": "no_live_publish"}
+        except Exception:
+            log.warning("AI analysis complete alert could not be queued", exc_info=True)
+            queue = {"error": "queue_failed"}
+    try:
+        report = dispatch()
+    except Exception:
+        log.warning("Queued alert email could not be sent", exc_info=True)
+        report = {"error": "dispatch_failed"}
+    return {"queue": queue, "dispatch": report}

@@ -322,15 +322,24 @@ class OutlookService:
         return store.run_by_id(rid)  # type: ignore[return-value]
 
     def _notify_published(self, conn, run: dict, outs: list[dict], counts: dict, published_at: str, late: bool) -> None:
-        """Queue the "AI Analysis Complete" email; the published outlook is already committed and never depends on mail."""
+        """Queue and send the "AI Analysis Complete" email. The published outlook never depends on mail."""
         try:
             from ...notifications.outlook_alert import publish_outlook_published
 
-            publish_outlook_published(conn, run, outs, counts, published_at, late)
+            report = publish_outlook_published(conn, run, outs, counts, published_at, late)
             conn.commit()
         except Exception:
             conn.rollback()
             log.warning("AI analysis complete alert could not be queued for run %s", run.get("id"), exc_info=True)
+            return
+        if not report.get("queued"):
+            return
+        try:
+            from ...notifications.worker import dispatch
+
+            dispatch()
+        except Exception:
+            log.warning("AI analysis complete alert for run %s is queued; the send will be retried", run.get("id"), exc_info=True)
 
     def _audit(self, conn, store: OutlookRepository, action: str, rid: str, after: dict) -> None:
         try:

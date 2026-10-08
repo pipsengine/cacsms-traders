@@ -460,9 +460,11 @@ def test_reads_never_run_the_scheduler_and_catch_up_is_gated(service_env, monkey
         token = client.post("/api/auth/login", json={"username": "cacsms", "password": "TestPass!123"}).json()["access_token"]
         h = {"Authorization": f"Bearer {token}"}
         monkeypatch.setattr(svc.OutlookService, "due", lambda self, now=None: None)
-        assert client.post("/api/ai-outlook/jobs/catch-up", headers=h).json() == {"ran": False, "reason": None} and calls == []
+        quiet = client.post("/api/ai-outlook/jobs/catch-up", headers=h).json()
+        assert quiet["ran"] is False and quiet["reason"] is None and calls == []
         monkeypatch.setattr(svc.OutlookService, "due", lambda self, now=None: "monitor")
-        assert client.post("/api/ai-outlook/jobs/catch-up", headers=h).json() == {"ran": True, "reason": "monitor"}
+        ran = client.post("/api/ai-outlook/jobs/catch-up", headers=h).json()
+        assert ran["ran"] is True and ran["reason"] == "monitor"
         assert calls == [{"replay": False}]
 
 
