@@ -117,6 +117,7 @@ export function StageDetails({
         </dl>
       </header>
 
+      <div className="ae-details-body">
       {detail?.provider_mismatch ? (
         <div className="ae-banner is-warn">
           <AlertTriangle size={15} /> This stage last ran on {detail.provider?.toUpperCase()}; the {filters.provider.toUpperCase()} filter has no data for it.
@@ -162,6 +163,7 @@ export function StageDetails({
           <GenericStage d={detail} warnings={warnings} />
         )
       ) : null}
+      </div>
     </section>
   );
 }

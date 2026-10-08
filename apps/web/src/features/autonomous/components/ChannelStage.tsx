@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, CircleX, GitBranch, Layers, Mail, RefreshCw, Repeat, Star, Target, Zap } from 'lucide-react';
 import { StructureChart, type ChartOverlay } from '../../market-structure/components/StructureChart';
 import { useLive, useLiveCandles } from '../../market-structure/live';
@@ -39,6 +39,17 @@ function chartOverlay(lines: ChannelLines | null, direction: string | null): Cha
 
 function ChannelDetection({ symbol }: { symbol: string | null }) {
   const [tf, setTf] = useState<(typeof CHART_TFS)[number]>('H1');
+  const plotRef = useRef<HTMLDivElement>(null);
+  const [plotH, setPlotH] = useState(160);
+  useEffect(() => {
+    const el = plotRef.current;
+    if (!el) return;
+    const measure = () => setPlotH(Math.max(88, Math.floor(el.clientHeight) - 36));
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const loader = useCallback(
     () => (symbol ? autonomousApi.symbolChart(symbol, tf, 140) : Promise.resolve(null)),
     [symbol, tf],
@@ -69,6 +80,7 @@ function ChannelDetection({ symbol }: { symbol: string | null }) {
       }
     >
       <div className="ae-chart-body">
+        <div className="ae-chart-plot" ref={plotRef}>
         <StructureChart
           symbol={symbol ?? ''}
           title={`${tf} channel`}
@@ -76,11 +88,13 @@ function ChannelDetection({ symbol }: { symbol: string | null }) {
           candles={bars}
           digits={digits}
           lastPrice={last}
-          height={268}
+          height={plotH}
           loading={chart.loading && !fresh}
           error={chart.error || undefined}
           overlay={overlay}
           showVolume={false}
+          zoomable
+          defaultSpan={96}
           compact
           heading={<span />}
           actions={<span />}
@@ -91,6 +105,7 @@ function ChannelDetection({ symbol }: { symbol: string | null }) {
             { label: 'Midline', swatch: 'is-ae-mid' },
           ]}
         />
+        </div>
         <dl className="ae-chart-stats">
           <div>
             <dt>Channel Direction</dt>

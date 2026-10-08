@@ -44,6 +44,7 @@ export function AutonomousEngine() {
   });
   const [filters, setFilters] = useState<StageFilters>({ symbol: '', timeframe: '', provider: '' });
   const [history, setHistory] = useState<Opportunity | 'ALL' | null>(null);
+  const [resumeError, setResumeError] = useState('');
 
   const overviewLoader = useCallback(() => autonomousApi.overview(), []);
   const overview = usePollingAsync(overviewLoader, [overviewLoader], { enabled: visible, intervalMs: LIVE_MS });
@@ -67,9 +68,13 @@ export function AutonomousEngine() {
       autonomousApi
         .catchUp()
         .then((r) => {
-          if (!cancelled && r.ran) refreshAll.current();
+          if (cancelled) return;
+          setResumeError(r.error ? `Engine resume failed (${r.error}).` : '');
+          if (r.ran || r.error) refreshAll.current();
         })
-        .catch(() => undefined);
+        .catch((err: unknown) => {
+          if (!cancelled) setResumeError(err instanceof Error ? err.message : 'Engine resume failed.');
+        });
     tick();
     const t = window.setInterval(tick, CATCH_UP_MS);
     return () => {
@@ -91,6 +96,7 @@ export function AutonomousEngine() {
 
   return (
     <div className="ae-page">
+      <div className="ae-top">
       <StatusRibbon data={data} error={overview.error} />
 
       {overview.error && data ? (
@@ -111,6 +117,11 @@ export function AutonomousEngine() {
           <AlertTriangle size={15} /> The autonomous engine is disabled on this deployment (AUTONOMOUS_ENGINE_ENABLED). Showing the last persisted state.
         </div>
       ) : null}
+      {resumeError ? (
+        <div className="ae-banner is-bad">
+          <AlertTriangle size={15} /> {resumeError}
+        </div>
+      ) : null}
       {critical ? (
         <div className="ae-banner is-bad">
           <ShieldAlert size={15} />
@@ -123,6 +134,7 @@ export function AutonomousEngine() {
           <AlertTriangle size={15} /> Safety supervisor degraded: {safety.warnings.slice(0, 3).join(' · ')}
         </div>
       ) : null}
+      </div>
 
       <StagePipeline stages={stages} selected={stage} onSelect={select} loading={overview.loading} />
 

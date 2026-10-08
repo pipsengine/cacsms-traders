@@ -121,11 +121,14 @@ export function AppShell({
     return () => mq.removeEventListener('change', onChange);
   }, []);
 
+  const fitEngine = page === 'autonomous-engine';
+
   return (
     <div
       className={[
         collapsed ? 'shell shell--collapsed' : 'shell',
         page === 'overview' ? 'shell--overview' : '',
+        fitEngine ? 'shell--ae' : '',
       ]
         .filter(Boolean)
         .join(' ')}
@@ -196,7 +199,7 @@ export function AppShell({
         </div>
       </aside>
       <main className="workspace">
-        <header className={page === 'overview' ? 'top top--overview' : 'top'}>
+        <header className={page === 'overview' ? 'top top--overview' : fitEngine ? 'top top--ae' : 'top'}>
           <div className="top-left-cluster">
             {page !== 'overview' && (
               <div className="crumb">
@@ -240,7 +243,7 @@ export function AppShell({
         </header>
         <div
           className={
-            page === 'overview' ? 'page overview-page' : page === 'system-control' ? 'page sc-hub-page' : 'page'
+            page === 'overview' ? 'page overview-page' : page === 'system-control' ? 'page sc-hub-page' : fitEngine ? 'page ae-shell-page' : 'page'
           }
         >
           <div className="page-inner">{children}</div>

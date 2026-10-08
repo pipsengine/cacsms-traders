@@ -153,11 +153,34 @@ class AutonomousEngine:
         try:
             if time.monotonic() - self._last_demand_mono < ae_settings().on_demand_seconds:
                 return {"ran": False, "reason": "throttled"}
+            # Commit presence before the heavy pass. A serverless request can be cut off mid-cycle;
+            # without this the open page stays on STALLED and the stale-stage banner.
+            self._note_on_demand()
             report = self.safe_cycle("ON_DEMAND")
             return {"ran": "skipped" not in report and "error" not in report, **report}
         finally:
             self._last_demand_mono = time.monotonic()
             self._demand_lock.release()
+
+    def _note_on_demand(self) -> None:
+        """Mark workers present and stages touched so the page leaves the stalled/stale error while the pass runs."""
+        if not serverless():
+            return
+        stamp = utcnow().isoformat()
+        try:
+            with db() as conn:
+                from ..market.strength_intel_store import active_scope
+
+                repo = AERepository(conn, active_scope(conn))
+                for key, label in WORKERS.items():
+                    repo.heartbeat(key, label, "ON_DEMAND", owner=self.owner, at=stamp)
+                conn.execute(
+                    "UPDATE ae_stage_state SET last_update=? WHERE tenant_id=? AND trading_account_id=?",
+                    (stamp, repo.tenant, repo.account),
+                )
+                conn.commit()
+        except Exception:
+            log.exception("On-demand presence update failed")
 
     # ----- upstream -----
 

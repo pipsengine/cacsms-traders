@@ -162,13 +162,13 @@ class MarketScannerEngine:
 
         errors = []
         for tf in EXTRA_INGEST_TIMEFRAMES:
-            # A timeframe added after the first gold sync (M1) still needs a full history, not a 6-bar tail.
-            count = 400
-            if not bootstrap:
-                try:
-                    count = 400 if len(repo.candles(GOLD, tf, 80)) < 80 else INCREMENTAL_BARS
-                except Exception:
-                    count = 400
+            # A cold process must not re-download 400 bars when the store already has them.
+            # A timeframe added later (M1) still gets a full history until 80 bars exist.
+            try:
+                have = len(repo.candles(GOLD, tf, 80))
+            except Exception:
+                have = 0
+            count = INCREMENTAL_BARS if have >= 80 else 400
             err = sync(GOLD, tf, count)
             if err:
                 errors.append(f"{tf}: {err}")

@@ -32,5 +32,5 @@ export const autonomousApi = {
   symbolChart: (symbol: string, timeframe: string, limit = 140) =>
     get<SymbolChart>(`/autonomous/chart${qs({ symbol, timeframe, limit })}`),
   /** Lets a serverless deployment advance the engine while the page is open; the backend throttles and decides. */
-  catchUp: () => post<{ ran: boolean; reason?: string }>('/autonomous/jobs/catch-up', {}),
+  catchUp: () => post<{ ran: boolean; reason?: string; error?: string }>('/autonomous/jobs/catch-up', {}),
 };

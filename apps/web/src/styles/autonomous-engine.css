@@ -178,7 +178,8 @@ td.ae-clip.is-task { max-width: 150px; }
 
 /* chart */
 .ae-chart-card { padding-bottom: 6px; }
-.ae-chart-body { display: grid; grid-template-columns: minmax(0, 1fr) 196px; gap: 12px; align-items: start; }
+.ae-chart-body { display: grid; grid-template-columns: minmax(0, 1fr) 196px; gap: 12px; align-items: stretch; min-height: 0; }
+.ae-chart-plot { min-width: 0; min-height: 0; height: 100%; }
 .ae-chart-sym { color: #64748b; font-weight: 700; }
 .ae-structure-chart.mst-card { border: 0; box-shadow: none; padding: 0; background: transparent; }
 .ae-structure-chart .mst-chart-head { display: none; }
@@ -292,4 +293,150 @@ td.ae-clip.is-task { max-width: 150px; }
   .ae-clock { text-align: left; }
   .ae-chart-body { grid-template-columns: 1fr; }
   .ae-search { margin-left: 0; }
+}
+
+/* One viewport: the page does not scroll. Tables scroll inside their cards. */
+body:has(.shell--ae),
+#root:has(.shell--ae) {
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden;
+}
+.shell--ae {
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden;
+}
+.shell--ae .workspace {
+  height: 100dvh;
+  max-height: 100dvh;
+  min-height: 0;
+  display: flex !important;
+  flex-direction: column;
+  overflow: hidden;
+}
+.shell--ae .top--ae {
+  min-height: 52px;
+  padding: 6px 14px;
+}
+.shell--ae .workspace > .page.ae-shell-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-width: none;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: 8px 12px 8px !important;
+}
+.shell--ae .page.ae-shell-page .page-inner {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.shell--ae .ae-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) minmax(132px, 0.46fr);
+  gap: 8px;
+}
+.shell--ae .ae-top { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.shell--ae .ae-head { padding: 8px 12px; border-radius: 12px; gap: 10px; }
+.shell--ae .ae-title { flex-basis: 280px; gap: 2px; }
+.shell--ae .ae-title h1 { font-size: 16px; }
+.shell--ae .ae-title p { font-size: 11px; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+.shell--ae .ae-tile { padding: 4px 8px; min-width: 0; border-radius: 10px; }
+.shell--ae .ae-tile-icon { width: 26px; height: 26px; border-radius: 8px; }
+.shell--ae .ae-clock { min-width: 132px; }
+.shell--ae .ae-clock b { font-size: 11px; }
+.shell--ae .ae-clock span { font-size: 16px; margin-top: 0; }
+.shell--ae .ae-pipeline { gap: 6px; padding: 0; }
+.shell--ae .ae-stage { min-height: 0; padding: 8px 6px 6px; gap: 1px; border-radius: 12px; }
+.shell--ae .ae-stage-icon { width: 30px; height: 30px; margin-top: 2px; }
+.shell--ae .ae-stage strong { font-size: 11px; min-height: 0; line-height: 1.15; }
+.shell--ae .ae-stage-line { font-size: 11px; }
+.shell--ae .ae-stage-sub { font-size: 10px; line-height: 1.2; min-height: 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.shell--ae .ae-details {
+  min-height: 0;
+  overflow: hidden;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+}
+.shell--ae .ae-details-head { gap: 8px; align-items: center; }
+.shell--ae .ae-details-icon { width: 28px; height: 28px; margin-top: 0; }
+.shell--ae .ae-details-title h2 { font-size: 15px; }
+.shell--ae .ae-details-title p { margin: 0; font-size: 11px; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+.shell--ae .ae-times { gap: 10px; }
+.shell--ae .ae-times dd { font-size: 11px; }
+.shell--ae .ae-details-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: hidden;
+}
+.shell--ae .ae-details-body > .ae-kpis,
+.shell--ae .ae-details-body > .ae-banner,
+.shell--ae .ae-details-body > .ae-skeleton-block { flex: none; }
+.shell--ae .ae-details-body > .ae-grid { flex: 1 1 0; min-height: 0; }
+.shell--ae .ae-kpis { gap: 6px; grid-template-columns: repeat(var(--n, 6), minmax(0, 1fr)); }
+.shell--ae .ae-kpi { min-height: 0; padding: 6px 8px; gap: 6px; border-radius: 10px; }
+.shell--ae .ae-kpi b { font-size: 16px; }
+.shell--ae .ae-kpi-icon { width: 26px; height: 26px; }
+.shell--ae .ae-kpi span:not(.ae-kpi-icon),
+.shell--ae .ae-kpi small { font-size: 10px; }
+.shell--ae .ae-grid { gap: 6px; align-items: stretch; }
+.shell--ae .ae-grid-3 { grid-template-columns: minmax(0, 0.9fr) minmax(0, 1fr) minmax(220px, 1.45fr); }
+.shell--ae .ae-card { min-height: 0; height: 100%; gap: 6px; padding: 8px 10px; border-radius: 12px; overflow: hidden; }
+.shell--ae .ae-card-head { min-height: 0; }
+.shell--ae .ae-card-head h3 { font-size: 13px; }
+.shell--ae .ae-table-wrap { flex: 1 1 auto; min-height: 0; max-height: none; overflow: auto; }
+.shell--ae .ae-table th { padding: 4px 6px; }
+.shell--ae .ae-table td { padding: 4px 6px; }
+.shell--ae .ae-donut { width: 84px; height: 84px; }
+.shell--ae .ae-donut-wrap { min-height: 0; gap: 8px; }
+.shell--ae .ae-donut-list { gap: 1px; overflow: auto; }
+.shell--ae .ae-donut-list li { font-size: 11px; gap: 5px; }
+.shell--ae .ae-op { gap: 4px; min-height: 0; overflow: auto; }
+.shell--ae .ae-op p { font-size: 12px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.shell--ae .ae-op-meta { padding-top: 4px; gap: 4px 8px; }
+.shell--ae .ae-chart-card .ae-chart-body { flex: 1 1 auto; min-height: 0; }
+.shell--ae .ae-chart-stats { margin: 0; overflow: auto; font-size: 11px; }
+.shell--ae .ae-chart-stats div { padding: 3px 0; }
+.shell--ae .ae-opps { min-height: 0; overflow: hidden; }
+.shell--ae .ae-tabs button { padding: 6px 8px 5px; font-size: 12px; }
+.shell--ae .ae-opps-tools { padding: 6px 8px; gap: 6px; }
+.shell--ae .ae-opps .ae-table-wrap { flex: 1 1 auto; min-height: 0; max-height: none; margin: 0 8px; }
+.shell--ae .ae-opps-foot { padding: 4px 10px 6px; }
+
+@media (max-width: 1180px), (max-height: 680px) {
+  body:has(.shell--ae),
+  #root:has(.shell--ae),
+  .shell--ae,
+  .shell--ae .workspace {
+    height: auto;
+    max-height: none;
+    overflow: visible;
+  }
+  .shell--ae .workspace > .page.ae-shell-page,
+  .shell--ae .page.ae-shell-page .page-inner,
+  .shell--ae .ae-page,
+  .shell--ae .ae-details,
+  .shell--ae .ae-details-body {
+    overflow: visible;
+    height: auto;
+    max-height: none;
+    display: flex;
+    flex-direction: column;
+  }
+  .shell--ae .ae-card { height: auto; }
+  .shell--ae .ae-table-wrap,
+  .shell--ae .ae-opps .ae-table-wrap { max-height: 240px; }
 }
