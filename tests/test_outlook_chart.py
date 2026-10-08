@@ -82,6 +82,58 @@ def test_email_embeds_one_chart_per_qualified_symbol(env, monkeypatch):
     assert not TRADE_WORDS.search(_body(msg))
 
 
+def test_channel_touch_email_embeds_the_chart(env, monkeypatch):
+    from apps.api.app.market.repository import MarketRepository
+    from apps.api.app.notifications.worker import dispatch
+
+    def candles(self, symbol, timeframe, limit=300):
+        t0 = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        rows, px = [], 1.08
+        for i in range(48):
+            o = px
+            c = px + (0.0003 if i % 4 else -0.0005)
+            t = (t0 + timedelta(hours=i)).isoformat()
+            rows.append((t, t, o, max(o, c) + 0.0004, min(o, c) - 0.0004, c, 10, 0))
+            px = c
+        return rows
+
+    monkeypatch.setattr(MarketRepository, "candles", candles)
+    _recipient()
+    from test_notifications import _event, _process
+
+    _process([_event("CHANNEL_TOUCH", identity="UPPER", direction="BULLISH",
+                     metadata={"boundary": "UPPER", "label": "Upper Channel Touch", "boundary_level": 1.08348,
+                               "touch_price": 1.083467, "close": 1.083411, "context": {"summary": "H1 channel uptrend"}})])
+    assert dispatch(NOW)["sent"] == 1
+    msg = FakeSMTP.all_sent()[0]
+    html = next(p.get_content() for p in msg.walk() if p.get_content_type() == "text/html")
+    assert "cid:chart-EURUSD-H1" in html
+    assert html.index("cid:chart-EURUSD-H1") < html.index("Alert summary")
+    assert "H1 chart · channel for EURUSD" in _body(msg)
+    images = [p for p in msg.walk() if p.get_content_type() == "image/png"]
+    assert len(images) == 1 and images[0]["Content-ID"] == "<chart-EURUSD-H1>"
+    assert images[0].get_content_disposition() == "inline"
+    assert images[0].get_payload(decode=True).startswith(b"\x89PNG")
+    assert not TRADE_WORDS.search(_body(msg))
+
+
+def test_a_missing_alert_chart_still_sends_the_email(env, monkeypatch):
+    from apps.api.app.notifications import alert_charts
+    from apps.api.app.notifications.worker import dispatch
+    from test_notifications import _event, _process
+
+    def boom(event):
+        raise RuntimeError("chart down")
+
+    monkeypatch.setattr(alert_charts, "alert_chart", boom)
+    _recipient()
+    _process([_event("CHANNEL_TOUCH", identity="UPPER")])
+    assert dispatch(NOW)["sent"] == 1
+    msg = FakeSMTP.all_sent()[0]
+    assert "Upper Channel Touch" in msg["Subject"] or "Channel Touch" in msg["Subject"]
+    assert [p for p in msg.walk() if p.get_content_type() == "image/png"] == []
+
+
 def test_a_chart_failure_still_sends_the_email(env, monkeypatch):
     from apps.api.app.notifications import outlook_charts
     from apps.api.app.notifications.worker import dispatch

@@ -169,6 +169,7 @@ def render_outlook_chart(
     invalidation: float | None = None,
     channel: dict | None = None,
     path: list | None = None,
+    timeframe: str = "D1",
 ) -> bytes:
     """PNG of the daily chart for one qualified outlook. ``candles`` are ``{t,o,h,l,c}``, oldest first."""
     bars = [c for c in candles if c.get("t") is not None and all(c.get(k) is not None for k in ("o", "h", "l", "c"))][-72:]
@@ -256,7 +257,7 @@ def render_outlook_chart(
         cursor += _pill(draw, cursor, 36, word, small_f, fg, bg, edge) + 12
     if confidence is not None:
         draw.text((cursor, 36), f"{float(confidence):.0f}% confidence", font=body_f, fill=MUTED, anchor="lm")
-    badge = "D1"
+    badge = timeframe or "D1"
     bw = small_f.getlength(badge)
     draw.rounded_rectangle((W - 32 - bw - 28, 20, W - 32, 52), radius=8, fill=(234, 242, 255))
     draw.text((W - 32 - 14, 36), badge, font=small_f, fill=(29, 99, 223), anchor="rm")

@@ -170,19 +170,19 @@ def _table(rows: list[tuple[str, str]]) -> str:
     return f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse">{cells}</table>'
 
 
-def _chart_row(symbol: str, cid: str) -> str:
-    alt = f"{symbol} daily chart with the channel, expected reaction zone, targets and invalidation"
+def _chart_row(symbol: str, cid: str, caption: str = "D1 chart · channel, expected reaction zone, targets and invalidation") -> str:
+    alt = f"{symbol} chart — {caption}"
     return (
         f'<tr><td style="padding:2px 22px 16px">'
         f'<img src="cid:{html.escape(cid, quote=True)}" alt="{html.escape(alt)}" width="596" '
         f'style="display:block;width:100%;max-width:596px;height:auto;border:1px solid #e1e8f2;border-radius:10px" />'
-        f'<div style="margin-top:6px;color:#5b6b82;font-size:12px;line-height:1.5">'
-        f'D1 chart · channel, expected reaction zone, targets and invalidation</div></td></tr>'
+        f'<div style="margin-top:6px;color:#5b6b82;font-size:12px;line-height:1.5">{html.escape(caption)}</div></td></tr>'
     )
 
 
 def _html(title: str, tone: str, sections: list[tuple[str, list[tuple[str, str]]]], intro: str | None = None,
-          link: tuple[str, str] | None = None, images: dict[str, str] | None = None) -> str:
+          link: tuple[str, str] | None = None, images: dict[str, str] | None = None,
+          lead: tuple[str, str, str] | None = None) -> str:
     images = images or {}
     blocks = []
     for name, rows in sections:
@@ -212,6 +212,7 @@ def _html(title: str, tone: str, sections: list[tuple[str, list[tuple[str, str]]
 <div style="color:#9fb4d6;font-size:12px;margin-top:4px;letter-spacing:.04em">Autonomous Market Intelligence Alert</div>
 </td></tr>
 <tr><td style="padding:18px 22px 0"><div style="display:inline-block;padding:6px 12px;border-radius:999px;background:{tone}14;color:{tone};font-size:13px;font-weight:700">{html.escape(title)}</div></td></tr>
+{(_chart_row(*lead) if lead else "")}
 {intro_html}
 {body}
 <tr><td style="padding:16px 22px 22px;color:#5b6b82;font-size:12px;line-height:1.6;border-top:1px solid #edf1f7">
@@ -321,13 +322,30 @@ def outlook_message(cfg: SmtpConfig, e: dict, to: str) -> EmailMessage:
 
 
 def alert_message(cfg: SmtpConfig, e: dict, to: str) -> EmailMessage:
+    import logging
+
     if e["event_type"] == "AI_OUTLOOK_PUBLISHED":
         return outlook_message(cfg, e, to)
     title = _alert_label(e) + f" · {e['symbol']}" + (f" {e['timeframe']}" if e.get("timeframe") else "")
     sections = [("Alert summary", summary_rows(e)), ("Event details", detail_rows(e))]
     tone = TONE.get(e.get("direction") or "", "#1765ef")
-    return _message(cfg, to, subject(e), _text(title, sections), _html(title, tone, sections),
-                    {"X-Cacsms-Alert-Id": e["id"], "X-Cacsms-Alert-Type": e["event_type"]})
+    shot = None
+    try:
+        from .alert_charts import alert_chart
+
+        shot = alert_chart(e)
+    except Exception:
+        logging.getLogger("cacsms.notifications").warning("Alert chart was left out of the email", exc_info=True)
+    text = _text(title, sections)
+    lead = None
+    images = None
+    if shot:
+        cid, png, sym, caption = shot
+        lead = (sym, cid, caption)
+        images = [(cid, png)]
+        text += f"\n{caption} for {sym} is included in the HTML version of this email.\n"
+    return _message(cfg, to, subject(e), text, _html(title, tone, sections, lead=lead),
+                    {"X-Cacsms-Alert-Id": e["id"], "X-Cacsms-Alert-Type": e["event_type"]}, images)
 
 
 def test_message(cfg: SmtpConfig, to: str) -> EmailMessage:
