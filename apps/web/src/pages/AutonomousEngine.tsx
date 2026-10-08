@@ -9,10 +9,8 @@ import { OpportunitiesTable } from '../features/autonomous/components/Opportunit
 import { HistoryDrawer } from '../features/autonomous/components/HistoryDrawer';
 import type { Opportunity, StageFilters, StageKey } from '../features/autonomous/types';
 
-const OVERVIEW_MS = 10000;
-const STAGE_MS = 15000;
-const OPPS_MS = 20000;
-const CATCH_UP_MS = 45000;
+const LIVE_MS = 1000;
+const CATCH_UP_MS = 15000;
 const STAGE_KEY = 'ae_stage';
 const STAGE_KEYS: StageKey[] = [
   'MARKET_DATA',
@@ -48,13 +46,13 @@ export function AutonomousEngine() {
   const [history, setHistory] = useState<Opportunity | 'ALL' | null>(null);
 
   const overviewLoader = useCallback(() => autonomousApi.overview(), []);
-  const overview = usePollingAsync(overviewLoader, [overviewLoader], { enabled: visible, intervalMs: OVERVIEW_MS });
+  const overview = usePollingAsync(overviewLoader, [overviewLoader], { enabled: visible, intervalMs: LIVE_MS });
 
   const stageLoader = useCallback(() => autonomousApi.stage(stage, filters), [stage, filters]);
-  const detail = usePollingAsync(stageLoader, [stageLoader], { enabled: visible, intervalMs: STAGE_MS });
+  const detail = usePollingAsync(stageLoader, [stageLoader], { enabled: visible, intervalMs: LIVE_MS });
 
   const oppsLoader = useCallback(() => autonomousApi.opportunities('ALL', 400), []);
-  const opps = usePollingAsync(oppsLoader, [oppsLoader], { enabled: visible, intervalMs: OPPS_MS });
+  const opps = usePollingAsync(oppsLoader, [oppsLoader], { enabled: visible, intervalMs: LIVE_MS });
 
   const refreshAll = useRef(() => {});
   refreshAll.current = () => {

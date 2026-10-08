@@ -1,177 +1,145 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { Activity, CircleX, GitBranch, Layers, Mail, RefreshCw, Repeat, Star, Target, Zap } from 'lucide-react';
 import { StructureChart, type ChartOverlay } from '../../market-structure/components/StructureChart';
+import { useLive, useLiveCandles } from '../../market-structure/live';
 import { usePollingAsync } from '../../market-intelligence/hooks/useMarketIntelligence';
 import { autonomousApi } from '../api';
 import { ALERT_LABEL, CHANNEL_STATE_TONE, list, num, pretty, price, rec, tone, until, utc } from '../format';
-import type { Channel, ChannelQueueItem, StageDetail, Transition } from '../types';
+import type { ChannelLines, ChannelQueueItem, StageDetail } from '../types';
 import { CurrentOperation, DetectionsTable, Donut, Empty, KpiRow, Panel, Sym, useNow, type Kpi } from './DetailParts';
 
-const TFS = ['W', 'D1', 'H8', 'H1'] as const;
+/** Every timeframe the XAUUSD chart must offer. None of these is disabled. */
+export const CHART_TFS = ['M1', 'M5', 'M15', 'H1', 'H4', 'W1'] as const;
 
-function chartOverlay(c: Channel, events: Transition[]): ChartOverlay {
-  const overlay: ChartOverlay = { lines: [], bands: [], markers: [], levels: [] };
-  if (c.erz_band && c.erz_band.upper.length >= 2) {
-    overlay.bands!.push({
-      upper: [c.erz_band.upper[0], c.erz_band.upper[1]],
-      lower: [c.erz_band.lower[0], c.erz_band.lower[1]],
-      tone: c.direction === 'DESCENDING' ? 'red' : 'green',
-    });
-  }
-  if (c.lines) {
-    overlay.lines!.push(
-      { from: c.lines.upper[0], to: c.lines.upper[1], tone: 'res', width: 1.6 },
-      { from: c.lines.lower[0], to: c.lines.lower[1], tone: 'sup', width: 1.6 },
-      { from: c.lines.mid[0], to: c.lines.mid[1], tone: 'mid', dashed: true },
-    );
-  }
-  if (c.break_level != null && c.break_at) overlay.levels!.push({ price: c.break_level, tone: 'amber', label: 'Break level', from: c.break_at });
-  for (const e of events) {
-    const level = e.evidence?.level;
-    if (typeof level !== 'number') continue;
-    const side = e.evidence?.side;
-    if (e.to_state === 'TOUCHED')
-      overlay.markers!.push({ at: e.evidence_at, price: level, shape: side === 'UPPER' ? 'down' : 'up', tone: 'blue', below: side !== 'UPPER' });
-    else if (e.to_state === 'BREAKING' || e.to_state === 'BROKEN')
-      overlay.markers!.push({ at: e.evidence_at, price: level, shape: 'diamond', tone: 'amber', label: e.to_state === 'BROKEN' ? 'Break' : undefined });
-    else if (e.to_state === 'RETESTING') overlay.markers!.push({ at: e.evidence_at, price: level, shape: 'dot', tone: 'blue', label: 'Retest' });
-    else if (e.to_state === 'CONTINUING') overlay.markers!.push({ at: e.evidence_at, price: level, shape: 'dot', tone: 'green', label: 'Cont.' });
-  }
+const BARS_PER_DAY: Record<string, number> = { M1: 1440, M5: 288, M15: 96, H1: 24, H4: 6, H8: 3, D1: 1, W: 1 / 7, W1: 1 / 7 };
+const DIR_WORD: Record<string, string> = { ASCENDING: 'Bullish', DESCENDING: 'Bearish', FLAT: 'Ranging' };
+
+function ageText(bars: number | null, tf: string) {
+  if (bars == null) return '—';
+  const per = BARS_PER_DAY[tf];
+  if (!per) return `${bars} bars`;
+  const days = bars / per;
+  if (days >= 1.5) return `${Math.round(days)} days`;
+  if (days >= 1) return '1 day';
+  return `${bars} bars`;
+}
+
+function chartOverlay(lines: ChannelLines | null, direction: string | null): ChartOverlay {
+  const overlay: ChartOverlay = { lines: [], bands: [] };
+  if (!lines) return overlay;
+  const bear = direction === 'DESCENDING';
+  overlay.bands!.push({ upper: [lines.upper[0], lines.upper[1]], lower: [lines.lower[0], lines.lower[1]], tone: bear ? 'red' : 'green' });
+  overlay.lines!.push(
+    { from: lines.upper[0], to: lines.upper[1], tone: 'res', width: 1.6 },
+    { from: lines.lower[0], to: lines.lower[1], tone: 'sup', width: 1.6 },
+    { from: lines.mid[0], to: lines.mid[1], tone: 'mid', dashed: true },
+  );
   return overlay;
 }
 
-function ChannelDetection({ channels, symbol, onSymbol }: { channels: Channel[]; symbol: string | null; onSymbol: (s: string) => void }) {
-  const forSymbol = channels.filter((c) => c.symbol === symbol);
-  const [tf, setTf] = useState<string | null>(null);
-  const available = new Set(forSymbol.map((c) => c.timeframe));
-  const picked = forSymbol.find((c) => c.timeframe === tf) ?? forSymbol.find((c) => c.timeframe === 'H1') ?? forSymbol[0] ?? null;
-  useEffect(() => setTf(null), [symbol]);
-
-  const loader = useCallback(() => (picked ? autonomousApi.channelChart(picked.id, 140) : Promise.resolve(null)), [picked?.id]);
-  const chart = usePollingAsync(loader, [loader], { enabled: !!picked, intervalMs: 30000 });
-  const c = chart.data?.channel ?? picked;
-  const overlay = useMemo(() => (c && chart.data ? chartOverlay(c, chart.data.events) : null), [c, chart.data]);
-  const symbols = [...new Set(channels.map((x) => x.symbol))].sort();
+function ChannelDetection({ symbol }: { symbol: string | null }) {
+  const [tf, setTf] = useState<(typeof CHART_TFS)[number]>('H1');
+  const loader = useCallback(
+    () => (symbol ? autonomousApi.symbolChart(symbol, tf, 140) : Promise.resolve(null)),
+    [symbol, tf],
+  );
+  const chart = usePollingAsync(loader, [loader], { enabled: !!symbol, intervalMs: 5000 });
+  const live = useLive(symbol, [tf], !!symbol);
+  const fresh = chart.data?.symbol === symbol && chart.data.timeframe === tf ? chart.data : null;
+  const closed = (fresh?.candles ?? []).map((c) => ({ ...c, v: c.v ?? 0 }));
+  const bars = useLiveCandles(`${symbol}|${tf}`, closed, live.data?.forming?.[tf]);
+  const view = fresh?.channel ?? null;
+  const digits = view?.digits ?? (symbol?.startsWith('XAU') ? 2 : symbol?.endsWith('JPY') ? 3 : 5);
+  const last = live.data?.quote && !live.data.quote.stale ? live.data.quote.price : bars.at(-1)?.c;
+  const overlay = useMemo(() => chartOverlay(view?.lines ?? null, view?.direction ?? null), [view]);
+  const widthPct = view?.width != null && view.mid ? (view.width / view.mid) * 100 : null;
 
   return (
     <Panel
       className="ae-chart-card"
-      title={
-        <>
-          Channel Detection
-          {symbols.length ? (
-            <select className="ae-inline-select" value={symbol ?? ''} onChange={(e) => onSymbol(e.target.value)} aria-label="Chart instrument">
-              {symbols.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-          ) : null}
-        </>
-      }
+      title={<>Channel Detection {symbol ? <span className="ae-chart-sym">({symbol})</span> : null}</>}
       extra={
         <div className="ae-seg" role="tablist" aria-label="Channel timeframe">
-          {TFS.map((t) => (
-            <button
-              type="button"
-              key={t}
-              disabled={!available.has(t)}
-              className={picked?.timeframe === t ? 'is-on' : ''}
-              onClick={() => setTf(t)}
-              aria-selected={picked?.timeframe === t}
-            >
+          {CHART_TFS.map((t) => (
+            <button type="button" key={t} className={tf === t ? 'is-on' : ''} onClick={() => setTf(t)} aria-selected={tf === t}>
               {t}
             </button>
           ))}
         </div>
       }
     >
-      {!c ? (
-        <Empty>No active channel lineage for this instrument. Channels appear once closed-bar geometry qualifies.</Empty>
-      ) : (
-        <div className="ae-chart-body">
-          <StructureChart
-            symbol={c.symbol}
-            title={`${c.timeframe} channel`}
-            tf={c.timeframe}
-            candles={chart.data?.candles ?? []}
-            digits={c.digits}
-            lastPrice={chart.data?.candles.at(-1)?.c}
-            height={250}
-            loading={chart.loading}
-            error={chart.error}
-            overlay={overlay}
-            showVolume={false}
-            compact
-            heading={<span />}
-            actions={<span />}
-            className="ae-structure-chart"
-            legend={[
-              { label: 'Upper', swatch: 'is-bear-line' },
-              { label: 'Lower', swatch: 'is-bull-line' },
-              { label: 'Midline', swatch: 'is-ae-mid' },
-              { label: 'ERZ', swatch: c.direction === 'DESCENDING' ? 'is-ae-erz-red' : 'is-ae-erz-green' },
-            ]}
-          />
-          <dl className="ae-chart-stats">
-            <div>
-              <dt>Direction</dt>
-              <dd className={c.direction === 'ASCENDING' ? 'is-up' : c.direction === 'DESCENDING' ? 'is-down' : ''}>{pretty(c.direction)}</dd>
-            </div>
-            <div>
-              <dt>State</dt>
-              <dd>
-                <span className={`ae-badge is-${CHANNEL_STATE_TONE[c.state] ?? 'muted'}`}>{pretty(c.state)}</span>
-              </dd>
-            </div>
-            <div>
-              <dt>Upper</dt>
-              <dd>{price(c.upper, c.digits)}</dd>
-            </div>
-            <div>
-              <dt>Lower</dt>
-              <dd>{price(c.lower, c.digits)}</dd>
-            </div>
-            <div>
-              <dt>Width</dt>
-              <dd>
-                {price(c.width, c.digits)}
-                {c.width_atr != null ? <small> ({c.width_atr.toFixed(1)} ATR)</small> : null}
-              </dd>
-            </div>
-            <div>
-              <dt>ERZ</dt>
-              <dd>{c.erz_lo != null ? `${price(c.erz_lo, c.digits)} – ${price(c.erz_hi, c.digits)}` : '—'}</dd>
-            </div>
-            <div>
-              <dt>Touches</dt>
-              <dd>
-                {(c.touches_upper ?? 0) + (c.touches_lower ?? 0)} <small>({c.touches_upper ?? 0}U / {c.touches_lower ?? 0}L)</small>
-              </dd>
-            </div>
-            <div>
-              <dt>Age</dt>
-              <dd>{c.age_bars != null ? `${c.age_bars} bars` : '—'}</dd>
-            </div>
-            <div>
-              <dt>Validity</dt>
-              <dd>{pretty(c.validity)}</dd>
-            </div>
-            <div>
-              <dt>Quality</dt>
-              <dd className="is-strong">{c.quality != null ? `${Math.round(c.quality)}%` : '—'}</dd>
-            </div>
-          </dl>
-        </div>
-      )}
+      <div className="ae-chart-body">
+        <StructureChart
+          symbol={symbol ?? ''}
+          title={`${tf} channel`}
+          tf={tf === 'W1' ? 'W' : tf}
+          candles={bars}
+          digits={digits}
+          lastPrice={last}
+          height={268}
+          loading={chart.loading && !fresh}
+          error={chart.error || undefined}
+          overlay={overlay}
+          showVolume={false}
+          compact
+          heading={<span />}
+          actions={<span />}
+          className="ae-structure-chart"
+          legend={[
+            { label: 'Upper', swatch: 'is-bear-line' },
+            { label: 'Lower', swatch: 'is-bull-line' },
+            { label: 'Midline', swatch: 'is-ae-mid' },
+          ]}
+        />
+        <dl className="ae-chart-stats">
+          <div>
+            <dt>Channel Direction</dt>
+            <dd className={view?.direction === 'ASCENDING' ? 'is-up' : view?.direction === 'DESCENDING' ? 'is-down' : ''}>
+              {view?.direction ? DIR_WORD[view.direction] ?? pretty(view.direction) : '—'}
+            </dd>
+          </div>
+          <div>
+            <dt>Channel Status</dt>
+            <dd>
+              {view ? <span className={`ae-badge is-${CHANNEL_STATE_TONE[view.state] ?? 'ok'}`}>{pretty(view.state)}</span> : '—'}
+            </dd>
+          </div>
+          <div>
+            <dt>Upper Channel</dt>
+            <dd>{price(view?.upper, digits)}</dd>
+          </div>
+          <div>
+            <dt>Lower Channel</dt>
+            <dd>{price(view?.lower, digits)}</dd>
+          </div>
+          <div>
+            <dt>Channel Width</dt>
+            <dd>
+              {price(view?.width, digits)}
+              {widthPct != null ? <small> ({widthPct.toFixed(2)}%)</small> : null}
+            </dd>
+          </div>
+          <div>
+            <dt>Touches</dt>
+            <dd>{view ? (view.touches_upper ?? 0) + (view.touches_lower ?? 0) : '—'}</dd>
+          </div>
+          <div>
+            <dt>Channel Age</dt>
+            <dd>{ageText(view?.age_bars ?? null, tf)}</dd>
+          </div>
+          <div>
+            <dt>Quality Score</dt>
+            <dd className="is-strong">{view?.quality != null ? `${Math.round(view.quality)}%` : '—'}</dd>
+          </div>
+        </dl>
+      </div>
     </Panel>
   );
 }
 
 export function ChannelStage({ d, onRefresh }: { d: StageDetail; onRefresh: () => void }) {
   const m = d.metrics;
-  const now = useNow(5000);
+  const now = useNow(1000);
   const channels = d.channels ?? [];
   const current = (d.detail.current ?? null) as {
     symbol: string;
@@ -185,7 +153,9 @@ export function ChannelStage({ d, onRefresh }: { d: StageDetail; onRefresh: () =
   const queue = list<ChannelQueueItem>(d.detail, 'queue');
   const byState = rec(m, 'by_state');
   const [chartSymbol, setChartSymbol] = useState<string | null>(null);
-  const defaultSymbol = d.filters.symbol ?? current?.symbol ?? channels[0]?.symbol ?? null;
+  const known = d.symbols ?? [];
+  const preferred = known.includes('XAUUSD') ? 'XAUUSD' : current?.symbol ?? channels[0]?.symbol ?? known[0] ?? null;
+  const defaultSymbol = d.filters.symbol || preferred;
   const symbol = chartSymbol && channels.some((c) => c.symbol === chartSymbol) ? chartSymbol : defaultSymbol;
   const digitsFor = (s: string) => (s.startsWith('XAU') ? 2 : s.endsWith('JPY') ? 3 : 5);
   const alerts = d.alerts?.items ?? [];
@@ -244,7 +214,7 @@ export function ChannelStage({ d, onRefresh }: { d: StageDetail; onRefresh: () =
           live={d.status === 'RUNNING'}
           color={d.color}
         />
-        <ChannelDetection channels={channels} symbol={symbol} onSymbol={setChartSymbol} />
+        <ChannelDetection symbol={symbol} />
       </div>
 
       <div className="ae-grid ae-grid-3">

@@ -1,6 +1,7 @@
 import { get, post } from '../../lib/api';
 import type {
   ChannelChart,
+  SymbolChart,
   HistoryResponse,
   OpportunitiesResponse,
   Overview,
@@ -27,6 +28,9 @@ export const autonomousApi = {
   transitions: (entityType: string, limit = 150) =>
     get<{ rows: Transition[] }>(`/autonomous/transitions${qs({ entity_type: entityType, limit })}`),
   channelChart: (id: string, limit = 160) => get<ChannelChart>(`/autonomous/channels/${encodeURIComponent(id)}/chart${qs({ limit })}`),
+  /** Candles and display geometry for one timeframe, including M1–W1. */
+  symbolChart: (symbol: string, timeframe: string, limit = 140) =>
+    get<SymbolChart>(`/autonomous/chart${qs({ symbol, timeframe, limit })}`),
   /** Lets a serverless deployment advance the engine while the page is open; the backend throttles and decides. */
   catchUp: () => post<{ ran: boolean; reason?: string }>('/autonomous/jobs/catch-up', {}),
 };

@@ -15,6 +15,21 @@ import {
 import { pretty, stageLines, tone } from '../format';
 import type { StageKey, StageSummary } from '../types';
 
+/** Short card titles, matching the stage dashboard. The detail header keeps the full stage name. */
+const CARD_LABEL: Record<StageKey, string> = {
+  MARKET_DATA: 'Market Data',
+  INTELLIGENCE: 'Intelligence',
+  SCANNER: 'Scanner',
+  STRUCTURE: 'Structure',
+  CHANNEL: 'Channel',
+  OPPORTUNITY: 'Opportunity',
+  CONFIRMATION: 'Confirmation',
+  RISK: 'Risk & Portfolio',
+  EXECUTION: 'Execution',
+  MANAGEMENT: 'Management',
+  LEARNING: 'Performance & Learning',
+};
+
 export const STAGE_ICON: Record<StageKey, ReactNode> = {
   MARKET_DATA: <Database size={17} />,
   INTELLIGENCE: <TrendingUp size={17} />,
@@ -71,7 +86,7 @@ export function StagePipeline({
               <span className="ae-stage-num">{s.number}</span>
               {STAGE_ICON[s.key]}
             </span>
-            <strong>{s.label}</strong>
+            <strong>{CARD_LABEL[s.key]}</strong>
             <span className={`ae-badge is-${tone(s.status)}`}>{s.stale ? 'Stale' : pretty(s.status)}</span>
             <span className="ae-stage-line">{a}</span>
             <span className="ae-stage-sub">{b}</span>

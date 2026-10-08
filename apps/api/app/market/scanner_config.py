@@ -13,11 +13,13 @@ from .constants import FX_PAIRS_28
 GOLD = "XAUUSD"
 SCANNER_UNIVERSE: tuple[str, ...] = (GOLD, *FX_PAIRS_28)
 # Timeframes the scanner keeps ingested for instruments outside the strength engine basket (XAUUSD).
-EXTRA_INGEST_TIMEFRAMES = ("M5", "M15", "M30", "H1", "H4", "H8", "D1", "W1", "MN")
+# M1 is included so gold is not missing the finest bar the rest of the universe already stores.
+EXTRA_INGEST_TIMEFRAMES = ("M1", "M5", "M15", "M30", "H1", "H4", "H8", "D1", "W1", "MN")
 # Timeframes the scanner ingests for every instrument because the strength engine does not maintain them.
 UNIVERSE_INGEST_TIMEFRAMES = ("H4", "M30")
 CHART_TIMEFRAMES = {
-    "M5": "M5", "M15": "M15", "M30": "M30", "H1": "H1", "H4": "H4", "H8": "H8", "D1": "D1", "W": "W1", "MN": "MN",
+    "M1": "M1", "M5": "M5", "M15": "M15", "M30": "M30", "H1": "H1", "H4": "H4", "H8": "H8",
+    "D1": "D1", "W": "W1", "W1": "W1", "MN": "MN",
 }
 STRUCTURE_TIMEFRAMES = ("W1", "D1", "H8", "H1")
 DISPLAY_TF = {"W1": "W", "D1": "D1", "H8": "H8", "H1": "H1"}

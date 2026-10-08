@@ -7,7 +7,7 @@ import { Sym } from './DetailParts';
 type Tab = { id: string; label: string; match: (o: Opportunity) => boolean };
 
 const TABS: Tab[] = [
-  { id: 'all', label: 'All Opportunities', match: (o) => o.status === 'ACTIVE' },
+  { id: 'all', label: 'All Symbols', match: (o) => o.status === 'ACTIVE' },
   { id: 'p1', label: 'P1 Retracement', match: (o) => o.status === 'ACTIVE' && o.type === 'P1_RETRACEMENT' },
   { id: 'p2', label: 'P2 Breakout', match: (o) => o.status === 'ACTIVE' && o.type === 'P2_BREAKOUT_RETEST' },
   { id: 'cont', label: 'Continuation', match: (o) => o.status === 'ACTIVE' && o.type === 'CONTINUATION' },
@@ -15,8 +15,11 @@ const TABS: Tab[] = [
   { id: 'zone', label: 'Waiting for Zone', match: (o) => o.status === 'ACTIVE' && o.state === 'WAITING_FOR_ZONE' },
   { id: 'ready', label: 'Ready', match: (o) => o.status === 'ACTIVE' && o.state === 'EXECUTION_BLOCKED_ANALYSIS_ONLY' },
   { id: 'invalid', label: 'Invalidated', match: (o) => o.status === 'CLOSED' && o.state === 'INVALIDATED' },
-  { id: 'closed', label: 'Closed', match: (o) => o.status === 'CLOSED' },
 ];
+
+const TF_OPTIONS = ['M1', 'M5', 'M15', 'H1', 'H4', 'H8', 'D1', 'W1'];
+const sameTf = (filter: string, value: string | null) =>
+  !!value && (filter === value || (filter === 'W1' && value === 'W') || (filter === 'W' && value === 'W1'));
 
 export function OpportunitiesTable({
   data,
@@ -41,6 +44,7 @@ export function OpportunitiesTable({
   const [stage, setStage] = useState('');
   const [direction, setDirection] = useState('');
   const [tf, setTf] = useState('');
+  const [kind, setKind] = useState('');
   const [q, setQ] = useState('');
   const rows = data?.rows ?? [];
   const symbols = useMemo(() => [...new Set(rows.map((r) => r.symbol))].sort(), [rows]);
@@ -53,7 +57,8 @@ export function OpportunitiesTable({
       (!provider || o.provider === provider) &&
       (!stage || o.stage === stage) &&
       (!direction || o.direction === direction) &&
-      (!tf || o.trigger_tf === tf || o.parent_tf === tf) &&
+      (!kind || o.type === kind) &&
+      (!tf || sameTf(tf, o.trigger_tf) || sameTf(tf, o.parent_tf)) &&
       (!q || `${o.symbol} ${o.type_label} ${o.state} ${o.next_condition ?? ''}`.toLowerCase().includes(q.toLowerCase())),
   );
 
@@ -78,6 +83,13 @@ export function OpportunitiesTable({
           <option value="mt5">MT5</option>
           <option value="ctrader">cTrader</option>
         </select>
+        <select value={kind} onChange={(e) => setKind(e.target.value)} aria-label="Opportunity type">
+          <option value="">All Opportunity Types</option>
+          <option value="P1_RETRACEMENT">P1 Retracement</option>
+          <option value="P2_BREAKOUT_RETEST">P2 Breakout</option>
+          <option value="CONTINUATION">Continuation</option>
+          <option value="TIT">TiT</option>
+        </select>
         <select value={stage} onChange={(e) => setStage(e.target.value)} aria-label="Stage">
           <option value="">All Stages</option>
           {stages.map((s) => (
@@ -88,7 +100,7 @@ export function OpportunitiesTable({
         </select>
         <select value={tf} onChange={(e) => setTf(e.target.value)} aria-label="Timeframe">
           <option value="">All Timeframes</option>
-          {['W', 'D1', 'H8', 'H1'].map((t) => (
+          {TF_OPTIONS.map((t) => (
             <option key={t}>{t}</option>
           ))}
         </select>

@@ -270,6 +270,63 @@ def stage_detail(conn, repo: AERepository, key: str, now: datetime, *, symbol: s
     return base
 
 
+def display_channel(symbol: str, timeframe: str, candles: list[dict]) -> dict | None:
+    """Channel geometry for a chart timeframe. Display only — not a stored lineage and not an order."""
+    from datetime import datetime
+
+    from ..market.channel_intelligence import channel_settings, tf_core
+    from ..market.scanner_analytics import Bar
+    from .channels import quality
+
+    bars = []
+    for c in candles:
+        try:
+            t = datetime.fromisoformat(str(c["t"]))
+            bars.append(Bar(t, float(c["o"]), float(c["h"]), float(c["l"]), float(c["c"]), float(c.get("v") or 0)))
+        except (TypeError, ValueError, KeyError):
+            continue
+    core = tf_core(bars, "W" if timeframe in ("W", "W1") else timeframe, channel_settings())
+    if not core.get("available"):
+        return None
+    width = core["upper"] - core["lower"]
+    return {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "state": "ACTIVE" if core["validity"]["key"] == "VALID" else "FORMING",
+        "direction": core["direction"],
+        "validity": core["validity"]["key"],
+        "upper": core["upper"],
+        "mid": core["mid"],
+        "lower": core["lower"],
+        "width": width,
+        "width_atr": core["width_atr"],
+        "touches_upper": core["touches_upper"],
+        "touches_lower": core["touches_lower"],
+        "age_bars": core["age"],
+        "quality": quality(core),
+        "digits": digits(symbol),
+        "lines": core["lines"],
+    }
+
+
+def symbol_chart(repo: AERepository, symbol: str, timeframe: str, limit: int) -> dict:
+    from ..market.scanner_engine import chart_candles
+
+    candle_name = "W" if timeframe in ("W", "W1") else timeframe
+    candles = chart_candles(symbol, candle_name, limit)["candles"]
+    view = display_channel(symbol, timeframe, candles)
+    stored_tf = "W" if timeframe in ("W", "W1") else timeframe
+    stored = next((c for c in repo.active_channels() if c["symbol"] == symbol and c["timeframe"] == stored_tf), None)
+    if view and stored:
+        view["state"] = stored.get("state") or view["state"]
+        if stored.get("quality") is not None:
+            view["quality"] = stored["quality"]
+    elif stored and not view:
+        view = channel_public(stored)
+        view["timeframe"] = timeframe
+    return {"symbol": symbol, "timeframe": timeframe, "candles": candles, "channel": view}
+
+
 def channel_chart(repo: AERepository, channel_id: str, limit: int) -> dict | None:
     from ..market.scanner_engine import chart_candles
 

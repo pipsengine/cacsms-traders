@@ -159,6 +159,30 @@ export type Opportunity = {
 
 export type ChannelLines = Record<'upper' | 'mid' | 'lower', [[string, number], [string, number]]>;
 
+/** Display geometry for a chart timeframe. Present for every inclusive timeframe, not only a stored lineage. */
+export type SymbolChart = {
+  symbol: string;
+  timeframe: string;
+  candles: { t: string; o: number; h: number; l: number; c: number; v?: number }[];
+  channel: {
+    symbol: string;
+    timeframe: string;
+    state: string;
+    direction: string | null;
+    upper: number | null;
+    mid: number | null;
+    lower: number | null;
+    width: number | null;
+    width_atr: number | null;
+    touches_upper: number | null;
+    touches_lower: number | null;
+    age_bars: number | null;
+    quality: number | null;
+    digits: number;
+    lines: ChannelLines | null;
+  } | null;
+};
+
 export type Channel = {
   id: string;
   symbol: string;

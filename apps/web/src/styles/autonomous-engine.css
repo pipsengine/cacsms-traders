@@ -178,20 +178,20 @@ td.ae-clip.is-task { max-width: 150px; }
 
 /* chart */
 .ae-chart-card { padding-bottom: 6px; }
-.ae-chart-body { display: grid; grid-template-columns: minmax(0, 1fr) 150px; gap: 10px; align-items: start; }
+.ae-chart-body { display: grid; grid-template-columns: minmax(0, 1fr) 196px; gap: 12px; align-items: start; }
+.ae-chart-sym { color: #64748b; font-weight: 700; }
 .ae-structure-chart.mst-card { border: 0; box-shadow: none; padding: 0; background: transparent; }
 .ae-structure-chart .mst-chart-head { display: none; }
-.ae-chart-stats { margin: 0; display: flex; flex-direction: column; gap: 5px; font-size: 11.5px; }
-.ae-chart-stats div { display: flex; justify-content: space-between; gap: 6px; border-bottom: 1px dashed var(--line); padding-bottom: 3px; }
+.ae-chart-stats { margin: 4px 0 0; display: flex; flex-direction: column; gap: 0; font-size: 12px; }
+.ae-chart-stats div { display: flex; justify-content: space-between; gap: 8px; align-items: center; padding: 7px 0; border-bottom: 1px solid #f1f5f9; }
 .ae-chart-stats dt { color: var(--muted); }
 .ae-chart-stats dd { margin: 0; font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; }
 .ae-chart-stats dd small { color: var(--muted); font-weight: 500; }
 .ae-chart-stats dd.is-strong { color: var(--ae-ok); }
-.ae-seg { display: inline-flex; border: 1px solid var(--line2); border-radius: 8px; overflow: hidden; }
-.ae-seg button { border: 0; background: #fff; padding: 3px 9px; font: inherit; font-size: 11.5px; font-weight: 700; color: var(--muted); cursor: pointer; }
-.ae-seg button + button { border-left: 1px solid var(--line2); }
-.ae-seg button.is-on { background: var(--primary); color: #fff; }
-.ae-seg button:disabled { color: #cbd5e1; cursor: not-allowed; }
+.ae-seg { display: inline-flex; gap: 2px; align-items: center; }
+.ae-seg button { border: 0; background: transparent; padding: 3px 8px; font: inherit; font-size: 11.5px; font-weight: 700; color: #64748b; cursor: pointer; border-radius: 6px; }
+.ae-seg button.is-on { background: #2563eb; color: #fff; }
+.ae-seg button:hover:not(.is-on) { background: #eff6ff; color: #1d4ed8; }
 .ae-page .mcx-band.is-green { fill: rgba(22, 163, 74, 0.12); }
 .ae-page .mcx-band.is-red { fill: rgba(220, 38, 38, 0.1); }
 .ae-page .mcx-sw.is-ae-mid { height: 0; border-top: 2px dashed #8a96aa; border-radius: 0; }

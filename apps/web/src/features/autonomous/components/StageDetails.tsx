@@ -21,7 +21,7 @@ const PURPOSE: Record<string, string> = {
   LEARNING: 'Shadow outcomes of analysis-only plans (target before stop) feed performance statistics by setup type.',
 };
 
-const TIMEFRAMES = ['W', 'D1', 'H8', 'H1'];
+const TIMEFRAMES = ['M1', 'M5', 'M15', 'H1', 'H4', 'H8', 'D1', 'W1'];
 
 export function StageDetails({
   summary,

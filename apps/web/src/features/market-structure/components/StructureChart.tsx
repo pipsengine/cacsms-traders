@@ -49,7 +49,7 @@ function ticks(lo: number, hi: number, count: number) {
   return out;
 }
 
-const INTRADAY_HOURS: Record<string, number> = { H8: 8, H4: 4, H1: 1, M30: 0.5, M15: 0.25 };
+const INTRADAY_HOURS: Record<string, number> = { H8: 8, H4: 4, H1: 1, M30: 0.5, M15: 0.25, M5: 5 / 60, M1: 1 / 60 };
 
 /** `spanBars` narrows the label granularity when zoomed in (days for D1, hours inside a day for intraday). */
 function axisLabels(candles: VCandle[], tf: string, spanBars = Infinity) {

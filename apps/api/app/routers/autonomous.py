@@ -19,7 +19,9 @@ from ..market.strength_intel_store import active_scope
 from ..services.access import require_permission
 
 router = APIRouter(prefix="/api/autonomous", tags=["Autonomous Engine"])
-TIMEFRAMES = ("W", "D1", "H8", "H1")
+# Chart and filter timeframes. W1 is the same stored lineage as W. M1–H4 are included so XAUUSD is not limited to H1 and above.
+TIMEFRAMES = ("M1", "M5", "M15", "H1", "H4", "H8", "D1", "W", "W1")
+_STORED_TF = {"W1": "W"}
 
 
 def _now() -> datetime:
@@ -47,9 +49,10 @@ def _symbol(symbol: str | None) -> str | None:
 def _timeframe(tf: str | None) -> str | None:
     if not tf:
         return None
-    if tf.upper() not in TIMEFRAMES:
+    name = tf.upper()
+    if name not in TIMEFRAMES:
         raise HTTPException(400, f"Unsupported timeframe: {tf}")
-    return tf.upper()
+    return _STORED_TF.get(name, name)
 
 
 @router.get("/overview")
@@ -97,6 +100,17 @@ def opportunity_history(opp_id: str, user=Depends(current_user)):
         out = read_model.history(_repo(conn, user), opp_id)
     if out is None:
         raise HTTPException(404, "Opportunity not found")
+    return out
+
+
+@router.get("/chart")
+def symbol_chart(symbol: str = Query(...), timeframe: str = Query("H1"), limit: int = Query(140, ge=40, le=400), user=Depends(current_user)):
+    """Closed candles plus display geometry for one instrument and timeframe, including M1–W1 for XAUUSD."""
+    name = timeframe.upper()
+    if name not in TIMEFRAMES:
+        raise HTTPException(400, f"Unsupported timeframe: {timeframe}")
+    with db() as conn:
+        out = read_model.symbol_chart(_repo(conn, user), _symbol(symbol), name, limit)
     return out
 
 

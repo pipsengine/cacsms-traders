@@ -154,23 +154,28 @@ class MarketScannerEngine:
             self._demand_lock.release()
 
     def _ingest_gold(self, repo: MarketRepository, gw, *, bootstrap: bool) -> None:
-        runner = MarketIngestionRunner(gw, repo, candle_count=400 if bootstrap else INCREMENTAL_BARS)
-
-        def sync(sym: str, tf: str) -> str | None:
+        def sync(sym: str, tf: str, count: int) -> str | None:
             try:
-                return runner.sync_pair_timeframe(sym, tf).get("error")
+                return MarketIngestionRunner(gw, repo, candle_count=count).sync_pair_timeframe(sym, tf).get("error")
             except Exception as exc:
                 return str(exc)
 
         errors = []
         for tf in EXTRA_INGEST_TIMEFRAMES:
-            err = sync(GOLD, tf)
+            # A timeframe added after the first gold sync (M1) still needs a full history, not a 6-bar tail.
+            count = 400
+            if not bootstrap:
+                try:
+                    count = 400 if len(repo.candles(GOLD, tf, 80)) < 80 else INCREMENTAL_BARS
+                except Exception:
+                    count = 400
+            err = sync(GOLD, tf, count)
             if err:
                 errors.append(f"{tf}: {err}")
         self._gold_error = "; ".join(errors) or None
         for sym in SCANNER_UNIVERSE[1:]:
             for tf in UNIVERSE_INGEST_TIMEFRAMES:
-                err = sync(sym, tf)
+                err = sync(sym, tf, INCREMENTAL_BARS)
                 if err:
                     log.debug("%s %s ingestion failed: %s", sym, tf, err)
         if bootstrap:
