@@ -170,12 +170,33 @@ def _table(rows: list[tuple[str, str]]) -> str:
     return f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse">{cells}</table>'
 
 
+def _chart_row(symbol: str, cid: str) -> str:
+    alt = f"{symbol} daily chart with the channel, expected reaction zone, targets and invalidation"
+    return (
+        f'<tr><td style="padding:2px 22px 16px">'
+        f'<img src="cid:{html.escape(cid, quote=True)}" alt="{html.escape(alt)}" width="596" '
+        f'style="display:block;width:100%;max-width:596px;height:auto;border:1px solid #e1e8f2;border-radius:10px" />'
+        f'<div style="margin-top:6px;color:#5b6b82;font-size:12px;line-height:1.5">'
+        f'D1 chart · channel, expected reaction zone, targets and invalidation</div></td></tr>'
+    )
+
+
 def _html(title: str, tone: str, sections: list[tuple[str, list[tuple[str, str]]]], intro: str | None = None,
-          link: tuple[str, str] | None = None) -> str:
-    body = "".join(
-        f'<tr><td style="padding:18px 22px 6px;font-size:13px;font-weight:700;color:#10203d;text-transform:uppercase;letter-spacing:.06em">'
-        f'{html.escape(name)}</td></tr><tr><td style="padding:0 8px 8px">{_table(rows)}</td></tr>'
-        for name, rows in sections if rows)
+          link: tuple[str, str] | None = None, images: dict[str, str] | None = None) -> str:
+    images = images or {}
+    blocks = []
+    for name, rows in sections:
+        if not rows:
+            continue
+        blocks.append(
+            f'<tr><td style="padding:18px 22px 6px;font-size:13px;font-weight:700;color:#10203d;text-transform:uppercase;letter-spacing:.06em">'
+            f'{html.escape(name)}</td></tr>')
+        cid = next((images[sym] for sym in images if f" {sym} " in f" {name} "), None)
+        sym = next((sym for sym in images if f" {sym} " in f" {name} "), None)
+        if cid and sym:
+            blocks.append(_chart_row(sym, cid))
+        blocks.append(f'<tr><td style="padding:0 8px 8px">{_table(rows)}</td></tr>')
+    body = "".join(blocks)
     intro_html = f'<tr><td style="padding:18px 22px 0;font-size:15px;color:#10203d">{html.escape(intro)}</td></tr>' if intro else ""
     if link:
         body += (f'<tr><td style="padding:10px 22px 18px"><a href="{html.escape(link[1], quote=True)}" style="display:inline-block;padding:10px 18px;'
@@ -214,7 +235,8 @@ def _text(title: str, sections: list[tuple[str, list[tuple[str, str]]]], intro: 
     return "\n".join(lines)
 
 
-def _message(cfg: SmtpConfig, to: str, subj: str, text: str, html_body: str, headers: dict[str, str] | None = None) -> EmailMessage:
+def _message(cfg: SmtpConfig, to: str, subj: str, text: str, html_body: str, headers: dict[str, str] | None = None,
+             images: list[tuple[str, bytes]] | None = None) -> EmailMessage:
     msg = EmailMessage()
     msg["From"] = formataddr((cfg.from_name, cfg.from_email))
     msg["To"] = to
@@ -227,6 +249,12 @@ def _message(cfg: SmtpConfig, to: str, subj: str, text: str, html_body: str, hea
         msg[k] = v
     msg.set_content(text)
     msg.add_alternative(html_body, subtype="html")
+    if images:
+        html_part = msg.get_payload()[1]
+        for cid, blob in images:
+            html_part.add_related(blob, maintype="image", subtype="png", cid=f"<{cid}>")
+            image = html_part.get_payload()[-1]
+            image.replace_header("Content-Disposition", f'inline; filename="{cid}.png"')
     return msg
 
 
@@ -268,14 +296,28 @@ def outlook_sections(e: dict) -> tuple[str, list[tuple[str, list[tuple[str, str]
 
 
 def outlook_message(cfg: SmtpConfig, e: dict, to: str) -> EmailMessage:
+    import logging
+
+    from .outlook_charts import chart_images
+
     m = e.get("metadata") or {}
     title = ("Late · " if m.get("late") else "") + "AI Analysis Complete"
     intro, sections = outlook_sections(e)
     url = app_link("ai-market-outlook/daily")
     link = ("Open AI Market Outlook", url) if url else None
     tone = "#b54708" if m.get("late") else "#1765ef"
-    return _message(cfg, to, subject(e), _text(title, sections, intro, link), _html(title, tone, sections, intro, link),
-                    {"X-Cacsms-Alert-Id": e["id"], "X-Cacsms-Alert-Type": e["event_type"]})
+    try:
+        shots = chart_images(e)
+    except Exception:
+        logging.getLogger("cacsms.notifications").warning("Outlook charts were left out of the email", exc_info=True)
+        shots = []
+    text = _text(title, sections, intro, link)
+    if shots:
+        names = ", ".join(sym for _, _, sym in shots)
+        text += f"\nD1 charts for {names} are included in the HTML version of this email.\n"
+    return _message(cfg, to, subject(e), text, _html(title, tone, sections, intro, link, {sym: cid for cid, _, sym in shots}),
+                    {"X-Cacsms-Alert-Id": e["id"], "X-Cacsms-Alert-Type": e["event_type"]},
+                    [(cid, png) for cid, png, _ in shots])
 
 
 def alert_message(cfg: SmtpConfig, e: dict, to: str) -> EmailMessage:
