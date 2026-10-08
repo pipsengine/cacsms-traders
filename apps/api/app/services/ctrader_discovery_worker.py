@@ -39,11 +39,12 @@ def decode_response(message, extract):
 
 def main() -> int:
     request_data = json.load(sys.stdin)
-    if request_data.get("environment") != "demo":
+    environment = request_data.get("environment") or "demo"
+    if environment not in ("demo", "live"):
         print("CTRADER_RESULT:{\"error\":\"demo_only\"}", flush=True)
         return 1
     action = request_data.get("action", "discover")
-    if action not in ("discover", "symbols", "history", "quote"):
+    if action not in ("discover", "symbols", "history", "quote", "verify_application"):
         print("CTRADER_RESULT:{\"error\":\"unsupported_action\"}", flush=True)
         return 1
 
@@ -70,7 +71,7 @@ def main() -> int:
     client_id = __import__("os").getenv("CTRADER_CLIENT_ID", "").strip()
     client_secret = __import__("os").getenv("CTRADER_CLIENT_SECRET", "").strip()
     access_token = request_data.get("access_token", "")
-    if not (client_id and client_secret and access_token):
+    if not (client_id and client_secret) or (action != "verify_application" and not access_token):
         print("CTRADER_RESULT:{\"error\":\"not_configured\"}", flush=True)
         return 1
 
@@ -78,7 +79,8 @@ def main() -> int:
     account_metadata: dict[str, dict] = {}
     pending_candles = 0
     reactor_instance = reactor
-    client = Client(EndPoints.PROTOBUF_DEMO_HOST, EndPoints.PROTOBUF_PORT, TcpProtocol)
+    host = EndPoints.PROTOBUF_LIVE_HOST if environment == "live" else EndPoints.PROTOBUF_DEMO_HOST
+    client = Client(host, EndPoints.PROTOBUF_PORT, TcpProtocol)
     timeout_call = None
     finished = False
 
@@ -128,7 +130,7 @@ def main() -> int:
                 "broker_name": broker,
                 "account_type": account_type,
                 "currency_code": asset.name,
-                "environment": "demo",
+                "environment": "live" if getattr(account, "isLive", False) else "demo",
             }
         )
         item["complete"] = True
@@ -314,13 +316,18 @@ def main() -> int:
             finish()
 
     def on_account_list(response) -> None:
-        demo_accounts = [account for account in response.ctidTraderAccount if not account.isLive]
+        listed = list(response.ctidTraderAccount)
         requested_account_id = str(request_data.get("account_id", ""))
         if requested_account_id:
-            demo_accounts = [account for account in demo_accounts if str(account.ctidTraderAccountId) == requested_account_id]
-        if not demo_accounts:
+            listed = [account for account in listed if str(account.ctidTraderAccountId) == requested_account_id]
+        if environment == "demo" and action in ("symbols", "history", "quote"):
+            listed = [account for account in listed if not account.isLive] or listed
+        if environment == "live" and action in ("symbols", "history", "quote"):
+            listed = [account for account in listed if account.isLive] or listed
+        if not listed:
             finish("no_demo_accounts")
             return
+        demo_accounts = listed
         if action in ("symbols", "history", "quote"):
             selected = demo_accounts[0]
             account_id = str(selected.ctidTraderAccountId)
@@ -340,6 +347,10 @@ def main() -> int:
             )
 
     def on_app_authorized(_response) -> None:
+        if action == "verify_application":
+            result["application_status"] = "ACTIVE"
+            finish()
+            return
         accounts_req = ProtoOAGetAccountListByAccessTokenReq()
         accounts_req.accessToken = access_token
         send(accounts_req).addCallbacks(on_account_list, failed)

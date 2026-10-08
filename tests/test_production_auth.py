@@ -68,7 +68,7 @@ def test_ctrader_inactive_callback_and_manual_activation_recovery(client, monkey
     assert 'ctrader=connected' in r.headers['location']
     status = client.get('/api/connections/ctrader/status', params={'tenant_id': tenant}).json()
     assert status['provider_status'] == 'CONNECTED'
-    assert status['application_status'] == 'ACTIVE'
+    assert status['application_status'] == 'APPLICATION_ACTIVE'
     assert status['connected']
 
 
@@ -659,3 +659,99 @@ def test_ctrader_management_is_tenant_scoped(client):
     assert own_status.json()["can_manage"] is True
     assert status.status_code == 403
     assert disconnect.status_code == 403
+
+
+def test_environment_observation_does_not_force_inactive(client, monkeypatch):
+    _ctrader_env(monkeypatch)
+    monkeypatch.setenv("CTRADER_APPLICATION_OBSERVATION", "CTRADER_APP_INACTIVE")
+    from apps.api.app.routers import ctrader
+
+    monkeypatch.setattr(ctrader, "probe_application", lambda: "UNVERIFIED")
+    login = client.post("/api/auth/login", json=ADMIN).json()
+    tenant_id = login["user"]["memberships"][0]["tenant_id"]
+    status = client.get("/api/connections/ctrader/status", params={"tenant_id": tenant_id}).json()
+    assert status["provider_status"] == "APPLICATION_UNVERIFIED"
+    assert status["application_status"] == "UNVERIFIED"
+    assert status["connected"] is False
+    assert status["execution_available"] is False
+    assert any(item["code"] == "application" and item["status"] == "UNVERIFIED" for item in status["diagnostics"])
+
+
+def test_stale_inactive_is_replaced_only_by_a_provider_result(client, monkeypatch):
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    _ctrader_env(monkeypatch)
+    from apps.api.app.core.database import db
+    from apps.api.app.routers import ctrader
+    from apps.api.app.services.ctrader_application_state import application_state, record_application_state
+
+    with db() as conn:
+        record_application_state(conn, "APP_INACTIVE")
+        row = conn.execute("SELECT value_json FROM system_settings WHERE key='ctrader.application_state'").fetchone()
+        observation = json.loads(row["value_json"])
+        observation["observed_at"] = (datetime.now(timezone.utc) - timedelta(seconds=901)).isoformat()
+        conn.execute(
+            "UPDATE system_settings SET value_json=? WHERE key='ctrader.application_state'",
+            (json.dumps(observation),),
+        )
+        assert application_state(conn) == "UNKNOWN"
+
+    monkeypatch.setattr(ctrader, "probe_application", lambda: "ACTIVE")
+    login = client.post("/api/auth/login", json=ADMIN).json()
+    tenant_id = login["user"]["memberships"][0]["tenant_id"]
+    status = client.get("/api/connections/ctrader/status", params={"tenant_id": tenant_id}).json()
+    assert status["application_status"] == "APPLICATION_ACTIVE"
+    assert status["provider_status"] == "OAUTH_NOT_AUTHORIZED"
+    assert status["connected"] is False
+    assert "Select Connect cTrader" in status["message"]
+
+
+def test_fresh_provider_rejection_stays_inactive(client, monkeypatch):
+    _ctrader_env(monkeypatch)
+    from apps.api.app.routers import ctrader
+
+    monkeypatch.setattr(ctrader, "probe_application", lambda: "APP_INACTIVE")
+    login = client.post("/api/auth/login", json=ADMIN).json()
+    tenant_id = login["user"]["memberships"][0]["tenant_id"]
+    status = client.get("/api/connections/ctrader/status", params={"tenant_id": tenant_id}).json()
+    assert status["provider_status"] == "APP_INACTIVE"
+    assert status["authorization_status"] == "PENDING_PROVIDER_ACTIVATION"
+    assert status["connected"] is False
+    started = client.post("/api/connections/ctrader/authorize", headers=CLIENT_HEADER, json={"tenant_id": tenant_id})
+    assert started.status_code == 200
+    assert "grantingaccess" in started.json()["authorize_url"]
+
+
+def test_discovered_live_account_is_stored(client, monkeypatch):
+    _ctrader_env(monkeypatch)
+    from apps.api.app.core.database import db
+    from apps.api.app.routers import ctrader
+
+    monkeypatch.setattr(ctrader, "probe_application", lambda: "ACTIVE")
+    monkeypatch.setattr(
+        ctrader,
+        "_exchange",
+        lambda cfg, code: {"accessToken": "LIVE-ACCESS", "refreshToken": "LIVE-REFRESH", "expiresIn": 3600},
+    )
+    monkeypatch.setattr(
+        ctrader,
+        "_discover_accounts",
+        lambda token: [
+            {"ctid_trader_account_id": "demo-1", "trader_login": "100", "broker_name": "Broker", "environment": "demo"},
+            {"ctid_trader_account_id": "live-1", "trader_login": "200", "broker_name": "Broker", "environment": "live"},
+        ],
+    )
+    login = client.post("/api/auth/login", json=ADMIN).json()
+    tenant_id = login["user"]["memberships"][0]["tenant_id"]
+    started = client.post("/api/connections/ctrader/authorize", headers=CLIENT_HEADER, json={"tenant_id": tenant_id})
+    state = parse_qs(urlparse(started.json()["authorize_url"]).query)["state"][0]
+    callback = client.get("/api/connections/ctrader/callback", params={"code": "code", "state": state}, follow_redirects=False)
+    assert "ctrader=connected" in callback.headers["location"]
+    status = client.get("/api/connections/ctrader/status", params={"tenant_id": tenant_id}).json()
+    assert status["connected"] is True
+    assert status["execution_available"] is False
+    assert {account["environment"] for account in status["accounts"]} == {"demo", "live"}
+    with db() as conn:
+        stored = {row["environment"] for row in conn.execute("SELECT environment FROM ctrader_accounts WHERE tenant_id=?", (tenant_id,)).fetchall()}
+    assert stored == {"demo", "live"}

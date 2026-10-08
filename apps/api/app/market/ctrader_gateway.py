@@ -24,14 +24,20 @@ class CTraderGateway:
         self._token = decrypt_ctrader_token(row['access_token'])
         self._conn = conn
         self.account_id = cfg['account_id']
-        self._context = dict(provider='ctrader', account_id=self.account_id, environment='demo')
+        account = conn.execute(
+            "SELECT environment FROM ctrader_accounts WHERE tenant_id=? AND ctid_trader_account_id=?",
+            (cfg['tenant_id'], self.account_id),
+        ).fetchone()
+        environment = account['environment'] if account and account['environment'] in ('demo', 'live') else 'demo'
+        self._context = dict(provider='ctrader', account_id=self.account_id, environment=environment)
 
     def _request(self, action, **kwargs):
         from .constants import FX_PAIRS_28
         kwargs.setdefault('symbols', [*FX_PAIRS_28, 'XAUUSD'])
         try:
+            environment = (getattr(self, '_context', None) or {}).get('environment', 'demo')
             result = subprocess.run([sys.executable, ctrader_discovery_worker.__file__],
-                input=json.dumps(dict(environment='demo', access_token=self._token, account_id=self.account_id, action=action, **kwargs)),
+                input=json.dumps(dict(environment=environment, access_token=self._token, account_id=self.account_id, action=action, **kwargs)),
                 capture_output=True, text=True, timeout=22)
             marker = next(line[15:] for line in reversed(result.stdout.splitlines()) if line.startswith('CTRADER_RESULT:'))
             payload = json.loads(marker)

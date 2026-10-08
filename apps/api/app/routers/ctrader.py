@@ -37,8 +37,8 @@ from ..deps import current_user
 from ..services.access import require_permission
 from ..services import ctrader_discovery_worker
 from ..services.ctrader_application_state import (
-    APP_INACTIVE, INACTIVE_MESSAGE, application_state, diagnostic_state,
-    provider_error_code, record_application_state,
+    APP_INACTIVE, application_state, diagnostic_state, needs_application_probe,
+    provider_error_code, record_application_state, status_message,
 )
 
 log = logging.getLogger(__name__)
@@ -149,10 +149,81 @@ class AuthorizeRequest(BaseModel):
     tenant_id: str
 
 
+def probe_application() -> str:
+    """Ask cTrader to authenticate the Open API application. Never raises and never invents ACTIVE."""
+    worker = Path(ctrader_discovery_worker.__file__).resolve()
+    try:
+        result = subprocess.run(
+            [sys.executable, str(worker)],
+            input=json.dumps({"environment": "demo", "action": "verify_application"}),
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return "UNVERIFIED"
+    marker = next((line[len("CTRADER_RESULT:"):] for line in reversed(result.stdout.splitlines()) if line.startswith("CTRADER_RESULT:")), None)
+    if marker is None:
+        return "UNVERIFIED"
+    try:
+        payload = json.loads(marker)
+    except ValueError:
+        return "UNVERIFIED"
+    error = payload.get("error")
+    if error == APP_INACTIVE or provider_error_code(error or "") == APP_INACTIVE:
+        return "APP_INACTIVE"
+    if not result.returncode and payload.get("application_status") == "ACTIVE":
+        return "ACTIVE"
+    return "UNVERIFIED"
+
+
+def _diagnostics(config_error: str | None, app_state: str, row, accounts: list, provider_status: str) -> list[dict]:
+    items = []
+    if config_error == "missing_credentials":
+        items.append({"code": "credentials", "status": "ERROR", "detail": "CTRADER_CLIENT_ID or CTRADER_CLIENT_SECRET is missing."})
+    elif config_error == "redirect_uri_mismatch":
+        items.append({"code": "redirect_uri", "status": "ERROR", "detail": "CTRADER_REDIRECT_URI must be the registered callback without a query or fragment."})
+    elif config_error == "demo_environment_required":
+        items.append({"code": "environment", "status": "ERROR", "detail": "CTRADER_ENVIRONMENT must be demo."})
+    elif config_error:
+        items.append({"code": "configuration", "status": "ERROR", "detail": config_error.replace("_", " ")})
+    else:
+        items.append({"code": "credentials", "status": "OK", "detail": "Client credentials and the registered redirect URI are configured."})
+    application_detail = {
+        "ACTIVE": "cTrader accepted application authentication.",
+        "APP_INACTIVE": "cTrader rejected application authentication.",
+        "UNVERIFIED": "Application authentication has not been confirmed.",
+        "UNKNOWN": "Application authentication has not been confirmed.",
+        "AUTHORIZING": "An authorization attempt is in progress.",
+    }.get(app_state, "Application authentication has not been confirmed.")
+    items.append({"code": "application", "status": app_state, "detail": application_detail})
+    if row is None:
+        items.append({"code": "oauth", "status": "OAUTH_NOT_AUTHORIZED", "detail": "No authorization code has been exchanged for this tenant."})
+    else:
+        items.append({"code": "oauth", "status": row.get("authorization_status") or "UNKNOWN", "detail": f"Connection status {row.get('connection_status') or 'unknown'}."})
+        if row.get("expires_at"):
+            items.append({"code": "token", "status": "OK", "detail": "An encrypted access token is stored. Refresh runs before expiry."})
+        elif row.get("authorization_status") == "AUTHORIZED":
+            items.append({"code": "token", "status": "ERROR", "detail": "The stored authorization has no expiry and must be renewed."})
+    items.append({"code": "accounts", "status": "OK" if accounts else "OAUTH_NOT_AUTHORIZED", "detail": f"{len(accounts)} authorized account(s) discovered." if accounts else "No trading accounts have been discovered."})
+    items.append({"code": "broker", "status": provider_status, "detail": status_message(provider_status)})
+    items.append({"code": "execution", "status": "DISABLED", "detail": "Trading execution stays disabled."})
+    return items
+
+
 @router.get("/status")
 def status(tenant_id: str = Query(...), user=Depends(current_user)):
     cfg = ctrader_config()
     can_manage = False
+    if cfg is not None:
+        with db() as c:
+            require_permission(c, user, tenant_id, "connections.read")
+            should_probe = needs_application_probe(c)
+        if should_probe:
+            observed = probe_application()
+            with db() as c:
+                record_application_state(c, observed)
     with db() as c:
         require_permission(c, user, tenant_id, "connections.read")
         app_state = application_state(c)
@@ -167,7 +238,7 @@ def status(tenant_id: str = Query(...), user=Depends(current_user)):
         ).fetchone()
         accounts = c.execute(
             "SELECT ctid_trader_account_id,trader_login,broker_name,account_type,environment,currency_code,authorization_status,last_synced_at "
-            "FROM ctrader_accounts WHERE tenant_id=? AND environment='demo' ORDER BY broker_name,trader_login",
+            "FROM ctrader_accounts WHERE tenant_id=? ORDER BY environment,broker_name,trader_login",
             (tenant_id,),
         ).fetchall()
         if row is not None and row["access_token"]:
@@ -194,7 +265,7 @@ def status(tenant_id: str = Query(...), user=Depends(current_user)):
             "account": _mask_identifier(account["trader_login"] or account["ctid_trader_account_id"]),
             "broker": account["broker_name"],
             "account_type": account["account_type"],
-            "environment": "demo",
+            "environment": account["environment"] if account["environment"] in ("demo", "live") else "demo",
             "currency": account["currency_code"],
             "authorization": (
                 row["authorization_status"]
@@ -208,28 +279,39 @@ def status(tenant_id: str = Query(...), user=Depends(current_user)):
         for account in accounts
     ]
     authorized = row is not None and row["authorization_status"] == "AUTHORIZED"
-    connected = cfg is not None and app_state not in ('APP_INACTIVE', 'AUTHORIZING') and authorized and row["connection_status"] == "CONNECTED" and bool(safe_accounts)
+    connected = cfg is not None and app_state == 'ACTIVE' and authorized and row["connection_status"] == "CONNECTED" and bool(safe_accounts)
     provider_status = diagnostic_state(cfg is not None, app_state, dict(row) if row else None, connected)
     inactive = provider_status == 'APP_INACTIVE'
     if inactive:
         for account in safe_accounts:
             account['authorization'] = 'PENDING_PROVIDER_ACTIVATION'
+    config_error = None if cfg else _configuration_error()
+    if inactive:
+        authorization_status = 'PENDING_PROVIDER_ACTIVATION'
+    elif row:
+        authorization_status = row["authorization_status"]
+    elif provider_status == 'APPLICATION_UNVERIFIED':
+        authorization_status = 'APPLICATION_UNVERIFIED'
+    else:
+        authorization_status = 'OAUTH_NOT_AUTHORIZED'
     return {
         "configured": cfg is not None,
         "can_manage": can_manage,
-        "configuration_error": None if cfg else _configuration_error(),
+        "configuration_error": config_error,
         "provider": "cTrader",
         "environment": "demo",
         "connected": bool(connected),
         "provider_status": provider_status,
-        "application_status": app_state,
-        "message": INACTIVE_MESSAGE if inactive else None,
-        "authorization_status": 'PENDING_PROVIDER_ACTIVATION' if inactive else row["authorization_status"] if row else "NOT_AUTHORIZED",
+        "application_status": 'APPLICATION_ACTIVE' if app_state == 'ACTIVE' else app_state,
+        "message": status_message(provider_status),
+        "authorization_status": authorization_status,
         "connection_status": 'DISCONNECTED' if inactive else row["connection_status"] if row else "DISCONNECTED",
         "last_successful_connection_at": row["last_successful_connection_at"] if row else None,
         "last_sync_at": row["last_sync_at"] if row else None,
         "last_error_code": APP_INACTIVE if inactive else row["last_error_code"] if row else None,
         "accounts": safe_accounts,
+        "diagnostics": _diagnostics(config_error, app_state, dict(row) if row else None, safe_accounts, provider_status),
+        "execution_available": False,
     }
 
 
@@ -309,7 +391,7 @@ def _discover_accounts(access_token: str) -> list[dict]:
     accounts = payload.get("accounts")
     if not isinstance(accounts, list) or not accounts:
         raise CTraderProviderError("no_demo_accounts")
-    if any(account.get("environment") != "demo" or not account.get("ctid_trader_account_id") for account in accounts):
+    if any(account.get("environment") not in ("demo", "live") or not account.get("ctid_trader_account_id") for account in accounts):
         raise CTraderProviderError("invalid_provider_response")
     return accounts
 
@@ -355,7 +437,7 @@ def _persist_accounts(tenant_id: str, user_id: str, accounts: list[dict]) -> Non
     with db() as c:
         record_application_state(c, 'ACTIVE')
         c.execute(
-            "UPDATE ctrader_accounts SET authorization_status='NOT_AUTHORIZED',updated_at=? WHERE tenant_id=? AND environment='demo'",
+            "UPDATE ctrader_accounts SET authorization_status='NOT_AUTHORIZED',updated_at=? WHERE tenant_id=?",
             (timestamp, tenant_id),
         )
         for account in accounts:
@@ -363,14 +445,14 @@ def _persist_accounts(tenant_id: str, user_id: str, accounts: list[dict]) -> Non
                 """INSERT INTO ctrader_accounts(
                      tenant_id,ctid_trader_account_id,trader_login,broker_name,account_type,environment,currency_code,
                      authorization_status,last_synced_at,created_at,updated_at)
-                   VALUES(?,?,?,?,?, 'demo',?,'AUTHORIZED',?,?,?)
+                   VALUES(?,?,?,?,?,?,?,'AUTHORIZED',?,?,?)
                    ON CONFLICT(tenant_id,ctid_trader_account_id) DO UPDATE SET
                      trader_login=excluded.trader_login,broker_name=excluded.broker_name,account_type=excluded.account_type,
-                     environment='demo',currency_code=excluded.currency_code,authorization_status='AUTHORIZED',
+                     environment=excluded.environment,currency_code=excluded.currency_code,authorization_status='AUTHORIZED',
                      last_synced_at=excluded.last_synced_at,updated_at=excluded.updated_at""",
                 (
                     tenant_id, str(account["ctid_trader_account_id"]), account.get("trader_login"), account.get("broker_name"),
-                    account.get("account_type"), account.get("currency_code"), timestamp, timestamp, timestamp,
+                    account.get("account_type"), account.get("environment") or "demo", account.get("currency_code"), timestamp, timestamp, timestamp,
                 ),
             )
             write_audit(
@@ -380,7 +462,7 @@ def _persist_accounts(tenant_id: str, user_id: str, accounts: list[dict]) -> Non
                 "CTRADER_ACCOUNT_DISCOVERED",
                 "CtraderAccount",
                 tenant_id,
-                after={"environment": "demo", "broker": account.get("broker_name"), "account_type": account.get("account_type")},
+                after={"environment": account.get("environment") or "demo", "broker": account.get("broker_name"), "account_type": account.get("account_type")},
             )
         c.execute(
             """UPDATE ctrader_connections SET authorization_status='AUTHORIZED',connection_status='CONNECTED',
@@ -530,9 +612,7 @@ def callback(code: str | None = None, state: str | None = None, error: str | Non
             _record_failure(st["tenant_id"], st["user_id"], exc.code)
         except Exception as audit_exc:
             log.warning("cTrader discovery failure state could not be recorded; error_type=%s", type(audit_exc).__name__)
-        with db() as c:
-            inactive = exc.code == APP_INACTIVE or application_state(c) == 'APP_INACTIVE'
-        return _back('app_inactive' if inactive else "discovery_failed")
+        return _back('app_inactive' if exc.code == APP_INACTIVE else "discovery_failed")
     except Exception as exc:
         log.warning("cTrader account persistence failed; error_type=%s", type(exc).__name__)
         try:

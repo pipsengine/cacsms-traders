@@ -31,8 +31,8 @@ def test_ctrader_requires_oauth_before_data(monkeypatch):
     monkeypatch.setenv('MARKET_DATA_PROVIDER', 'ctrader')
     monkeypatch.setenv('MARKET_DATA_TENANT_ID', 't1')
     state = market_data.market_context(connection())
-    assert state['provider_status'] == 'AUTHORIZATION REQUIRED'
-    assert state['error_code'] == 'ctrader_authorization_required'
+    assert state['provider_status'] == 'APPLICATION_UNVERIFIED'
+    assert state['error_code'] == 'ctrader_application_unverified'
     assert not state['market_data_ready']
 
 
@@ -156,7 +156,7 @@ def test_diagnostics_support_postgres_dictionary_rows(monkeypatch):
 
     monkeypatch.setenv('MARKET_DATA_TENANT_ID', '')
     state = market_data.market_context(DictionaryConnection())
-    assert state['provider_status'] == 'AUTHORIZATION REQUIRED'
+    assert state['provider_status'] == 'APPLICATION_UNVERIFIED'
     assert state['accounts_discovered'] == 0
 
 

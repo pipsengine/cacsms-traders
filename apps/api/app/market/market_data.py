@@ -49,13 +49,14 @@ def provider_context(conn, cfg):
         out['application_status'] = app_state
         if app_state == 'APP_INACTIVE':
             out.update(provider_status='APP_INACTIVE', authorization_status='PENDING_PROVIDER_ACTIVATION',
-                       error_code=APP_INACTIVE, reason='cTrader provider authorization unavailable')
+                       error_code=APP_INACTIVE, reason='cTrader rejected application authentication')
             return out
         if app_state == 'AUTHORIZING':
             out.update(provider_status='AUTHORIZING', authorization_status='AUTHORIZING')
             return out
-        out['provider_status'] = 'AUTHORIZATION REQUIRED'
-        out['error_code'] = 'ctrader_authorization_required'
+        out['provider_status'] = 'OAUTH_NOT_AUTHORIZED' if app_state == 'ACTIVE' else 'APPLICATION_UNVERIFIED'
+        out['error_code'] = 'ctrader_authorization_required' if app_state == 'ACTIVE' else 'ctrader_application_unverified'
+        out['authorization_status'] = out['provider_status']
         if not cfg['tenant_id']:
             rows = conn.execute("SELECT authorization_status,connection_status FROM ctrader_connections WHERE environment='demo'").fetchall()
             authorized = [r for r in rows if r['authorization_status'] == 'AUTHORIZED']

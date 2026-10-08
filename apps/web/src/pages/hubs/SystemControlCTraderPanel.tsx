@@ -7,7 +7,7 @@ type CTraderAccount = {
   account: string | null;
   broker: string | null;
   account_type: string | null;
-  environment: 'demo';
+  environment: 'demo' | 'live';
   currency: string | null;
   authorization: string;
   last_sync_at: string | null;
@@ -29,6 +29,8 @@ type CTraderStatus = {
   last_sync_at: string | null;
   last_error_code: string | null;
   accounts: CTraderAccount[];
+  diagnostics?: { code: string; status: string; detail: string }[];
+  execution_available?: boolean;
 };
 
 function fmt(value?: string | null) {
@@ -160,11 +162,15 @@ export function SystemControlCTraderPanel({
       {error && <Notice title="cTrader connection" text={error} tone="warning" />}
       {success && <Notice title="cTrader connection" text={success} />}
       {data?.provider_status === 'APP_INACTIVE' && (
-        <Notice title="Pending provider activation" text={data.message || 'cTrader provider authorization unavailable.'} tone="warning" />
+        <Notice title="Application inactive" text={data.message || 'cTrader rejected application authentication.'} tone="warning" />
+      )}
+      {data && data.provider_status !== 'APP_INACTIVE' && data.provider_status !== 'CONNECTED' && data.message && !error && (
+        <Notice title="cTrader connection" text={data.message} tone={data.provider_status === 'OAUTH_NOT_AUTHORIZED' ? 'info' : 'warning'} />
       )}
       <div className="detail-list">
         <div><span>Provider</span><b>cTrader</b></div>
         <div><span>Environment</span><b>Demo</b></div>
+        <div><span>Application</span><b>{data?.application_status?.replaceAll('_', ' ') ?? (loading ? 'Checking…' : 'Unknown')}</b></div>
         <div><span>Provider status</span><b>{data?.provider_status?.replaceAll('_', ' ') ?? (loading ? 'Checking…' : 'Unknown')}</b></div>
         <div><span>Connection health</span><b>{data?.connection_status?.replaceAll('_', ' ') ?? (loading ? 'Checking…' : 'Unknown')}</b></div>
         <div><span>Authorization</span><b>{data?.authorization_status?.replaceAll('_', ' ') ?? (loading ? 'Checking…' : 'Unknown')}</b></div>
@@ -174,7 +180,10 @@ export function SystemControlCTraderPanel({
       {data?.configuration_error && (
         <p className="muted">Server configuration issue: {data.configuration_error.replaceAll('_', ' ')}.</p>
       )}
-      {data?.provider_status === 'APP_INACTIVE' && <p className="muted">After cTrader activates the application, select Connect cTrader to start a new authorization. No automatic authorization retries are performed.</p>}
+      {data?.provider_status === 'APP_INACTIVE' && <p className="muted">This inactive result came from cTrader, not from a stored assumption. Select Connect cTrader again after the provider activates the application.</p>}
+      {data?.diagnostics?.map((item) => (
+        <p className="muted" key={item.code}>{item.code.replaceAll('_', ' ')}: {item.detail}</p>
+      ))}
       {data?.accounts.map((account) => (
         <div className="gateway-item" key={`${account.account}-${account.broker}`}>
           <Cable />
@@ -200,7 +209,7 @@ export function SystemControlCTraderPanel({
           <Cable /> {acting ? 'Starting…' : 'Connect cTrader'}
         </button>
       )}
-      <p className="muted">Account discovery only. Trading execution and autonomous trading are disabled.</p>
+      <p className="muted">Trading execution stays disabled. Account authorization does not place orders.</p>
     </Card>
   );
 }
