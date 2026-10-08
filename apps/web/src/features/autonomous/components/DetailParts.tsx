@@ -130,6 +130,7 @@ export function CurrentOperation({
   live,
   color,
   symbol,
+  heading = 'Current Operation',
 }: {
   title: string;
   badge?: string | null;
@@ -140,11 +141,12 @@ export function CurrentOperation({
   live: boolean;
   color: string;
   symbol?: string | null;
+  heading?: string;
 }) {
   const now = useNow();
   return (
     <Panel
-      title="Current Operation"
+      title={heading}
       extra={
         <span className={`ae-badge is-${live ? 'ok' : 'muted'}`}>
           <Radio size={11} /> {live ? 'Live' : 'Idle'}
@@ -173,7 +175,7 @@ export function CurrentOperation({
             <dt>Elapsed</dt>
             <dd>{duration(startedAt, now)}</dd>
           </div>
-          <div className="is-wide">
+          <div>
             <dt>Next Step</dt>
             <dd>{nextStep ?? '—'}</dd>
           </div>

@@ -60,7 +60,7 @@ export function StageDetails({
           </span>
           <div>
             <h2>
-              Stage {head?.number ?? '—'} – {head?.label ?? 'Loading'}
+              Stage {head?.number ?? '—'} — {head?.label ?? 'Loading'}
               <span className={`ae-badge is-${tone(status)}`}>{summary?.stale ? 'Stale' : pretty(status)}</span>
             </h2>
             <p>{summary ? PURPOSE[summary.key] : ''}</p>

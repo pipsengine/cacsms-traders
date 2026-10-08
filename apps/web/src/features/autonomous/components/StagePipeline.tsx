@@ -12,7 +12,7 @@ import {
   ShieldCheck,
   TrendingUp,
 } from 'lucide-react';
-import { pretty, stageLines, tone, utc } from '../format';
+import { pretty, stageLines, tone } from '../format';
 import type { StageKey, StageSummary } from '../types';
 
 export const STAGE_ICON: Record<StageKey, ReactNode> = {
@@ -57,7 +57,6 @@ export function StagePipeline({
     <section className="ae-pipeline" aria-label="Autonomous pipeline stages">
       {stages.map((s) => {
         const [a, b] = stageLines(s);
-        const issue = s.errors > 0 || s.blockers.length > 0;
         return (
           <button
             type="button"
@@ -68,28 +67,14 @@ export function StagePipeline({
             aria-pressed={selected === s.key}
             title={[s.current_operation, s.next_operation ? `Next: ${s.next_operation}` : '', ...s.blockers.slice(0, 3)].filter(Boolean).join('\n')}
           >
-            <span className="ae-stage-top">
+            <span className="ae-stage-icon" aria-hidden>
               <span className="ae-stage-num">{s.number}</span>
-              <span className="ae-stage-icon" aria-hidden>
-                {STAGE_ICON[s.key]}
-              </span>
-              <strong>{s.label}</strong>
+              {STAGE_ICON[s.key]}
             </span>
+            <strong>{s.label}</strong>
             <span className={`ae-badge is-${tone(s.status)}`}>{s.stale ? 'Stale' : pretty(s.status)}</span>
             <span className="ae-stage-line">{a}</span>
             <span className="ae-stage-sub">{b}</span>
-            <span className="ae-stage-counts">
-              <span title="Processed">P {s.processed}</span>
-              <span title="Active">A {s.active}</span>
-              <span title="Waiting">W {s.waiting}</span>
-              <span title="Errors" className={s.errors ? 'is-bad' : ''}>
-                E {s.errors}
-              </span>
-            </span>
-            <span className="ae-stage-foot">
-              {issue ? <i className="is-bad" aria-hidden /> : <i aria-hidden />}
-              {s.last_update ? `${utc(s.last_update)} UTC` : 'Not run yet'}
-            </span>
           </button>
         );
       })}

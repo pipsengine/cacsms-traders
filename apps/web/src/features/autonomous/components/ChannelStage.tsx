@@ -8,16 +8,6 @@ import type { Channel, ChannelQueueItem, StageDetail, Transition } from '../type
 import { CurrentOperation, DetectionsTable, Donut, Empty, KpiRow, Panel, Sym, useNow, type Kpi } from './DetailParts';
 
 const TFS = ['W', 'D1', 'H8', 'H1'] as const;
-const LIFECYCLE_COLORS: Record<string, string> = {
-  FORMING: '#94a3b8',
-  ACTIVE: '#16a34a',
-  MATURE: '#0d9488',
-  TOUCHED: '#2563eb',
-  BREAKING: '#f59e0b',
-  BROKEN: '#ea580c',
-  RETESTING: '#7c3aed',
-  CONTINUING: '#059669',
-};
 
 function chartOverlay(c: Channel, events: Transition[]): ChartOverlay {
   const overlay: ChartOverlay = { lines: [], bands: [], markers: [], levels: [] };
@@ -231,27 +221,21 @@ export function ChannelStage({ d, onRefresh }: { d: StageDetail; onRefresh: () =
           <Donut
             total={num(m, 'active_channels') ?? 0}
             label="Active Channels"
-            color={d.color}
-            rows={Object.keys(LIFECYCLE_COLORS).map((s) => ({ label: pretty(s), value: byState[s] ?? 0, color: LIFECYCLE_COLORS[s] }))}
+            color="#16a34a"
+            rows={[
+              { label: 'Active Channels', value: num(m, 'active_channels') ?? 0, color: '#16a34a' },
+              { label: 'Forming', value: byState.FORMING ?? 0, color: '#94a3b8' },
+              { label: 'Touches (Today)', value: num(m, 'touches_today') ?? 0, color: '#2563eb' },
+              { label: 'Breaks (Today)', value: num(m, 'breaks_today') ?? 0, color: '#f59e0b' },
+              { label: 'Retests (Today)', value: num(m, 'retests_today') ?? 0, color: '#0d9488' },
+              { label: 'TiT Detected', value: num(m, 'tit_active') ?? 0, color: '#7c3aed' },
+              { label: 'Invalidated', value: num(m, 'invalidated_today') ?? 0, color: '#dc2626' },
+            ]}
           />
-          <div className="ae-mini-stats">
-            <span>
-              Touches today <b>{num(m, 'touches_today') ?? 0}</b>
-            </span>
-            <span>
-              Breaks today <b>{num(m, 'breaks_today') ?? 0}</b>
-            </span>
-            <span>
-              Retests today <b>{num(m, 'retests_today') ?? 0}</b>
-            </span>
-            <span>
-              Invalidated <b>{num(m, 'invalidated_today') ?? 0}</b>
-            </span>
-          </div>
         </Panel>
         <CurrentOperation
-          title={current ? current.timeframe : 'Channel Intelligence'}
-          symbol={current?.symbol}
+          heading="Current Channel"
+          title={current ? `${current.symbol} ${current.timeframe}` : 'Channel Intelligence'}
           badge={current ? `CHANNEL_${current.state}` : null}
           operation={d.current_operation}
           progress={current?.progress ?? null}
@@ -262,20 +246,6 @@ export function ChannelStage({ d, onRefresh }: { d: StageDetail; onRefresh: () =
         />
         <ChannelDetection channels={channels} symbol={symbol} onSymbol={setChartSymbol} />
       </div>
-
-      <section className="ae-lifecycle" aria-label="Channel lifecycle">
-        {(d.lifecycle_states ?? []).map((s, i, all) => {
-          const terminal = s === 'INVALIDATED' || s === 'EXPIRED';
-          return (
-            <span key={s} className={`ae-life is-${CHANNEL_STATE_TONE[s] ?? 'muted'}`}>
-              {pretty(s)}
-              {!terminal ? <b>{byState[s] ?? 0}</b> : null}
-              {i < all.length - 1 ? <i aria-hidden>{all[i + 1] === 'EXPIRED' ? '/' : '›'}</i> : null}
-            </span>
-          );
-        })}
-        <span className="ae-muted ae-small">{num(m, 'invalidated_today') ?? 0} invalidated or expired today</span>
-      </section>
 
       <div className="ae-grid ae-grid-3">
         <Panel
@@ -291,6 +261,7 @@ export function ChannelStage({ d, onRefresh }: { d: StageDetail; onRefresh: () =
               <table className="ae-table">
                 <thead>
                   <tr>
+                    <th>#</th>
                     <th>Symbol</th>
                     <th>Task</th>
                     <th>Status</th>
@@ -298,8 +269,9 @@ export function ChannelStage({ d, onRefresh }: { d: StageDetail; onRefresh: () =
                   </tr>
                 </thead>
                 <tbody>
-                  {queue.map((q) => (
+                  {queue.map((q, i) => (
                     <tr key={q.channel_id} className={q.symbol === symbol ? 'is-hl' : ''} onClick={() => setChartSymbol(q.symbol)}>
+                      <td><span className="ae-idx">{i + 1}</span></td>
                       <td>
                         <Sym symbol={q.symbol} /> <small className="ae-muted">{q.timeframe}</small>
                       </td>

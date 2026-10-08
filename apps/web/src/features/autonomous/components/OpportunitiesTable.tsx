@@ -13,7 +13,7 @@ const TABS: Tab[] = [
   { id: 'cont', label: 'Continuation', match: (o) => o.status === 'ACTIVE' && o.type === 'CONTINUATION' },
   { id: 'tit', label: 'TiT', match: (o) => o.status === 'ACTIVE' && o.type === 'TIT' },
   { id: 'zone', label: 'Waiting for Zone', match: (o) => o.status === 'ACTIVE' && o.state === 'WAITING_FOR_ZONE' },
-  { id: 'ready', label: 'Authorised (blocked)', match: (o) => o.status === 'ACTIVE' && o.state === 'EXECUTION_BLOCKED_ANALYSIS_ONLY' },
+  { id: 'ready', label: 'Ready', match: (o) => o.status === 'ACTIVE' && o.state === 'EXECUTION_BLOCKED_ANALYSIS_ONLY' },
   { id: 'invalid', label: 'Invalidated', match: (o) => o.status === 'CLOSED' && o.state === 'INVALIDATED' },
   { id: 'closed', label: 'Closed', match: (o) => o.status === 'CLOSED' },
 ];

@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { Activity, Clock, Cpu, Gauge, History, Server, ShieldCheck, Users, Wifi } from 'lucide-react';
-import { pretty, tone, utc, utcFull } from '../format';
+import { Activity, Gauge, Server, ShieldCheck, Users, Wifi } from 'lucide-react';
+import { lagosTime } from '../../../lib/marketClock';
+import { pretty, tone } from '../format';
 import type { Overview } from '../types';
 
 function Tile({ icon, label, value, state }: { icon: ReactNode; label: string; value: ReactNode; state: string }) {
@@ -31,10 +32,20 @@ function useServerClock(serverIso: string | undefined) {
   return serverIso ? new Date(now + offset).toISOString() : null;
 }
 
+const watDate = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Africa/Lagos',
+  weekday: 'long',
+  day: 'numeric',
+  month: 'long',
+  year: 'numeric',
+});
+
 export function StatusRibbon({ data, error }: { data: Overview | null; error: string }) {
   const r = data?.ribbon;
   const clock = useServerClock(r?.server_time);
+  const when = clock ? new Date(clock) : null;
   const system = error && !data ? 'ERROR' : r?.system_status ?? 'STARTING';
+  const connected = r?.provider_connection === 'CONNECTED';
   return (
     <header className="ae-head">
       <div className="ae-title">
@@ -45,38 +56,32 @@ export function StatusRibbon({ data, error }: { data: Overview | null; error: st
             {system}
           </span>
         </div>
-        <p>End-to-end autonomous processing from market data to position management and learning. Monitoring only — stages advance on backend evidence.</p>
+        <p>End-to-end autonomous processing from market data to position management and control.</p>
       </div>
       <div className="ae-ribbon" aria-label="Global engine status">
-        <Tile icon={<Activity size={18} />} label="System Status" value={pretty(system)} state={tone(system)} />
-        <Tile icon={<ShieldCheck size={18} />} label="Safety Status" value={pretty(r?.safety_status ?? 'UNKNOWN')} state={tone(r?.safety_status)} />
+        <Tile icon={<Activity size={16} />} label="System Status" value={pretty(system)} state={tone(system)} />
+        <Tile icon={<ShieldCheck size={16} />} label="Safety Status" value={pretty(r?.safety_status ?? 'UNKNOWN')} state={tone(r?.safety_status)} />
         <Tile
-          icon={<Gauge size={18} />}
+          icon={<Gauge size={16} />}
           label="Operating Mode"
           value={<span className="ae-mode">{(r?.operating_mode ?? '—').replaceAll('_', ' ')}</span>}
-          state={r?.operating_mode === 'ANALYSIS_ONLY' ? 'info' : tone(r?.operating_mode)}
+          state="info"
         />
-        <Tile icon={<Server size={18} />} label="Active Provider" value={r?.provider_label ?? 'None'} state={r?.provider ? 'info' : 'bad'} />
-        <Tile icon={<Wifi size={18} />} label="Provider Connection" value={pretty(r?.provider_connection ?? 'DISCONNECTED')} state={tone(r?.provider_connection)} />
+        <Tile icon={<Server size={16} />} label="Active Provider" value={(r?.provider_label ?? 'None').toUpperCase()} state={r?.provider ? 'info' : 'bad'} />
+        <Tile icon={<Wifi size={16} />} label="Connections" value={connected ? 'Healthy' : 'Offline'} state={connected ? 'ok' : 'bad'} />
         <Tile
-          icon={<Users size={18} />}
+          icon={<Users size={16} />}
           label="Workers"
           value={r ? `${r.workers_online} / ${r.workers_total} online` : '—'}
           state={!r || !r.workers_total ? 'muted' : r.workers_online === r.workers_total ? 'ok' : r.workers_online ? 'warn' : 'bad'}
         />
-        <Tile icon={<Clock size={18} />} label="Server Time (UTC)" value={utcFull(clock)} state="muted" />
-        <Tile
-          icon={<History size={18} />}
-          label="Last Successful Cycle"
-          value={r?.last_successful_cycle ? `${utc(r.last_successful_cycle, true)} UTC` : 'None yet'}
-          state={r?.last_successful_cycle ? 'ok' : 'muted'}
-        />
-        {r ? (
-          <span className="ae-cadence" title={`Engine ${r.engine_version}`}>
-            <Cpu size={13} /> {r.cadence === 'WORKER' ? 'Background worker' : 'On-demand cycles'}
-            {r.last_cycle_origin ? ` · last cycle: ${pretty(r.last_cycle_origin)}` : ''}
-          </span>
-        ) : null}
+      </div>
+      <div className="ae-clock" title="West Africa Time (UTC+1)">
+        <b>{when ? watDate.format(when) : '—'}</b>
+        <span>
+          {when ? lagosTime.format(when) : '—'}
+          <small> WAT</small>
+        </span>
       </div>
     </header>
   );
