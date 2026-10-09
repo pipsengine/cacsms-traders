@@ -3,6 +3,7 @@
 There is deliberately no endpoint that advances, creates or edits an opportunity or stage: the engine is autonomous.
 """
 import hmac
+import logging
 import os
 from datetime import datetime, timezone
 
@@ -19,6 +20,7 @@ from ..market.strength_intel_store import active_scope
 from ..services.access import require_permission
 
 router = APIRouter(prefix="/api/autonomous", tags=["Autonomous Engine"])
+log = logging.getLogger(__name__)
 # Chart and filter timeframes. W1 is the same stored lineage as W. M1–H4 are included so XAUUSD is not limited to H1 and above.
 TIMEFRAMES = ("M1", "M5", "M15", "H1", "H4", "H8", "D1", "W", "W1")
 _STORED_TF = {"W1": "W"}
@@ -79,6 +81,35 @@ def stage(stage: str, symbol: str | None = Query(None), timeframe: str | None = 
         out = read_model.stage_detail(conn, _repo(conn, user), key, _now(), symbol=_symbol(symbol), timeframe=_timeframe(timeframe),
                                       provider=provider)
     return out
+
+
+@router.get("/execution")
+def execution_book(user=Depends(current_user)):
+    """Stage 9–10 book. Shadow plans and blocked attempts only. Does not submit a broker order."""
+    from ..autonomous.execution_book import build_execution
+
+    with db() as conn:
+        return build_execution(_repo(conn, user), _now())
+
+
+@router.get("/portfolio")
+def portfolio(user=Depends(current_user)):
+    """Account snapshot, shadow-plan exposure and Stage 8 decisions.
+
+    A stale MT5 registry row is refreshed from the live terminal. This does not authorise an order.
+    """
+    from ..autonomous.portfolio import build_portfolio
+    from ..domain.mt5_connection import refresh_trading_account_if_stale
+
+    with db() as conn:
+        tenant = _repo(conn, user).tenant
+    if tenant:
+        try:
+            refresh_trading_account_if_stale(tenant)
+        except Exception:
+            log.exception("Portfolio account refresh failed")
+    with db() as conn:
+        return build_portfolio(conn, _repo(conn, user), _now())
 
 
 @router.get("/opportunities")

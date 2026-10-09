@@ -4,7 +4,9 @@ import type {
   SymbolChart,
   HistoryResponse,
   OpportunitiesResponse,
+  ExecutionBook,
   Overview,
+  PortfolioView,
   StageDetail,
   StageFilters,
   StageKey,
@@ -20,13 +22,15 @@ function qs(params: Record<string, string | number | null | undefined>) {
 
 export const autonomousApi = {
   overview: () => get<Overview>('/autonomous/overview'),
+  portfolio: () => get<PortfolioView>('/autonomous/portfolio'),
+  execution: () => get<ExecutionBook>('/autonomous/execution'),
   stage: (key: StageKey, f: StageFilters) =>
     get<StageDetail>(`/autonomous/stages/${key}${qs({ symbol: f.symbol, timeframe: f.timeframe, provider: f.provider })}`),
   opportunities: (status: 'ACTIVE' | 'CLOSED' | 'ALL' = 'ALL', limit = 300) =>
     get<OpportunitiesResponse>(`/autonomous/opportunities${qs({ status, limit })}`),
   history: (id: string) => get<HistoryResponse>(`/autonomous/opportunities/${encodeURIComponent(id)}/history`),
-  transitions: (entityType: string, limit = 150) =>
-    get<{ rows: Transition[] }>(`/autonomous/transitions${qs({ entity_type: entityType, limit })}`),
+  transitions: (entityType?: string, limit = 150, symbol?: string) =>
+    get<{ rows: Transition[] }>(`/autonomous/transitions${qs({ entity_type: entityType, symbol, limit })}`),
   channelChart: (id: string, limit = 160) => get<ChannelChart>(`/autonomous/channels/${encodeURIComponent(id)}/chart${qs({ limit })}`),
   /** Candles and display geometry for one timeframe, including M1–W1. */
   symbolChart: (symbol: string, timeframe: string, limit = 140) =>

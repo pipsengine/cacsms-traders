@@ -292,10 +292,23 @@ export type StageDetail = {
   opportunities?: Opportunity[];
 };
 
+export type OpportunitySummary = {
+  total: number;
+  created_today: number;
+  high_potential: number;
+  high_potential_min_confidence: number;
+  awaiting_conditions: number;
+  ready_for_risk: number;
+  authorised: number;
+  invalidated: number;
+  ranking_note: string;
+};
+
 export type OpportunitiesResponse = {
   rows: Opportunity[];
   counts: { active: number; by_stage: Record<string, number>; by_type: Record<string, number> };
   types: Record<string, string>;
+  summary: OpportunitySummary;
 };
 
 export type HistoryResponse = { opportunity: Opportunity & { evidence: Record<string, unknown> }; transitions: Transition[] };
@@ -307,3 +320,171 @@ export type ChannelChart = {
 };
 
 export type StageFilters = { symbol: string; timeframe: string; provider: string };
+
+export type PortfolioAccount = {
+  id: string;
+  name: string | null;
+  number: string | null;
+  broker: string | null;
+  server: string | null;
+  environment: string | null;
+  currency: string;
+  balance: number | null;
+  equity: number | null;
+  margin: number | null;
+  free_margin: number | null;
+  leverage: string | null;
+  floating_pnl: number | null;
+  floating_pnl_basis: string;
+  margin_used_pct: number | null;
+  free_margin_pct: number | null;
+  last_synced_at: string | null;
+  connection_status: string | null;
+  stale: boolean;
+  source: string;
+};
+
+export type PortfolioView = {
+  account: PortfolioAccount | null;
+  limits: {
+    max_open_positions: number | null;
+    max_total_risk_pct: number | null;
+    max_trade_risk_pct: number | null;
+    max_daily_loss_pct: number | null;
+    max_total_loss_pct: number | null;
+    profit_target_pct: number | null;
+    weekend_holding_allowed: boolean | null;
+    max_concurrent: number;
+    max_currency_exposure: number;
+    min_reward_risk: number;
+    min_confidence: number;
+  };
+  capacity: { used: number; limit: number; available: number | null; used_pct: number | null; basis: string };
+  exposure: {
+    basis: string;
+    currencies: { currency: string; net_plans: number; share_pct: number }[];
+    most_exposed: string | null;
+    least_exposed: string | null;
+    plans: number;
+  };
+  campaigns: { type: string; label: string; active_plans: number; shadow_plans: number; slot_share_pct: number | null; status: string; dollar_allocation: null }[];
+  distribution: { type: string; label: string; plans: number; share_pct: number }[];
+  decisions: {
+    id: string;
+    opportunity_id: string | null;
+    at: string | null;
+    symbol: string | null;
+    direction: string | null;
+    type: string | null;
+    type_label: string | null;
+    tit_level: string | null;
+    state: string;
+    reason_code: string | null;
+    detail: string | null;
+    rule: string | null;
+    reward_risk: number | null;
+    confidence: number | null;
+    currency: string | null;
+    position_size: null;
+    stop_distance: null;
+    position_size_note: string;
+    shadow: boolean;
+    broker_order: null;
+  }[];
+  decision_counts: Record<string, number>;
+  outcomes: {
+    closed_30d: number;
+    resolved: number;
+    hit_rate: number | null;
+    avg_r: number | null;
+    counts: Record<string, number>;
+    profit_factor: null;
+    sharpe: null;
+    total_return_pct: null;
+    max_drawdown_pct: null;
+    daily_drawdown_pct: null;
+    basis: string;
+    by_type: Record<string, { closed: number; target_1: number; stopped: number }>;
+  };
+  equity_history: { points: { t: string | null; equity: number }[]; note: string };
+  unavailable: string[];
+  execution: string;
+  execution_note: string;
+};
+
+export type ExecutionEvent = {
+  id: string;
+  at: string | null;
+  symbol: string | null;
+  direction: string | null;
+  type: string | null;
+  type_label: string | null;
+  from_state: string | null;
+  to_state: string | null;
+  reason_code: string | null;
+  detail: string | null;
+  reference_price: number | null;
+  record_class: 'SIMULATED';
+  result: string;
+  broker_order_id: null;
+  volume: null;
+  fill_price: null;
+  slippage: null;
+  latency_ms: null;
+};
+
+export type ShadowPlan = {
+  id: string;
+  symbol: string | null;
+  direction: string | null;
+  type: string | null;
+  type_label: string | null;
+  state: string | null;
+  entry_lo: number | null;
+  entry_hi: number | null;
+  entry_reference: number | null;
+  invalidation: number | null;
+  target_1: number | null;
+  target_2: number | null;
+  current_price: number | null;
+  price_at: string | null;
+  price_status: 'SIMULATED' | 'STALE';
+  unrealized_r: number | null;
+  reward_risk: number | null;
+  confidence: number | null;
+  since: string | null;
+  volume: null;
+  broker_order_id: null;
+  record_class: 'SIMULATED';
+  order_status: 'NOT_SUBMITTED';
+};
+
+export type ExecutionBook = {
+  mode: string;
+  broker_submission: 'BLOCKED';
+  execution_note: string;
+  provider: string | null;
+  last_cycle_at: string | null;
+  broker: {
+    orders_submitted: 0;
+    fills: 0;
+    rejections: 0;
+    pending_orders: 0;
+    open_positions: 0;
+    basis: string;
+  };
+  shadow: {
+    open_plans: number;
+    blocked_today: number;
+    blocked_30d: number;
+    target_1: number;
+    stopped: number;
+    unresolved: number;
+    basis: string;
+  };
+  plans: ShadowPlan[];
+  events: ExecutionEvent[];
+  daily: { day: string; blocked: number; resolved: number }[];
+  unavailable: string[];
+  r_basis: string;
+};

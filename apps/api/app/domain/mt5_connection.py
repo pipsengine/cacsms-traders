@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from datetime import datetime, timezone
 from typing import Any
 
 from ..core.database import db, execute_retry
@@ -261,12 +262,20 @@ def ensure_autodetected_terminal_path(
 
 
 def sync_trading_registry_from_terminal(
-    conn: sqlite3.Connection, tenant_id: str, *, force_attach: bool = True
+    conn: sqlite3.Connection,
+    tenant_id: str,
+    *,
+    force_attach: bool = True,
+    live_only: bool = False,
+    terminal: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Backfill linked registry rows from the logged-in MT5 terminal (login, server, status)."""
     gw = LocalMT5Gateway(tenant_id)
     settings = gw._load_settings(conn)
-    terminal = read_terminal_account_for_tenant(conn, tenant_id, force_attach=force_attach)
+    if terminal is None:
+        terminal = read_terminal_account_for_tenant(conn, tenant_id, force_attach=force_attach)
+    if live_only and terminal and terminal.get("from_snapshot"):
+        return {"synced": False, "reason": "snapshot_only", "error": "Terminal account is a stored snapshot"}
     if not terminal or not terminal.get("available"):
         return {
             "synced": False,
@@ -386,6 +395,45 @@ def sync_trading_registry_from_terminal(
         "free_margin": free_margin,
         "gateway_connected": live_mt5 and settings.get("session_status") == "CONNECTED",
     }
+
+
+def _registry_sync_age_seconds(conn: sqlite3.Connection, tenant_id: str) -> float | None:
+    row = conn.execute(
+        "SELECT MAX(last_synced_at) AS synced FROM trading_accounts WHERE tenant_id=?",
+        (tenant_id,),
+    ).fetchone()
+    synced = None if row is None else row["synced"]
+    if not synced:
+        return None
+    try:
+        stamp = datetime.fromisoformat(str(synced))
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - stamp).total_seconds()
+
+
+def refresh_trading_account_if_stale(tenant_id: str, *, max_age_seconds: float = 60) -> dict[str, Any]:
+    """Refresh balance, equity and margin from the live terminal when the registry row is old.
+
+    The terminal read happens outside the database lock. A stored snapshot is not written back as a new sync time.
+    """
+    if not (tenant_id or "").strip():
+        return {"synced": False, "reason": "no_tenant"}
+    with db() as conn:
+        age = _registry_sync_age_seconds(conn, tenant_id)
+    if age is not None and age <= max_age_seconds:
+        return {"synced": False, "reason": "fresh"}
+    if not mt5_session.is_initialized():
+        return {"synced": False, "reason": "session_down"}
+    terminal = read_terminal_account()
+    if not terminal or not terminal.get("available") or terminal.get("from_snapshot"):
+        return {"synced": False, "reason": "no_live_account"}
+    with db() as conn:
+        return sync_trading_registry_from_terminal(
+            conn, tenant_id, force_attach=False, live_only=True, terminal=terminal
+        )
 
 
 def sync_tenant_terminal_path_if_connected(conn: sqlite3.Connection, tenant_id: str) -> None:

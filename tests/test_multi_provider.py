@@ -76,7 +76,7 @@ def test_provider_bars_do_not_overwrite_or_mix(conn):
     with pytest.raises(ValueError, match='Mixed-provider'):
         mt5.upsert_candle(candle('ctrader'))
     assert not mt5.upsert_candle(replace(candle(), is_closed=False))
-    assert not mt5.upsert_candle(candle(opened=NOW + timedelta(hours=1)))
+    assert not mt5.upsert_candle(candle(opened=NOW + timedelta(days=2)))
 
 
 def test_history_reference_excludes_previous_provider_snapshot(conn):

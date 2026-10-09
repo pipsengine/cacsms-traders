@@ -13,10 +13,17 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from ..core.database import db
-from .constants import CANDLE_TIMEFRAMES, COMPUTE_TIMEFRAMES, FX_PAIRS_28, MATRIX_TIMEFRAMES
-from .csm_engine import CalculationMode, CsmMatrixResult
+from .constants import CANDLE_TIMEFRAMES, COMPUTE_TIMEFRAMES, FX_PAIRS_28, MATRIX_TIMEFRAMES, TIMEFRAME_SECONDS
+from .csm_engine import (
+    CalculationMode,
+    CsmMatrixResult,
+    apply_live_endpoints,
+    compute_matrix,
+    overlay_forming_closes,
+    stamp_forming_bids,
+)
 from .csm_scoring import normalize_all_scores
-from .csm_service import CurrencyStrengthMatrixService
+from .csm_service import CurrencyStrengthMatrixService, collect_forming_bids, collect_live_endpoints
 from .ingestion import broker_offset
 from .ingestion_runner import MarketIngestionRunner
 from .intelligence_cycle import write_relationships
@@ -49,6 +56,9 @@ def _env_float(name: str, default: float) -> float:
 POLL_SECONDS = _env_float("STRENGTH_ENGINE_POLL_SECONDS", 1.0)
 SNAPSHOT_INTERVAL_SECONDS = _env_float("STRENGTH_SNAPSHOT_INTERVAL_SECONDS", 300.0)
 HEARTBEAT_RECALC_SECONDS = 60.0
+# Previous-bar closes (iClose shift 1) are stable until a bar closes. The bid is iClose shift 0 and
+# is read on this cadence so the matrix follows the MT5 terminal tick.
+QUOTE_SECONDS = _env_float("STRENGTH_QUOTE_SECONDS", 0.1)
 STALE_AFTER_SECONDS = 120.0
 BOOTSTRAP_RETRY_SECONDS = 60.0
 MODE_INTEREST_SECONDS = 30.0
@@ -73,6 +83,7 @@ class StrengthEngine:
         self._state = "STARTING"
         self._error: str | None = None
         self._last_bar: dict[str, int] = {}
+        self._lag_retry_at: dict[str, float] = {}
         self._bootstrapped = False
         self._bootstrap_retry_at = 0.0
         self._mode_interest: dict[str, float] = {}
@@ -93,6 +104,14 @@ class StrengthEngine:
         self._demand_lock = threading.Lock()
         self._last_demand_mono = 0.0
         self._last_profile: dict[str, float] = {}
+        self._forming_bids: dict[str, float] = {}
+        self._live_endpoints: dict[str, dict[str, list[float]]] = {}
+        self._bar_anchors: dict[str, dict[str, list[float]]] = {}
+        self._base_pair_data: dict | None = None
+        self._last_bids: dict[str, float] = {}
+        self._quote_adapter = None
+        self._anchor_m1: int | None = None
+        self._bids_changed = False
 
     @property
     def running(self) -> bool:
@@ -119,7 +138,15 @@ class StrengthEngine:
             log.exception("Strength score backfill failed")
         while not self._stop.is_set():
             self._safe_tick()
-            self._stop.wait(POLL_SECONDS)
+            idle_until = time.monotonic() + POLL_SECONDS
+            while not self._stop.is_set() and time.monotonic() < idle_until:
+                try:
+                    self._apply_quote_tick()
+                except Exception:
+                    log.exception("Strength quote tick failed")
+                    break
+                if self._stop.wait(QUOTE_SECONDS):
+                    break
 
     def _safe_tick(self) -> None:
         try:
@@ -192,14 +219,146 @@ class StrengthEngine:
             )
         return basket
 
+    def _load_bar_anchors(self, gw) -> None:
+        """iClose(shift 1) for each matrix timeframe. Shift 0 is applied later from the bid."""
+        try:
+            endpoints = collect_live_endpoints(gw)
+        except Exception:
+            log.exception("Forming bar refresh failed")
+            endpoints = {}
+        anchors: dict[str, dict[str, list[float]]] = {}
+        for tf, pairs in endpoints.items():
+            framed = {pair: [float(c) for c in series[:-1]] for pair, series in pairs.items() if len(series) >= 2}
+            if framed:
+                anchors[tf] = framed
+        if not anchors:
+            return
+        self._bar_anchors = anchors
+        adapter = getattr(gw, "adapter", gw)
+        probe = getattr(adapter, "latest_closed_open_time", None)
+        if callable(probe):
+            try:
+                self._anchor_m1 = probe(PROBE_PAIR, "M1")
+            except Exception:
+                self._anchor_m1 = None
+        self._quote_adapter = adapter if callable(getattr(adapter, "forming_bids", None)) else None
+
+    def _pull_bids(self, gw, *, restamp: bool = False) -> bool:
+        """Current bid per pair. Returns True when any bid changed."""
+        adapter = getattr(gw, "adapter", gw)
+        bids: dict[str, float] = {}
+        fetch = getattr(adapter, "forming_bids", None)
+        if callable(fetch):
+            try:
+                raw = fetch(FX_PAIRS_28)
+            except Exception:
+                log.exception("Forming bid refresh failed")
+                raw = {}
+            bids = {p: float(raw[p]) for p in FX_PAIRS_28 if raw.get(p) and float(raw[p]) > 0}
+            self._quote_adapter = adapter
+        if not bids:
+            try:
+                bids = collect_forming_bids(gw)
+            except Exception:
+                log.exception("Forming bid refresh failed")
+                return False
+        if not bids:
+            self._bids_changed = False
+            return False
+        changed = bids != self._last_bids
+        if not changed and not restamp:
+            self._bids_changed = False
+            return False
+        self._last_bids = bids
+        self._forming_bids = bids
+        self._live_endpoints = stamp_forming_bids(self._bar_anchors, bids) if self._bar_anchors else {}
+        self._bids_changed = True
+        return True
+
+    def _refresh_forming_bids(self, gw, *, force_anchors: bool = False) -> bool:
+        reload_anchors = force_anchors or not self._bar_anchors
+        if reload_anchors:
+            self._load_bar_anchors(gw)
+        return self._pull_bids(gw, restamp=reload_anchors)
+
+    def _compose_pair_data(self, base: dict) -> dict:
+        bids = self._forming_bids
+        endpoints = self._live_endpoints
+        if endpoints:
+            data = apply_live_endpoints(base, endpoints)
+            if bids:
+                synthetic = overlay_forming_closes({tf: data[tf] for tf in ("YTD", "Q") if tf in data}, bids)
+                data.update(synthetic)
+            return data
+        if bids:
+            return overlay_forming_closes(base, bids)
+        return {tf: {pair: list(closes) for pair, closes in pairs.items()} for tf, pairs in base.items()}
+
+    def _recompute_from_cache(self, as_of: datetime) -> CsmMatrixResult | None:
+        base = self._base_pair_data
+        if not base:
+            return None
+        data = self._compose_pair_data(base)
+        result = compute_matrix(COMPUTE_TIMEFRAMES, data, bars_difference=1, as_of=as_of)
+        result.missing_pairs = CurrencyStrengthMatrixService.missing_pairs(data)
+        result.pairs_loaded = len(FX_PAIRS_28) - len(result.missing_pairs)
+        result.forming_close = bool(self._forming_bids or self._live_endpoints)
+        return result
+
+    def _publish_quote(self, result: CsmMatrixResult) -> None:
+        signature = tuple(
+            round(result.values[c].get(tf, 0.0), 4) for c in sorted(result.values) for tf in MATRIX_TIMEFRAMES
+        )
+        self._update_intelligence(result, signature)
+        with self._lock:
+            if self._result is not None and signature != self._last_sig:
+                self._last_bar_change_at = result.as_of
+            self._last_sig = signature
+            self._result = result
+            self._last_calc_mono = time.monotonic()
+            self._last_tick_ok = result.as_of
+
+    def _apply_quote_tick(self) -> None:
+        """Follow the terminal: new bid recompute, and new M1 bar refreshes iClose(shift 1)."""
+        adapter = self._quote_adapter
+        if adapter is None or self._base_pair_data is None or not self._bar_anchors:
+            return
+        probe = getattr(adapter, "latest_closed_open_time", None)
+        if callable(probe):
+            try:
+                opened = probe(PROBE_PAIR, "M1")
+            except Exception:
+                opened = None
+            if opened and opened != self._anchor_m1:
+                self._anchor_m1 = opened
+                try:
+                    endpoints = adapter.forming_endpoints(FX_PAIRS_28, ("M1", "M5", "M15", "H1", "D1", "W", "MN"), 1)
+                except Exception:
+                    log.exception("Forming bar refresh failed")
+                    endpoints = {}
+                anchors = {
+                    tf: {pair: [float(c) for c in series[:-1]] for pair, series in pairs.items() if len(series) >= 2}
+                    for tf, pairs in endpoints.items()
+                }
+                anchors = {tf: pairs for tf, pairs in anchors.items() if pairs}
+                if anchors:
+                    self._bar_anchors = anchors
+                    self._last_bids = {}
+        if not self._pull_bids(adapter):
+            return
+        result = self._recompute_from_cache(datetime.now(timezone.utc))
+        if result is not None:
+            self._publish_quote(result)
+
     def _sync_closed_bars(self, repo: MarketRepository, svc: CurrencyStrengthMatrixService) -> bool:
         started = time.monotonic()
         gw = create_market_data_gateway(repo.conn, context=self._ctx, verify_scope=False)
         repo.provider = gw.provider_id
         repo.snapshot_id = gw.snapshot_id
         repo.account_id = (gw.get_account_context() or {}).get("account_id", "")
-        # bind_snapshot locks the market-data policy row; commit before the long sync/calculate/persist phase.
+        # bind_snapshot holds a write lock. Release it before any MT5 call so the scanner can ingest.
         repo.conn.commit()
+        self._refresh_forming_bids(gw)
         self._last_profile["gateway"] = round(time.monotonic() - started, 3)
         self._ctx["snapshot_id"] = gw.snapshot_id
         if getattr(getattr(gw, "adapter", None), "candles_persisted", False) is True:
@@ -211,7 +370,11 @@ class StrengthEngine:
                 return False
             basket = self._refresh_repository_basket_meta(repo)
             if basket.get("pairs_loaded", 0) >= 20:
-                self._last_bar = {tf: t for tf in PROBE_TIMEFRAMES if (t := self._probe(gw, tf)) is not None}
+                probes = {tf: t for tf in PROBE_TIMEFRAMES if (t := self._probe(gw, tf)) is not None}
+                ok, _changed = self._sync_lagging(gw, repo, probes)
+                if not ok:
+                    return False
+                self._last_bar = probes
                 self._bootstrapped = True
                 with self._lock:
                     self._state = "CALCULATING"
@@ -274,32 +437,82 @@ class StrengthEngine:
             self._bootstrapped = probes_ok or basket["pairs_loaded"] >= 20
             return self._bootstrapped or basket["pairs_loaded"] > 0
 
-        changed = []
+        probes = {}
         for tf in PROBE_TIMEFRAMES:
             t = self._probe(gw, tf)
             if t is None:
                 self._bootstrapped = False
                 self._ctx.update(closed_bar_status='INCOMPLETE',error_code='stale_or_missing_candles')
                 return False
-            if t != self._last_bar.get(tf):
-                self._last_bar[tf] = t
-                changed.append(tf)
-        if not changed:
+            probes[tf] = t
+        ok, changed = self._sync_lagging(gw, repo, probes)
+        if not ok or not changed:
             return False
-        runner = MarketIngestionRunner(gw, repo, candle_count=INCREMENTAL_BARS)
-        for tf in changed:
-            summary = runner.sync_timeframe_universe(tf, candle_count=INCREMENTAL_BARS)
-            failures = [r for r in summary["results"] if r.get("error") or not r.get("accepted")]
-            if failures:
-                self._bootstrapped = False
-                self._bootstrap_retry_at = time.monotonic() + BOOTSTRAP_RETRY_SECONDS
-                with self._lock:
-                    self._ctx.update(provider_status="DEGRADED", closed_bar_status="INCOMPLETE",
-                                     failed_candle_requests=failures)
-                return False
-        if "H1" in changed:
-            runner.sync_timeframe_universe("H8", candle_count=INCREMENTAL_BARS)
+        self._refresh_forming_bids(gw, force_anchors=True)
         return True
+
+    def _catch_up_count(self, stored: datetime | None, probe_open: int, tf: str) -> int:
+        """Bars to request so an incremental read overlaps the last stored bar instead of jumping the gap."""
+        seconds = TIMEFRAME_SECONDS.get({"W1": "W", "MN1": "MN"}.get(tf, tf), 3600)
+        if stored is None:
+            return 400
+        if stored.tzinfo is None:
+            stored = stored.replace(tzinfo=timezone.utc)
+        probe_dt = datetime.fromtimestamp(int(probe_open), tz=timezone.utc)
+        if stored >= probe_dt:
+            return 0
+        # A session outage can be longer than the old 400-bar window, which then never overlaps the stored bar.
+        return min(960, max(INCREMENTAL_BARS, int((probe_dt - stored).total_seconds() / max(seconds, 1)) + 3))
+
+    def _sync_lagging(self, gw, repo: MarketRepository, probes: dict[str, int]) -> tuple[bool, bool]:
+        """Fill closed bars that the store skipped. Hourly structure lands before a large minute backfill."""
+        stored = repo.latest_open_times(PROBE_PAIR)
+        now_m = time.monotonic()
+        pending: list[tuple[str, int]] = []
+        for tf in ("H1", "D1", "W1", "MN", "M15", "M5", "M1"):
+            opened = probes.get(tf)
+            if opened is None or now_m < self._lag_retry_at.get(tf, 0.0):
+                continue
+            lag = self._catch_up_count(stored.get(tf), opened, tf)
+            if opened != self._last_bar.get(tf) or lag:
+                pending.append((tf, max(lag, INCREMENTAL_BARS)))
+        if not pending:
+            return True, False
+        structure = {"H1", "D1", "W1", "MN"}
+        chosen = [(tf, count) for tf, count in pending if tf in structure]
+        if not chosen:
+            chosen = pending[:1]
+        runner = MarketIngestionRunner(gw, repo, candle_count=max(count for _, count in chosen))
+        structure_failed = False
+        synced: dict[str, int] = {}
+        for tf, count in chosen:
+            summary = runner.sync_timeframe_universe(tf, candle_count=count)
+            failures = [
+                r for r in summary["results"]
+                if self._sync_result_blocking(r) or r.get("error") == "missing_candles"
+            ]
+            if failures:
+                self._lag_retry_at[tf] = time.monotonic() + BOOTSTRAP_RETRY_SECONDS
+                log.warning("Closed-bar catch-up failed for %s (%s bars): %s", tf, count, failures[0].get("error"))
+                if tf in structure:
+                    structure_failed = True
+                with self._lock:
+                    self._ctx.update(
+                        provider_status="DEGRADED",
+                        closed_bar_status="INCOMPLETE",
+                        failed_candle_requests=failures[:40],
+                    )
+                continue
+            self._last_bar[tf] = probes[tf]
+            self._lag_retry_at.pop(tf, None)
+            synced[tf] = count
+        if "H1" in synced:
+            runner.sync_timeframe_universe("H8", candle_count=max(INCREMENTAL_BARS, min(48, synced["H1"] // 8 + 3)))
+        if structure_failed:
+            self._bootstrapped = False
+            self._bootstrap_retry_at = time.monotonic() + BOOTSTRAP_RETRY_SECONDS
+            return False, bool(synced)
+        return True, bool(synced)
 
     def _sync_from_store(self, gw, repo: MarketRepository) -> bool:
         """Bridge uploads are already persisted: validate them with bulk reads instead of ~200 gateway round trips."""
@@ -388,6 +601,7 @@ class StrengthEngine:
                 self._bootstrapped = False
                 self._bootstrap_retry_at = 0.0
                 self._last_bar = {}
+                self._lag_retry_at = {}
                 with self._lock:
                     self._result = None
                     self._scores = {}
@@ -400,6 +614,14 @@ class StrengthEngine:
                     self._scores_sig = None
                     self._mode_results = {}
                     self._last_persisted_at = None
+                    self._forming_bids = {}
+                    self._live_endpoints = {}
+                    self._bar_anchors = {}
+                    self._base_pair_data = None
+                    self._last_bids = {}
+                    self._quote_adapter = None
+                    self._anchor_m1 = None
+                    self._bids_changed = False
             connected = bool(ctx["market_data_ready"])
             with self._lock:
                 for field in (
@@ -451,8 +673,12 @@ class StrengthEngine:
                 ctx.update(self._ctx)
             with self._lock:
                 self._state = "CALCULATING"
-            if changed or self._result is None or now_mono - self._last_calc_mono >= HEARTBEAT_RECALC_SECONDS:
-                result = svc.calculate(calculation_mode=CalculationMode.CLOSE_CLOSE)
+            live_inputs = bool(self._live_endpoints or self._forming_bids)
+            recalc_after = QUOTE_SECONDS if live_inputs else HEARTBEAT_RECALC_SECONDS
+            if changed or self._result is None or self._bids_changed or now_mono - self._last_calc_mono >= recalc_after:
+                if changed or self._base_pair_data is None:
+                    self._base_pair_data = svc.build_pair_closes_by_tf(now)
+                result = self._recompute_from_cache(now)
             lap("calculate")
             if result is not None:
                 signature = tuple(
@@ -642,6 +868,7 @@ class StrengthEngine:
                 "pairs_total": 28,
                 "missing_pairs": missing,
                 "closed_bar_only": True,
+                "bar_basis": "closed",
                 "calculation_mode": "CLOSE_CLOSE",
             }
         now = datetime.now(timezone.utc)
@@ -674,8 +901,8 @@ class StrengthEngine:
             "missing_pairs": result.missing_pairs,
             "symbols_resolved": ctx.get("symbols_resolved", 0),
             "engine_state": state,
-            "bar_basis": "closed",
-            "closed_bar_only": True,
+            "bar_basis": "forming" if result.forming_close else "closed",
+            "closed_bar_only": not result.forming_close,
             "engine_error": error,
             "stale": stale_reason is not None,
             "stale_reason": stale_reason,

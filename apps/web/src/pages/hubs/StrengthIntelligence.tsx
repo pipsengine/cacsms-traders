@@ -26,7 +26,7 @@ import type { Health } from '../../types';
 import type { CalculationMode } from '../../features/market-intelligence/types';
 
 const SORT_TFS = ['AVG', ...MATRIX_TFS.filter((tf) => tf !== 'AVG')];
-const POLL_MS = 1000;
+const POLL_MS = 250;
 const CALC_MODES: { id: CalculationMode; label: string }[] = [
   { id: 'CLOSE_CLOSE', label: 'Close-to-Close' },
   { id: 'MA', label: 'MA difference' },

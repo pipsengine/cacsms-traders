@@ -34,6 +34,8 @@ class CsmMatrixResult:
     as_of: datetime
     pairs_loaded: int = 0
     missing_pairs: list[str] = field(default_factory=list)
+    # True when the newest close is iClose(shift 0), the current bid, not the last closed bar.
+    forming_close: bool = False
 
 
 def split_pair(pair: str) -> tuple[str, str]:
@@ -58,13 +60,78 @@ def pct_change(start: float, end: float) -> float | None:
 def _closed_endpoints(
     closes: Sequence[float], bars_difference: int
 ) -> tuple[float | None, float | None]:
-    """Latest closed bar is the last element; never use an in-progress bar (caller must exclude it)."""
+    """EarnForex iClose indexing: last element is shift 0, the element `bars_difference` before it is the start.
+
+    Shift 0 is the current bid when the caller has appended a forming close. Without that append the
+    last element is the latest stored bar, which is one bar behind the indicator.
+    """
     need = bars_difference + 1
     if len(closes) < need:
         return None, None
     end = closes[-1]
     start = closes[-1 - bars_difference]
     return start, end
+
+
+def stamp_forming_bids(
+    anchors: Mapping[str, Mapping[str, Sequence[float]]],
+    bids: Mapping[str, float],
+) -> dict[str, dict[str, list[float]]]:
+    """Previous-bar closes plus the current bid as iClose(shift 0)."""
+    out: dict[str, dict[str, list[float]]] = {}
+    for tf, pairs in anchors.items():
+        framed: dict[str, list[float]] = {}
+        for pair, hist in pairs.items():
+            bid = bids.get(pair)
+            if not hist or bid is None or float(bid) <= 0:
+                continue
+            framed[pair] = [float(c) for c in hist] + [float(bid)]
+        if framed:
+            out[tf] = framed
+    return out
+
+
+def apply_live_endpoints(
+    pair_closes_by_tf: Mapping[str, Mapping[str, Sequence[float]]],
+    endpoints: Mapping[str, Mapping[str, Sequence[float]]],
+) -> dict[str, dict[str, list[float]]]:
+    """Replace a timeframe's closes with broker bars that already include iClose(shift 0)."""
+    out: dict[str, dict[str, list[float]]] = {tf: {p: list(c) for p, c in pairs.items()} for tf, pairs in pair_closes_by_tf.items()}
+    for tf, pairs in endpoints.items():
+        bucket = out.setdefault(tf, {})
+        for pair, closes in pairs.items():
+            series = [float(c) for c in closes if c and float(c) > 0]
+            if len(series) >= 2:
+                bucket[pair] = series
+    return out
+
+
+def overlay_forming_closes(
+    pair_closes_by_tf: Mapping[str, Mapping[str, Sequence[float]]],
+    bids: Mapping[str, float],
+    *,
+    synthetic: frozenset[str] = frozenset({"YTD", "Q"}),
+) -> dict[str, dict[str, list[float]]]:
+    """Match PopulateMatrixCell: EndValue = iClose(shift 0) = current bid, StartValue = iClose(BarsDifference).
+
+    Native series are closed bars oldest → newest, so appending the bid makes shift 0 the live price and
+    shift 1 the previous close. YTD/Q stay a window from the anchor close to that same live price.
+    """
+    out: dict[str, dict[str, list[float]]] = {}
+    for tf, pairs in pair_closes_by_tf.items():
+        framed: dict[str, list[float]] = {}
+        for pair, closes in pairs.items():
+            series = [float(c) for c in closes]
+            bid = bids.get(pair)
+            if bid is None or bid <= 0 or not series:
+                framed[pair] = series
+                continue
+            if tf in synthetic:
+                framed[pair] = [series[0], float(bid)]
+            else:
+                framed[pair] = [*series, float(bid)]
+        out[tf] = framed
+    return out
 
 
 def pair_contribution(

@@ -75,12 +75,12 @@ class NormalizedProvider:
             rows = self._request(self.adapter.get_closed_candles, symbol, tf, start=start, end=end, count=count)
         else:
             rows = self._request(self.adapter.closed_candles, symbol, tf, count)
-        now = datetime.now(timezone.utc)
+        horizon = self._bar_horizon()
         normalized = {}
         for c in rows:
             opened = c.open_time.astimezone(timezone.utc) if c.open_time.tzinfo else c.open_time.replace(tzinfo=timezone.utc)
             closed = candle_close(opened, tf, (self.account_context or {}).get('broker_utc_offset_seconds', 0))
-            if not c.is_closed or closed > now:
+            if not c.is_closed or closed > horizon:
                 continue
             if not all(math.isfinite(v) and v > 0 for v in (c.open, c.high, c.low, c.close)):
                 continue
@@ -100,6 +100,26 @@ class NormalizedProvider:
         if self.observer and end is None and fresh:
             self.observer(success=True, data_available=True, error=None)
         return result
+
+    def _bar_horizon(self) -> datetime:
+        """Latest moment a bar is allowed to have closed.
+
+        The MT5 terminal clock can run hours ahead of this machine. Comparing a closed
+        bar with the PC clock drops it, and the scanner then reports the store as stale.
+        """
+        system = datetime.now(timezone.utc)
+        server = getattr(self.adapter, "server_now", None)
+        if not callable(server):
+            return system
+        try:
+            stamp = server()
+        except Exception:
+            return system
+        if not isinstance(stamp, datetime):
+            return system
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        return max(system, stamp.astimezone(timezone.utc))
 
     def closed_candles(self, symbol, timeframe, count=400):
         return self.get_closed_candles(symbol, timeframe, count=count)

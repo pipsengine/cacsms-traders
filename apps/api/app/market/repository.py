@@ -1,6 +1,6 @@
 from __future__ import annotations
 import sqlite3, json
-from datetime import datetime
+from datetime import datetime, timedelta
 from ..core.database import execute_retry, execute_values
 from .models import Candle
 from .provenance import scoped_query, values
@@ -47,7 +47,8 @@ class MarketRepository:
   if self.provider_storage:
    from datetime import timezone
    from math import isfinite
-   if c.close_time > datetime.now(timezone.utc) or not all(isfinite(v) and v>0 for v in (c.open,c.high,c.low,c.close)): return False
+   # MT5 bar times can sit a few hours ahead of this PC. A bar days ahead has not closed.
+   if c.close_time > datetime.now(timezone.utc) + timedelta(hours=6) or not all(isfinite(v) and v>0 for v in (c.open,c.high,c.low,c.close)): return False
    source=c.source.lower()
    if c.account_id!=self.account_id: raise ValueError('Mixed-account candle ingestion refused')
    if self.provider not in (None,'__unavailable__',source): raise ValueError('Mixed-provider candle ingestion refused')

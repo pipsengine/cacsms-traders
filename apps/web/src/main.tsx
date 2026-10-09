@@ -15,6 +15,9 @@ import './styles/responsive-layout.css';
 import './styles/compact-laptop.css';
 import './styles/overview-dashboard.css';
 import './styles/autonomous-engine.css';
+import './styles/trading-opportunities.css';
+import './styles/risk-portfolio.css';
+import './styles/execution-positions.css';
 
 createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

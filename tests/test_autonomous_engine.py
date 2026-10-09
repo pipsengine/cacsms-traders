@@ -353,6 +353,10 @@ def test_supervisor_verdicts():
     assert mismatch["status"] == "CRITICAL" and any("Account scope" in b for b in mismatch["blockers"])
     assert _assess(db_ok=False)["status"] == "CRITICAL"
     assert _assess(smtp_ready=False)["status"] == "DEGRADED"  # email failure never blocks analysis
+    assert _assess(smtp_ready=None)["status"] == "NORMAL"
+    shadow = _assess(mode="SHADOW")
+    assert shadow["status"] == "NORMAL"
+    assert not any("Mode SHADOW" in w for w in shadow["warnings"])
     weekend = datetime(2026, 10, 10, 12, 0, tzinfo=timezone.utc)  # Saturday; last bar closed Friday 17:00 New York
     friday = datetime(2026, 10, 9, 21, 0, tzinfo=timezone.utc)
     closed = _assess(now=weekend, analysis={"EURUSD": {"last_close": (friday, 1.1)}}, scanner_state={"cycle_at": weekend, "cycle_id": 1})
@@ -486,3 +490,109 @@ def test_api_is_read_only_rbac_protected_and_cron_secured(live, cores, monkeypat
         assert client.get("/api/autonomous/jobs/cycle").status_code == 401
     mutating = [r for r in app.routes if getattr(r, "path", "").startswith("/api/autonomous") and set(getattr(r, "methods", ())) - {"GET", "HEAD"}]
     assert [r.path for r in mutating] == ["/api/autonomous/jobs/catch-up"]
+
+
+def test_portfolio_exposure_and_decisions_stay_unsized():
+    from apps.api.app.autonomous.portfolio import decision_row, net_exposure, shadow_outcomes, slot_capacity
+
+    exposure = net_exposure([
+        {"symbol": "EURUSD", "direction": "BULLISH"},
+        {"symbol": "GBPUSD", "direction": "BEARISH"},
+        {"symbol": "XAUUSD", "direction": "BEARISH"},
+    ])
+    assert exposure["EUR"] == 1
+    assert exposure["GBP"] == -1
+    assert exposure["USD"] == 1  # -1 from EURUSD, +1 from GBPUSD, +1 from XAUUSD
+    assert exposure["XAU"] == -1
+    capacity = slot_capacity(2, 6)
+    assert capacity["used_pct"] == round(100 * 2 / 6, 1)
+    assert "not a dollar" in capacity["basis"].lower() or "Not a dollar" in capacity["basis"]
+    row = decision_row(
+        {"id": "t1", "entity_id": "o1", "symbol": "EURUSD", "to_state": "RISK_DEFERRED", "reason_code": "RISK_DEFERRED",
+         "detail": "Portfolio limits defer this opportunity", "evidence_at": "2026-10-09T08:00:00+00:00",
+         "evidence": {"rule": "CURRENCY_EXPOSURE", "reward_risk": 2.1, "currency": "USD"}},
+        {"opp_type": "P2_BREAKOUT_RETEST", "direction": "BULLISH", "reward_risk": 2.1},
+    )
+    assert row["position_size"] is None and row["broker_order"] is None and row["shadow"] is True
+    assert row["rule"] == "CURRENCY_EXPOSURE"
+    outcomes = shadow_outcomes([
+        {"opp_type": "TIT", "outcome": "TARGET_1", "evidence": {"outcome": {"r_multiple": 2.0}}},
+        {"opp_type": "TIT", "outcome": "STOPPED", "evidence": {"outcome": {"r_multiple": -1.0}}},
+    ])
+    assert outcomes["hit_rate"] == 50.0
+    assert outcomes["counts"]["TARGET_1"] == 1 and outcomes["resolved"] == 2
+    assert outcomes["profit_factor"] is None and outcomes["sharpe"] is None and outcomes["max_drawdown_pct"] is None
+
+
+def test_execution_book_never_counts_shadow_plans_as_broker_fills():
+    from apps.api.app.autonomous.execution_book import assemble_execution
+
+    now = datetime(2026, 10, 9, 12, 0, tzinfo=timezone.utc)
+    plan = {
+        "id": "op1", "symbol": "EURUSD", "direction": "BULLISH", "opp_type": "P2_BREAKOUT_RETEST",
+        "state": "EXECUTION_BLOCKED_ANALYSIS_ONLY", "stage": "EXECUTION",
+        "entry_lo": 1.0990, "entry_hi": 1.1010, "invalidation": 1.0900, "target_1": 1.1200,
+        "current_price": 1.1200, "price_at": "2026-10-09T11:00:00+00:00",
+        "evidence": {"confirmation": {"close": 1.1000}}, "reward_risk": 2.0,
+    }
+    book = assemble_execution(
+        plans=[plan],
+        closed=[
+            {"outcome": "TARGET_1"},
+            {"outcome": "INVALIDATED"},
+            {"outcome": "REJECTED"},
+        ],
+        transitions=[
+            {"id": "t-block", "entity_id": "op1", "symbol": "EURUSD", "to_state": "EXECUTION_BLOCKED_ANALYSIS_ONLY",
+             "from_state": "RISK_APPROVED", "reason_code": "EXECUTION_BLOCKED_ANALYSIS_ONLY",
+             "detail": "Operating mode is ANALYSIS ONLY — no broker order is submitted",
+             "evidence_at": "2026-10-09T10:00:00+00:00"},
+            {"id": "t-inv", "entity_id": "op2", "symbol": "GBPUSD", "to_state": "INVALIDATED",
+             "reason_code": "INVALIDATED_PRE_ENTRY", "evidence_at": "2026-10-09T09:00:00+00:00"},
+        ],
+        blocked_30d=4,
+        blocked_today=1,
+        provider="mt5",
+        last_cycle_at="2026-10-09T11:30:00+00:00",
+        now=now,
+        by_id={"op1": plan},
+    )
+    assert book["broker"]["orders_submitted"] == 0
+    assert book["broker"]["fills"] == 0 and book["broker"]["open_positions"] == 0
+    assert book["broker_submission"] == "BLOCKED"
+    assert book["plans"][0]["volume"] is None and book["plans"][0]["broker_order_id"] is None
+    assert book["plans"][0]["record_class"] == "SIMULATED"
+    assert book["plans"][0]["order_status"] == "NOT_SUBMITTED"
+    assert book["plans"][0]["unrealized_r"] == 2.0
+    assert book["plans"][0]["price_status"] == "SIMULATED"
+    assert book["shadow"]["target_1"] == 1 and book["shadow"]["open_plans"] == 1
+    assert [event["result"] for event in book["events"]] == ["NOT_SUBMITTED"]
+    assert book["daily"][-1]["blocked"] == 1
+    text = Path("apps/api/app/autonomous/execution_book.py").read_text(encoding="utf-8")
+    assert ORDER_APIS.search(text) is None
+
+
+def test_opportunity_workspace_summary_buckets():
+    from apps.api.app.autonomous.read_model import opportunity_workspace_summary
+
+    now = datetime(2026, 10, 9, 8, 0, tzinfo=timezone.utc)
+    active = [
+        {"status": "ACTIVE", "stage": "OPPORTUNITY", "state": "WAITING_FOR_ZONE", "confidence": 88, "created_at": "2026-10-09T01:00:00+00:00", "outcome": None},
+        {"status": "ACTIVE", "stage": "CONFIRMATION", "state": "AWAITING_REACTION", "confidence": 62, "created_at": "2026-10-08T01:00:00+00:00", "outcome": None},
+        {"status": "ACTIVE", "stage": "RISK", "state": "RISK_REVIEW", "confidence": 70, "created_at": "2026-10-09T02:00:00+00:00", "outcome": None},
+        {"status": "ACTIVE", "stage": "EXECUTION", "state": "EXECUTION_BLOCKED_ANALYSIS_ONLY", "confidence": 81, "created_at": "2026-10-01T00:00:00+00:00", "outcome": None},
+    ]
+    learning = [
+        {"status": "CLOSED", "stage": "LEARNING", "state": "INVALIDATED", "confidence": 40, "created_at": "2026-10-01T00:00:00+00:00", "outcome": "INVALIDATED"},
+        {"status": "CLOSED", "stage": "LEARNING", "state": "COMPLETED", "confidence": 90, "created_at": "2026-10-09T00:00:00+00:00", "outcome": "COMPLETED"},
+    ]
+    summary = opportunity_workspace_summary(active, learning, now)
+    assert summary["total"] == 4
+    assert summary["created_today"] == 2
+    assert summary["high_potential"] == 2
+    assert summary["high_potential_min_confidence"] == 80
+    assert summary["awaiting_conditions"] == 2
+    assert summary["ready_for_risk"] == 1
+    assert summary["authorised"] == 1
+    assert summary["invalidated"] == 1
+    assert "ranking metrics" in summary["ranking_note"]

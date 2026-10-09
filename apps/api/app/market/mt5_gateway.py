@@ -254,6 +254,81 @@ class Mt5MarketDataGateway:
             raise MarketDataUnavailable(f"No rates for {sym} {timeframe}")
         return [(datetime.fromtimestamp(int(r["time"]), tz=timezone.utc), float(r["close"])) for r in rates]
 
+    _ENDPOINT_TF = {
+        "M1": "M1",
+        "M5": "M5",
+        "M15": "M15",
+        "M30": "M30",
+        "H1": "H1",
+        "H4": "H4",
+        "D1": "D1",
+        "W": "W1",
+        "W1": "W1",
+        "MN": "MN1",
+        "MN1": "MN1",
+    }
+
+    @_locked
+    def forming_endpoints(self, symbols, timeframes, bars_difference: int = 1) -> dict[str, dict[str, list[float]]]:
+        """{matrix timeframe: {pair: [iClose(shift bars_difference), ..., iClose(shift 0)]}}.
+
+        copy_rates_from_pos from bar 0 returns oldest → newest, so the last close is the forming bar.
+        """
+        mt5 = self._mt5
+        count = max(int(bars_difference), 1) + 1
+        out: dict[str, dict[str, list[float]]] = {}
+        for tf in timeframes:
+            name = self._ENDPOINT_TF.get(str(tf).upper())
+            const = getattr(mt5, f"TIMEFRAME_{name}", None) if name else None
+            if const is None:
+                continue
+            framed: dict[str, list[float]] = {}
+            for pair in symbols:
+                sym = self._resolved.get(pair)
+                if sym is None:
+                    sym = pair if len(pair) > 6 else _select_symbol(mt5, pair)
+                    self._resolved[pair] = sym
+                rates = mt5.copy_rates_from_pos(sym, const, 0, count)
+                if rates is None or len(rates) < count:
+                    continue
+                closes = [float(r["close"]) for r in rates[-count:]]
+                if all(c > 0 for c in closes):
+                    framed[pair] = closes
+            if framed:
+                out[str(tf).upper() if str(tf).upper() != "W1" else "W"] = framed
+        return out
+
+    @_locked
+    def forming_bids(self, symbols) -> dict[str, float]:
+        """One lock, one tick per pair. This bid is iClose(symbol, any timeframe, 0)."""
+        mt5 = self._mt5
+        out: dict[str, float] = {}
+        for pair in symbols:
+            sym = self._resolved.get(pair)
+            if sym is None:
+                sym = pair if len(pair) > 6 else _select_symbol(mt5, pair)
+                self._resolved[pair] = sym
+            tick = mt5.symbol_info_tick(sym)
+            if tick is not None and tick.bid:
+                out[pair] = float(tick.bid)
+        return out
+
+    def server_now(self) -> datetime:
+        """Broker clock. IC Markets stamps bars about three hours ahead of this PC."""
+        system = datetime.now(timezone.utc)
+        cached = getattr(self, "_server_now", None)
+        if cached is not None:
+            sampled, stamp = cached
+            if (system - sampled).total_seconds() < 15:
+                return stamp + (system - sampled)
+        try:
+            tick = self.latest_tick("EURUSD")
+            stamp = datetime.fromtimestamp(int(tick["time"]), tz=timezone.utc)
+        except Exception:
+            return system
+        self._server_now = (system, stamp)
+        return stamp
+
     @_locked
     def latest_tick(self, symbol: str) -> dict:
         sym = symbol if len(symbol) > 6 else _select_symbol(self._mt5, symbol)

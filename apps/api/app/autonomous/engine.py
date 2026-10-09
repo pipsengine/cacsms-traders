@@ -286,7 +286,9 @@ class AutonomousEngine:
         ctx = {**market_context(conn), **compute_platform_status(conn)}
         snapshot = _open_snapshot(conn)
         try:
-            smtp_ready = bool(smtp_config(conn).ready)
+            smtp = smtp_config(conn)
+            # Disabled mail is not a fault. A configured server that cannot send still degrades the supervisor.
+            smtp_ready = None if not smtp.enabled else smtp.ready
         except Exception:  # noqa: BLE001
             smtp_ready = None
         last_ok = repo.last_cycle("COMPLETED")

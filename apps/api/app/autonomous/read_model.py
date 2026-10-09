@@ -174,15 +174,73 @@ def channel_public(c: dict) -> dict:
            "ref": (c.get("lines") or {}).get("ref")}
 
 
+# Ranking cutoff for the High Potential card. A score is a ranking metric, not a probability.
+HIGH_POTENTIAL_CONFIDENCE = 80.0
+RANKING_NOTE = "Scores are ranking metrics, not calibrated probabilities or trade guarantees."
+
+
+def opportunity_class(o: dict) -> str:
+    """Mutually exclusive lifecycle bucket used by the opportunities workspace cards."""
+    state = o.get("state") or ""
+    outcome = o.get("outcome") or ""
+    stage = o.get("stage") or ""
+    if state == "INVALIDATED" or outcome == "INVALIDATED":
+        return "invalidated"
+    if state in ("RISK_APPROVED", "EXECUTION_BLOCKED_ANALYSIS_ONLY") or stage == "EXECUTION":
+        return "authorised"
+    if stage == "RISK":
+        return "ready_for_risk"
+    if o.get("status") == "ACTIVE":
+        return "awaiting"
+    return "historical"
+
+
+def opportunity_workspace_summary(active: list[dict], closed_learning: list[dict], now: datetime) -> dict:
+    """Card counts for the Trading Opportunities workspace. Computed from persisted rows only."""
+    day = now.astimezone(timezone.utc).date().isoformat()
+    awaiting = ready = authorised = 0
+    high = created_today = 0
+    for o in active:
+        kind = opportunity_class(o)
+        if kind == "awaiting":
+            awaiting += 1
+        elif kind == "ready_for_risk":
+            ready += 1
+        elif kind == "authorised":
+            authorised += 1
+        if (o.get("confidence") or 0) >= HIGH_POTENTIAL_CONFIDENCE:
+            high += 1
+        if str(o.get("created_at") or "").startswith(day):
+            created_today += 1
+    invalidated = sum(1 for o in closed_learning if opportunity_class(o) == "invalidated")
+    return {
+        "total": len(active),
+        "created_today": created_today,
+        "high_potential": high,
+        "high_potential_min_confidence": HIGH_POTENTIAL_CONFIDENCE,
+        "awaiting_conditions": awaiting,
+        "ready_for_risk": ready,
+        "authorised": authorised,
+        "invalidated": invalidated,
+        "ranking_note": RANKING_NOTE,
+    }
+
+
 def opportunities(repo: AERepository, *, status: str | None, symbol: str | None, stage: str | None, opp_type: str | None,
                   limit: int) -> dict:
     rows = repo.opportunities(status=status, symbol=symbol, stage=stage, opp_type=opp_type, limit=limit)
-    active = repo.opportunities(status="ACTIVE", limit=1000)
+    active = repo.active_opportunities()
+    learning = repo.opportunities(status="CLOSED", stage="LEARNING", limit=1000)
     counts = {"active": len(active), "by_stage": {}, "by_type": {}}
     for o in active:
         counts["by_stage"][o["stage"]] = counts["by_stage"].get(o["stage"], 0) + 1
         counts["by_type"][o["opp_type"]] = counts["by_type"].get(o["opp_type"], 0) + 1
-    return {"rows": [opportunity_public(o) for o in rows], "counts": counts, "types": OPP_TYPES}
+    return {
+        "rows": [opportunity_public(o) for o in rows],
+        "counts": counts,
+        "types": OPP_TYPES,
+        "summary": opportunity_workspace_summary(active, learning, datetime.now(timezone.utc)),
+    }
 
 
 def history(repo: AERepository, opp_id: str) -> dict | None:

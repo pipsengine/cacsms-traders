@@ -53,8 +53,10 @@ def assess(*, now: datetime, mode: str, ctx: dict, analysis: dict, scanner_meta:
         check("OPERATING_MODE", "Operating mode", "HALT", f"{mode.replace('_', ' ').title()} — autonomous progression halted")
     elif mode == "ANALYSIS_ONLY":
         check("OPERATING_MODE", "Operating mode", "OK", "Analysis only — stages 1–8 run, execution blocked")
+    elif mode == "SHADOW":
+        check("OPERATING_MODE", "Operating mode", "OK", "Shadow — stages run and broker execution stays blocked")
     else:
-        check("OPERATING_MODE", "Operating mode", "WARN", f"Mode {mode}: the autonomous engine still blocks execution")
+        check("OPERATING_MODE", "Operating mode", "WARN", f"{mode.replace('_', ' ').title()} still blocks broker execution")
 
     # Database
     if not db_ok:

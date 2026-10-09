@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from ..core.database import db
 from .constants import COMPUTE_TIMEFRAMES, FX_PAIRS
 from .csm_engine import CalculationMode
-from .csm_service import CurrencyStrengthMatrixService
+from .csm_service import CurrencyStrengthMatrixService, collect_forming_bids, collect_live_endpoints
 from .ingestion_runner import MarketIngestionRunner
 from .models import StrengthPoint
 from .market_data import create_market_data_gateway, market_context
@@ -71,7 +71,12 @@ def run_intelligence_cycle(*, ingest: bool = True, candle_count: int = 400) -> d
         if ingest_summary and ingest_summary.get("errors"):
             return {"market_data": context, "ingest": ingest_summary, "strength_engine_status": "INCOMPLETE_BASKET"}
         csm = CurrencyStrengthMatrixService(repo)
-        result = csm.calculate(calculation_mode=CalculationMode.CLOSE_CLOSE)
+        endpoints = collect_live_endpoints(gateway)
+        result = csm.calculate(
+            calculation_mode=CalculationMode.CLOSE_CLOSE,
+            forming_bids=None if endpoints else collect_forming_bids(gateway),
+            live_endpoints=endpoints,
+        )
         csm.persist(result, run_id=run_id)
         rel_count = write_relationships(repo, result)
 

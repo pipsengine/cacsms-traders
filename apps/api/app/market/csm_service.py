@@ -18,7 +18,9 @@ from .csm_engine import (
     CalculationMode,
     CsmMatrixResult,
     compute_avg,
+    apply_live_endpoints,
     compute_matrix,
+    overlay_forming_closes,
 )
 from .csm_scoring import normalize_all_scores
 from .csm_windows import rolling_quarter_start, window_closes, year_start
@@ -27,6 +29,66 @@ from .repository import MarketRepository
 from .strength_classification import classify, thresholds_payload
 
 SPARKLINE_POINTS = 32
+
+
+_LIVE_ENDPOINT_TIMEFRAMES = ("M1", "M5", "M15", "H1", "D1", "W", "MN")
+
+
+def collect_live_endpoints(gw, bars_difference: int = 1) -> dict[str, dict[str, list[float]]]:
+    """Broker bars from iClose(shift bars_difference) through iClose(shift 0), when the adapter can read bar 0."""
+    adapter = getattr(gw, "adapter", gw)
+    fetch = getattr(adapter, "forming_endpoints", None)
+    if not callable(fetch):
+        return {}
+    try:
+        raw = fetch(FX_PAIRS_28, _LIVE_ENDPOINT_TIMEFRAMES, bars_difference) or {}
+    except Exception:
+        return {}
+    return {tf: pairs for tf, pairs in raw.items() if pairs}
+
+
+def collect_forming_bids(gw) -> dict[str, float]:
+    """Current bid per pair. MT5 iClose(symbol, timeframe, 0) is this price on every timeframe."""
+    adapter = getattr(gw, "adapter", gw)
+    bulk = getattr(adapter, "forming_bids", None)
+    if callable(bulk):
+        try:
+            raw = bulk(FX_PAIRS_28)
+        except Exception:
+            raw = {}
+        return {p: float(raw[p]) for p in FX_PAIRS_28 if raw.get(p) and float(raw[p]) > 0}
+
+    quotes: list = []
+    state_fn = getattr(adapter, "state", None)
+    if callable(state_fn):
+        try:
+            quotes = list(state_fn().get("quotes") or [])
+        except Exception:
+            quotes = []
+    if quotes:
+        out: dict[str, float] = {}
+        for quote in quotes:
+            sym = str(quote.get("canonical_symbol") or quote.get("symbol") or "").upper().replace("/", "")
+            bid = quote.get("bid")
+            if not sym or not bid or float(bid) <= 0:
+                continue
+            for pair in FX_PAIRS_28:
+                if sym == pair or sym.startswith(pair):
+                    out[pair] = float(bid)
+                    break
+        if out:
+            return out
+
+    out = {}
+    for pair in FX_PAIRS_28:
+        try:
+            row = gw.get_latest_price(pair)
+            bid = float(row.get("bid") or 0)
+        except Exception:
+            continue
+        if bid > 0:
+            out[pair] = bid
+    return out
 
 
 class CurrencyStrengthMatrixService:
@@ -113,12 +175,31 @@ class CurrencyStrengthMatrixService:
         calculation_mode: CalculationMode = CalculationMode.CLOSE_CLOSE,
         bars_difference: int = 1,
         as_of: datetime | None = None,
+        forming_bids: dict[str, float] | None = None,
+        live_endpoints: dict[str, dict[str, list[float]]] | None = None,
     ) -> CsmMatrixResult:
         if calculation_mode != CalculationMode.CLOSE_CLOSE:
             raise NotImplementedError(f"Calculation mode {calculation_mode} is reserved for a future release")
         as_of = as_of or datetime.now(timezone.utc)
         pair_data = self.build_pair_closes_by_tf(as_of)
-        return self.calculate_from(pair_data, as_of=as_of, bars_difference=bars_difference)
+        bids = {p: float(b) for p, b in (forming_bids or {}).items() if b and float(b) > 0}
+        if live_endpoints:
+            pair_data = apply_live_endpoints(pair_data, live_endpoints)
+            for pairs in live_endpoints.values():
+                for pair, closes in pairs.items():
+                    if closes and float(closes[-1]) > 0:
+                        bids[pair] = float(closes[-1])
+            if bids:
+                synthetic = overlay_forming_closes(
+                    {tf: pair_data[tf] for tf in ("YTD", "Q") if tf in pair_data},
+                    bids,
+                )
+                pair_data.update(synthetic)
+        elif bids:
+            pair_data = overlay_forming_closes(pair_data, bids)
+        result = self.calculate_from(pair_data, as_of=as_of, bars_difference=bars_difference)
+        result.forming_close = bool(bids)
+        return result
 
     def calculate_from(
         self,
@@ -288,7 +369,7 @@ class CurrencyStrengthMatrixService:
                 "calculation_mode": calculation_mode.value,
                 "bars_difference": bars_difference,
                 "sort_by": sort_by,
-                "closed_bar_only": True,
+                "closed_bar_only": not result.forming_close,
                 "data_source": active_provider,
                 "provider_connected": provider_connected,
                 "active_provider": active_provider,

@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Query
 from ..core.database import db
 from ..market.constants import CSM_CURRENCIES
 from ..market.csm_engine import CalculationMode
-from ..market.csm_service import CurrencyStrengthMatrixService
+from ..market.csm_service import CurrencyStrengthMatrixService, collect_forming_bids, collect_live_endpoints
 from ..market.ingestion_runner import MarketIngestionRunner
 from ..market.live import live_snapshot
 from ..market.intelligence_cycle import run_intelligence_cycle
@@ -96,7 +96,13 @@ def matrix_compute(
             return {"market_data": ctx, "matrix": [], "analysis_only": True}
         gw = create_market_data_gateway(conn, context=ctx)
         svc = CurrencyStrengthMatrixService(MarketRepository(conn, provider=gw.provider_id, snapshot_id=gw.snapshot_id))
-        result = svc.calculate(calculation_mode=mode, bars_difference=bars_difference)
+        endpoints = collect_live_endpoints(gw, bars_difference)
+        result = svc.calculate(
+            calculation_mode=mode,
+            bars_difference=bars_difference,
+            forming_bids=None if endpoints else collect_forming_bids(gw),
+            live_endpoints=endpoints,
+        )
         svc.persist(result)
         return svc.to_api_payload(
             result,

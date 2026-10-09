@@ -8,7 +8,7 @@ import time
 
 from ..core.database import db
 from ..market import mt5_session
-from .mt5_connection import SETTINGS_KEY, ensure_gateway_session, LocalMT5Gateway
+from .mt5_connection import SETTINGS_KEY, ensure_gateway_session, LocalMT5Gateway, refresh_trading_account_if_stale
 
 log = logging.getLogger(__name__)
 
@@ -62,30 +62,37 @@ class LocalMT5SessionKeeper:
             if self._stop.is_set():
                 return
             last = settings.get("last_heartbeat_at")
+            heartbeat_due = True
             if last:
                 try:
                     from datetime import datetime, timezone
 
                     age = (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds()
-                    if age < interval * 0.85:
-                        continue
+                    heartbeat_due = age >= interval * 0.85
                 except ValueError:
-                    pass
+                    heartbeat_due = True
             with db() as conn:
-                restored = ensure_gateway_session(conn, tenant_id)
-                if restored.get("restored"):
-                    log.info("MT5 session re-attached for tenant %s", tenant_id)
+                if heartbeat_due:
+                    restored = ensure_gateway_session(conn, tenant_id)
+                    if restored.get("restored"):
+                        log.info("MT5 session re-attached for tenant %s", tenant_id)
                 gw = LocalMT5Gateway(tenant_id)
                 current = gw._load_settings(conn)
                 if current.get("session_status") != "CONNECTED":
                     continue
                 if mt5_session.is_initialized():
-                    gw._touch_heartbeat(conn, current)
-                elif current.get("auto_reconnect", True):
+                    if heartbeat_due:
+                        gw._touch_heartbeat(conn, current)
+                elif heartbeat_due and current.get("auto_reconnect", True):
                     current["last_error"] = current.get("last_error") or (
                         "MT5 session lost — open your broker terminal or use Connect in System Control."
                     )
                     gw._save_settings(conn, current)
+            if mt5_session.is_initialized():
+                try:
+                    refresh_trading_account_if_stale(tenant_id)
+                except Exception:
+                    log.exception("MT5 account refresh failed for tenant %s", tenant_id)
 
 
 _keeper: LocalMT5SessionKeeper | None = None
