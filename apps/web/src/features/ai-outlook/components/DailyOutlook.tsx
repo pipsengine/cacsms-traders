@@ -1,4 +1,4 @@
-import { ArrowLeftRight, Crosshair, Gauge, Hourglass, Layers, Lightbulb, ListChecks, Route, Target, TrendingDown, TrendingUp, TriangleAlert } from 'lucide-react';
+import { ArrowLeftRight, Crosshair, Flag, Gauge, Hourglass, Layers, Lightbulb, ListChecks, Route, Target, TrendingDown, TrendingUp, TriangleAlert } from 'lucide-react';
 import type { Outlook } from '../types';
 import { OutlookChart, type CandleState } from './OutlookChart';
 import { Card, Chip, Kpi, ProbBar, dirTone, dirWord, pct, px, type OutlookTf } from './shared';
@@ -197,13 +197,37 @@ export function MtfChannelTable({ o }: { o: Outlook }) {
   );
 }
 
+function AnalysisOutcome({ o }: { o: Outlook }) {
+  const dp = o.digits;
+  const tg = o.targets.length ? o.targets : o.primary_scenario.targets ?? [];
+  const entry = o.erz.mid;
+  const rows = [
+    { label: 'Possible entry', price: entry, tone: 'is-blue' as const },
+    { label: 'Target 1', price: tg[0]?.price ?? null, tone: 'is-bull' as const },
+    { label: 'Target 2', price: tg[1]?.price ?? null, tone: 'is-bull' as const },
+    { label: 'SL', price: o.invalidation.price, tone: 'is-bear' as const },
+  ];
+  return (
+    <table className="mao-outcome-kv" aria-label="Primary scenario trade levels">
+      <tbody>
+        {rows.map((r) => (
+          <tr key={r.label}>
+            <th>{r.label}</th>
+            <td className={r.tone}>{px(r.price, dp)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 export function DailyOutlook({ o, tf, onTf, candles, chartHeight }: { o: Outlook; tf: OutlookTf; onTf: (t: OutlookTf) => void; candles: CandleState; chartHeight: number }) {
   const dp = o.digits;
   const up = o.expected_direction !== 'BEARISH';
   const word = dirWord(o.expected_direction);
   return (
     <>
-      <div className="mao-kpis is-daily">
+      <div className="mao-kpis is-daily is-six">
         <Kpi icon={dirIcon(o.expected_direction)} tone={dirTone(o.expected_direction)} label="AI Bias (Next Session)" value={<span className={dirTone(o.expected_direction)}>{word}</span>} bar={o.confidence.primary} sub={`${pct(o.confidence.primary)} probability · ${o.regime.label} regime`} />
         <Kpi icon={<ListChecks size={18} />} tone="is-blue" label="Key Drivers">
           <ul className="mao-drivers">
@@ -219,6 +243,9 @@ export function DailyOutlook({ o, tf, onTf, candles, chartHeight }: { o: Outlook
         </Kpi>
         <Kpi icon={<Hourglass size={18} />} tone="is-blue" label="Current Status" value={o.monitoring?.status ? monitorTitle(o) : o.current_status.title} sub={o.monitoring?.system_action?.detail ?? o.current_status.detail} />
         <Kpi icon={<TriangleAlert size={18} />} tone="is-bear" label="Invalidation Level" value={<span className="is-bear">{px(o.invalidation.price, dp)}</span>} sub={`Close ${up ? 'below' : 'above'} invalidates the ${word.toLowerCase()} scenario and activates the ${o.alternative_scenario.label.toLowerCase()} hypothesis.`} />
+        <Kpi icon={<Flag size={18} />} tone="is-purple" label="Analysis Outcome" sub="Primary scenario · published at daily close">
+          <AnalysisOutcome o={o} />
+        </Kpi>
       </div>
 
       <div className="mao-main">

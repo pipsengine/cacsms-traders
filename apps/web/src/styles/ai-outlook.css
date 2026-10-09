@@ -87,6 +87,7 @@
 .mao-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
 .mao-kpis.is-six { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 .mao-kpis.is-daily { grid-template-columns: 1.05fr 1.45fr 1.2fr 1.2fr 1.1fr; }
+.mao-kpis.is-daily.is-six { grid-template-columns: 1fr 1.35fr 1.05fr 1fr 0.95fr 1.05fr; }
 .mao-kpi { display: flex; gap: 12px; padding: 12px 13px; min-height: 92px; }
 .mao-kpi-icon { width: 42px; height: 42px; flex: none; border-radius: 50%; display: grid; place-items: center; background: #edf4ff; color: var(--mst-blue); }
 .mao-kpi-icon svg { width: 20px !important; height: 20px !important; }
@@ -106,6 +107,12 @@
 .mao-bar i { display: block; height: 100%; border-radius: 9px; background: var(--mst-green); }
 .mao-kpi.is-bear .mao-bar i { background: var(--mst-red); }
 .mao-kpi.is-range .mao-bar i, .mao-kpi.is-blue .mao-bar i { background: var(--mst-blue); }
+.mao-outcome-kv { width: 100%; border-collapse: collapse; margin-top: 2px; font-size: 11px; }
+.mao-outcome-kv th { text-align: left; font-weight: 600; color: #6a7890; padding: 3px 8px 3px 0; width: 46%; vertical-align: top; white-space: nowrap; }
+.mao-outcome-kv td { padding: 3px 0; font-weight: 780; font-size: 12.5px; font-variant-numeric: tabular-nums; color: #14223b; }
+.mao-outcome-kv td.is-bull { color: var(--mst-green); }
+.mao-outcome-kv td.is-bear { color: var(--mst-red); }
+.mao-outcome-kv td.is-blue { color: var(--mst-blue); }
 .mao-drivers { margin: 2px 0 0; padding-left: 15px; font-size: 11.2px; color: #3b4a63; line-height: 1.5; }
 .mao-drivers li::marker { color: var(--mst-blue); }
 
