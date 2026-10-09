@@ -620,7 +620,7 @@ class LocalMT5Gateway:
                 settings["last_error"] = None
                 detected = _terminal_path_from_mt5()
                 if not detected:
-                    path, _ = auto_detect_terminal_path(use_env=False)
+                    path, _ = auto_detect_terminal_path(use_env=False, allow_probe=False)
                     detected = path
                 if detected:
                     settings["terminal_path"] = detected

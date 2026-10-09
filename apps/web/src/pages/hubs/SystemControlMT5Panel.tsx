@@ -57,10 +57,11 @@ export function SystemControlMT5Panel({
   const hostedGateway = data?.diagnostics?.terminal_launch_mode === 'WINDOWS_GATEWAY_REQUIRED';
   const automaticLaunchRequested = React.useRef(false);
   React.useEffect(() => {
-    if (!hostedGateway || !tenantId || automaticLaunchRequested.current || data?.diagnostics?.bridge_connected) return;
+    if (!hostedGateway || !tenantId || pageLoading || !data || automaticLaunchRequested.current) return;
+    if (data.diagnostics?.bridge_connected || data.gateway?.status === 'CONNECTED') return;
     automaticLaunchRequested.current = true;
-    void connect();
-  }, [hostedGateway, tenantId]);
+    void connect(false);
+  }, [hostedGateway, tenantId, pageLoading, data]);
 
   const closeModals = () => {
     setEditOpen(false);
@@ -218,7 +219,7 @@ export function SystemControlMT5Panel({
     }
   }
 
-  async function connect() {
+  async function connect(forceReconnect = true) {
     if (!tenantId) {
       setError('Select a tenant in the header before managing MT5.');
       return;
@@ -230,7 +231,7 @@ export function SystemControlMT5Panel({
     try {
       const diagnostic = data?.diagnostics;
       if (diagnostic?.terminal_launch_mode === 'WINDOWS_GATEWAY_REQUIRED') {
-        setSuccess(await connectLocalMT5(tenantId));
+        setSuccess(await connectLocalMT5(tenantId, { force: forceReconnect }));
         await load();
         onRefreshGlobal();
         return;

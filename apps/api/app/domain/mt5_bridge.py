@@ -23,9 +23,13 @@ def status(conn, tenant_id):
         return None
     credential = read(conn, tenant_id, 'credential')
     now = datetime.now(timezone.utc)
+    activity_at = state.get('received_at')
+    quotes_at = state.get('quotes_at')
+    if quotes_at and (not activity_at or quotes_at > activity_at):
+        activity_at = quotes_at
     fresh = bool(credential.get('hash') and state.get('generation') == credential.get('generation') and
-                 datetime.fromisoformat(credential['expires_at']) > now and
-                 (now - datetime.fromisoformat(state['received_at'])).total_seconds() <= 90)
+                 datetime.fromisoformat(credential['expires_at']) > now and activity_at and
+                 (now - datetime.fromisoformat(activity_at)).total_seconds() <= 120)
     return {**state, 'connected': fresh and state.get('connected', False)}
 
 

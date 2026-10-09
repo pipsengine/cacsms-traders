@@ -1,11 +1,25 @@
-import { post } from './api';
+import { get, post } from './api';
+import type { ConnectionsPayload } from '../types';
 
-export async function connectLocalMT5(tenantId: string): Promise<string> {
+export async function connectLocalMT5(
+  tenantId: string,
+  options?: { force?: boolean },
+): Promise<string> {
   try {
     const health = await fetch('http://127.0.0.1:8917/health', { signal: AbortSignal.timeout(10000) });
     if (!health.ok || !(await health.json()).bridge_supported) throw new Error('Update or restart the Windows MT5 gateway to enable connections.');
   } catch (err) {
     throw err instanceof TypeError ? new Error('Cannot reach the Windows MT5 gateway. Allow local-network access in Chrome and ensure the gateway is running.') : err;
+  }
+  if (!options?.force) {
+    try {
+      const conn = await get<ConnectionsPayload>(`/tenants/${encodeURIComponent(tenantId)}/connections`);
+      if (conn.diagnostics?.bridge_connected || conn.gateway?.status === 'CONNECTED') {
+        return 'MT5 bridge is already connected to the platform.';
+      }
+    } catch {
+      // Proceed with pairing when status cannot be read (e.g. session expired).
+    }
   }
   const pairing = await post<{token: string}>(`/tenants/${encodeURIComponent(tenantId)}/mt5-bridge/credential`, {});
   const origin = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
