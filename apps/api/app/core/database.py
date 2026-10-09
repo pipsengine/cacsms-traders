@@ -2,9 +2,10 @@ import logging
 import os
 import re
 import sqlite3
+import threading
 import time
 import traceback
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Iterable
 
@@ -18,6 +19,13 @@ except Exception:  # pragma: no cover - optional dependency in dev/test env
     dict_row = None
 
 log = logging.getLogger(__name__)
+
+# Single-process SQLite: serialize writers (strength/scanner/API) to avoid "database is locked".
+_SQLITE_MUTEX = threading.RLock()
+
+
+def _sqlite_backend() -> bool:
+    return app_env() != 'production' or not database_url()
 
 
 def _safe_database_error(exc: Exception) -> str:
@@ -82,7 +90,7 @@ def _sqlite_connect():
 
     log.info('Opening SQLite database at %s (env=%s)', path, app_env())
     try:
-        conn = sqlite3.connect(path, timeout=15, check_same_thread=False)
+        conn = sqlite3.connect(path, timeout=60, check_same_thread=False)
     except sqlite3.Error as exc:
         log.exception('SQLite connect failed for %s', path)
         raise DatabaseUnavailable(f'Unable to open SQLite database at {path}: {exc}') from exc
@@ -90,7 +98,7 @@ def _sqlite_connect():
     conn.execute('PRAGMA foreign_keys=ON')
     conn.execute('PRAGMA journal_mode=WAL')
     conn.execute('PRAGMA synchronous=NORMAL')
-    conn.execute('PRAGMA busy_timeout=15000')
+    conn.execute('PRAGMA busy_timeout=60000')
     return conn
 
 
@@ -190,6 +198,18 @@ def split_sql_script(sql: str) -> list[str]:
     return statements
 
 
+def _sqlite_execute(raw: sqlite3.Connection, sql: str, params=(), **kwargs):
+    for attempt in range(12):
+        try:
+            return raw.execute(sql, params, **kwargs)
+        except sqlite3.OperationalError as exc:
+            msg = str(exc).lower()
+            if ('locked' not in msg and 'busy' not in msg and 'timeout' not in msg) or attempt >= 11:
+                raise
+            time.sleep(0.05 * (attempt + 1))
+    raise RuntimeError('database is locked or busy')
+
+
 class _CompatConnection:
     def __init__(self, raw_conn, provider: str):
         self._raw = raw_conn
@@ -197,13 +217,15 @@ class _CompatConnection:
 
     def execute(self, sql, params=(), **kwargs):
         if self.provider == 'sqlite':
-            return self._raw.execute(sql, params, **kwargs)
+            return _sqlite_execute(self._raw, sql, params, **kwargs)
         sql2, params2 = _rewrite_production_sql(sql, params)
         return self._raw.execute(sql2, params2, **kwargs)
 
     def executemany(self, sql, seq_of_params):
         if self.provider == 'sqlite':
-            return self._raw.executemany(sql, seq_of_params)
+            for params in seq_of_params:
+                _sqlite_execute(self._raw, sql, params)
+            return None
         converted = []
         for params in seq_of_params:
             sql2, params2 = _rewrite_production_sql(sql, params)
@@ -254,6 +276,56 @@ def execute_retry(conn, sql: str, params=(), *, attempts: int = 8, sleep_seconds
     raise RuntimeError('database is locked or busy')
 
 
+_process_lock_handle = None
+
+
+def hold_sqlite_process_lock() -> None:
+    """Call once at API startup so a second local API process fails fast instead of locking SQLite."""
+    global _process_lock_handle
+    if os.getenv('PYTEST_CURRENT_TEST') or os.getenv('CACSMS_SKIP_SQLITE_PROCESS_LOCK', '').strip() in ('1', 'true', 'yes'):
+        return
+    if _process_lock_handle is not None or not _sqlite_backend():
+        return
+    path = db_path()
+    lock_path = path.with_suffix(path.suffix + '.api.lock')
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(lock_path, 'a+b')
+    try:
+        if os.name == 'nt':
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        handle.close()
+        raise DatabaseUnavailable(
+            f'Another API process is already using {path}. Stop duplicate servers (only one npm run dev / run_api.py).'
+        ) from exc
+    _process_lock_handle = handle
+
+
+def release_sqlite_process_lock() -> None:
+    global _process_lock_handle
+    handle = _process_lock_handle
+    if handle is None:
+        return
+    _process_lock_handle = None
+    try:
+        if os.name == 'nt':
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
+
+
 def execute_values(conn, head: str, rows, tail: str = '', *, key=None, chunk: int = 50) -> None:
     """Multi-row ``INSERT head VALUES (...),(...) tail``: one round trip per chunk instead of per row.
 
@@ -273,20 +345,22 @@ def execute_values(conn, head: str, rows, tail: str = '', *, key=None, chunk: in
 
 @contextmanager
 def db():
-    conn = connect()
-    try:
-        yield conn
-        for attempt in range(8):
-            try:
-                conn.commit()
-                break
-            except Exception as exc:
-                msg = str(exc).lower()
-                if ('locked' not in msg and 'timeout' not in msg and 'busy' not in msg) or attempt >= 7:
-                    raise
-                time.sleep(0.05 * (attempt + 1))
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    guard = _SQLITE_MUTEX if _sqlite_backend() else nullcontext()
+    with guard:
+        conn = connect()
+        try:
+            yield conn
+            for attempt in range(8):
+                try:
+                    conn.commit()
+                    break
+                except Exception as exc:
+                    msg = str(exc).lower()
+                    if ('locked' not in msg and 'timeout' not in msg and 'busy' not in msg) or attempt >= 7:
+                        raise
+                    time.sleep(0.05 * (attempt + 1))
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()

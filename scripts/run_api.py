@@ -17,4 +17,12 @@ if __name__ == "__main__":
     host = os.getenv("APP_HOST", "0.0.0.0").strip() or "0.0.0.0"
     port = int(os.getenv("APP_PORT", "8000"))
     reload = os.getenv("API_RELOAD", "0").strip() in ("1", "true", "yes")
+    if reload:
+        import sys
+
+        print(
+            "API_RELOAD is enabled: a reloader parent and worker both touch SQLite and cause 'database is locked'. "
+            "Use API_RELOAD=0 for local dev.",
+            file=sys.stderr,
+        )
     uvicorn.run("apps.api.app.main:app", host=host, port=port, reload=reload)

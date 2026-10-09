@@ -66,10 +66,20 @@ def assess(*, now: datetime, mode: str, ctx: dict, analysis: dict, scanner_meta:
 
     # Provider
     active = ctx.get("active_provider")
-    if not ctx.get("market_data_ready") or not active:
-        check("PROVIDER", "Market-data provider", "CRITICAL", "No market-data provider is ready")
+    providers = ctx.get("providers") or {}
+    live = providers.get(active or "", {})
+    pairs_loaded = int(strength_meta.get("pairs_loaded") or strength_meta.get("repository_pairs_loaded") or 0)
+    if not active:
+        check("PROVIDER", "Market-data provider", "CRITICAL", "No market-data provider is selected")
+    elif not ctx.get("market_data_ready"):
+        if live.get("connected") or live.get("healthy") or ctx.get("provider_phase") == "SYNCHRONIZING":
+            detail = f"{PROVIDER_LABELS.get(active, active)} connected — synchronizing closed-bar basket ({pairs_loaded}/28 pairs)"
+            level = "OK" if pairs_loaded >= 28 else "WARN"
+            check("PROVIDER", "Market-data provider", level, detail)
+        else:
+            check("PROVIDER", "Market-data provider", "CRITICAL", "No market-data provider is ready")
     else:
-        check("PROVIDER", "Market-data provider", "OK", f"{PROVIDER_LABELS.get(active, active)} ready")
+        check("PROVIDER", "Market-data provider", "OK", f"{PROVIDER_LABELS.get(active, active)} ready ({pairs_loaded}/28 pairs)")
 
     # Account / scope consistency
     scope_account = (ctx.get("market_data_scope") or {}).get("account_id") or ""

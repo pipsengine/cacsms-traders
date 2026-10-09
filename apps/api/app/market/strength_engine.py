@@ -20,7 +20,7 @@ from .csm_service import CurrencyStrengthMatrixService
 from .ingestion import broker_offset
 from .ingestion_runner import MarketIngestionRunner
 from .intelligence_cycle import write_relationships
-from .market_data import create_market_data_gateway, market_context
+from .market_data import configuration, create_market_data_gateway, market_context
 from .pair_relationships import Scores, pair_relationships
 from .provenance import scoped_query, values
 from .repository import MarketRepository
@@ -33,6 +33,10 @@ log = logging.getLogger(__name__)
 PROBE_PAIR = "EURUSD"
 PROBE_TIMEFRAMES = ("M1", "M5", "M15", "H1", "D1", "W1", "MN")
 INCREMENTAL_BARS = 5
+# Quality flags from ingestion are soft — stale/missing on one TF must not block the whole basket forever.
+_HARD_SYNC_ERRORS = frozenset(
+    {"invalid_candles", "no_closed_bars", "mt5_history_unavailable", "Symbol not available in MT5"}
+)
 
 
 def _env_float(name: str, default: float) -> float:
@@ -161,6 +165,33 @@ class StrengthEngine:
         except Exception:
             return None
 
+    @staticmethod
+    def _sync_result_blocking(result: dict) -> bool:
+        err = (result.get("error") or "").strip()
+        if err in _HARD_SYNC_ERRORS or "unavailable" in err.lower():
+            return True
+        if result.get("accepted", 0) == 0 and not err:
+            return True
+        return False
+
+    def _refresh_repository_basket_meta(self, repo: MarketRepository) -> dict:
+        from .basket_status import repository_basket_status
+
+        basket = repository_basket_status(
+            repo.conn,
+            provider=repo.provider,
+            snapshot_id=repo.snapshot_id,
+            account_id=repo.account_id,
+        )
+        with self._lock:
+            self._ctx.update(
+                pairs_loaded=basket["pairs_loaded"],
+                missing_pairs=basket["missing_pairs"],
+                pairs_total=basket["pairs_total"],
+                repository_pairs_loaded=basket["pairs_loaded"],
+            )
+        return basket
+
     def _sync_closed_bars(self, repo: MarketRepository, svc: CurrencyStrengthMatrixService) -> bool:
         started = time.monotonic()
         gw = create_market_data_gateway(repo.conn, context=self._ctx, verify_scope=False)
@@ -178,32 +209,70 @@ class StrengthEngine:
         if not self._bootstrapped:
             if time.monotonic() < self._bootstrap_retry_at:
                 return False
+            basket = self._refresh_repository_basket_meta(repo)
+            if basket.get("pairs_loaded", 0) >= 20:
+                self._last_bar = {tf: t for tf in PROBE_TIMEFRAMES if (t := self._probe(gw, tf)) is not None}
+                self._bootstrapped = True
+                with self._lock:
+                    self._state = "CALCULATING"
+                return True
             with self._lock:
-                self._state = "SYNCING"
+                self._state = "DISCOVERING_SYMBOLS"
             if hasattr(gw, "get_symbols"):
                 symbols = gw.get_symbols()
+                if not symbols:
+                    scope_tid = (self._ctx.get("market_data_scope") or {}).get("tenant_id") or configuration(repo.conn).get("tenant_id")
+                    if scope_tid:
+                        from ..domain.mt5_connection import ensure_gateway_session
+
+                        if ensure_gateway_session(repo.conn, scope_tid).get("restored"):
+                            symbols = gw.get_symbols()
                 resolved = {r.get("canonical_symbol") for r in symbols}
                 missing = [p for p in FX_PAIRS_28 if p not in resolved]
+                sync_status = "CONNECTING" if missing and not self._bootstrapped else ("DEGRADED" if missing else "CONNECTING")
                 with self._lock:
-                    self._ctx.update(symbols_resolved=28-len(missing), missing_pairs=missing, failed_symbol_mappings=missing, provider_status="DEGRADED" if missing else "CONNECTING")
-                if missing:
+                    self._ctx.update(
+                        symbols_resolved=28 - len(missing),
+                        missing_pairs=missing,
+                        failed_symbol_mappings=missing,
+                        provider_status=sync_status,
+                    )
+                if len(missing) == len(FX_PAIRS_28):
                     self._bootstrap_retry_at = time.monotonic() + BOOTSTRAP_RETRY_SECONDS
                     return False
             count = 400
+            with self._lock:
+                self._state = "BACKFILLING"
             try:
                 summary = MarketIngestionRunner(gw, repo, candle_count=count).sync_universe()
-                failures = [{"symbol": r["symbol"], "timeframe": r["timeframe"], "error_code": r.get("error") or "no_closed_bars"} for r in summary["results"] if r.get("error") or not r.get("accepted")]
+                blocking = [r for r in summary["results"] if self._sync_result_blocking(r)]
+                soft = [
+                    {"symbol": r["symbol"], "timeframe": r["timeframe"], "error_code": r.get("error") or "no_new_bars"}
+                    for r in summary["results"]
+                    if r.get("error") and not self._sync_result_blocking(r)
+                ]
                 with self._lock:
-                    self._ctx.update(provider_status="DEGRADED" if failures else "CONNECTED", failed_candle_requests=failures, closed_bar_status="INCOMPLETE" if failures else "SYNCHRONIZED", last_successful_sync=None if failures else _iso(datetime.now(timezone.utc)))
-                if failures:
+                    self._ctx.update(
+                        provider_status="DEGRADED" if blocking else "CONNECTED",
+                        failed_candle_requests=blocking or soft[:40],
+                        closed_bar_status="INCOMPLETE" if blocking else "SYNCHRONIZED",
+                        last_successful_sync=_iso(datetime.now(timezone.utc)),
+                        sync_pairs_attempted=summary.get("pairs"),
+                        sync_errors=summary.get("errors"),
+                    )
+                if len(blocking) > len(summary["results"]) * 0.85:
                     self._bootstrap_retry_at = time.monotonic() + BOOTSTRAP_RETRY_SECONDS
                     return False
             except Exception:
                 self._bootstrap_retry_at = time.monotonic() + BOOTSTRAP_RETRY_SECONDS
                 raise
+            with self._lock:
+                self._state = "VALIDATING"
             self._last_bar = {tf: t for tf in PROBE_TIMEFRAMES if (t := self._probe(gw, tf)) is not None}
-            self._bootstrapped = len(self._last_bar) == len(PROBE_TIMEFRAMES)
-            return self._bootstrapped
+            basket = self._refresh_repository_basket_meta(repo)
+            probes_ok = len(self._last_bar) >= max(4, len(PROBE_TIMEFRAMES) - 2)
+            self._bootstrapped = probes_ok or basket["pairs_loaded"] >= 20
+            return self._bootstrapped or basket["pairs_loaded"] > 0
 
         changed = []
         for tf in PROBE_TIMEFRAMES:
@@ -245,18 +314,20 @@ class StrengthEngine:
             repo.conn.commit()
             missing = [p for p in FX_PAIRS_28 if p not in resolved]
             failures = [] if missing else store_failures(repo, CANDLE_TIMEFRAMES, offset)
-            ok = not missing and not failures
+            blocking = [f for f in failures if self._sync_result_blocking(f)] if failures else []
+            ok = not missing and not blocking
             with self._lock:
                 self._ctx.update(symbols_resolved=28-len(missing), missing_pairs=missing, failed_symbol_mappings=missing,
-                                 provider_status="CONNECTED" if ok else "DEGRADED", failed_candle_requests=failures,
+                                 provider_status="CONNECTED" if ok else "DEGRADED", failed_candle_requests=failures[:40],
                                  closed_bar_status="SYNCHRONIZED" if ok else "INCOMPLETE",
-                                 last_successful_sync=_iso(datetime.now(timezone.utc)) if ok else None)
-            if not ok:
+                                 last_successful_sync=_iso(datetime.now(timezone.utc)))
+            basket = self._refresh_repository_basket_meta(repo)
+            if missing and len(missing) == len(FX_PAIRS_28):
                 self._bootstrap_retry_at = time.monotonic() + BOOTSTRAP_RETRY_SECONDS
                 return False
             self._last_bar = {tf: latest[tf] for tf in PROBE_TIMEFRAMES if tf in latest}
-            self._bootstrapped = len(self._last_bar) == len(PROBE_TIMEFRAMES)
-            return self._bootstrapped
+            self._bootstrapped = len(self._last_bar) >= max(4, len(PROBE_TIMEFRAMES) - 2) or basket["pairs_loaded"] >= 20
+            return self._bootstrapped or basket["pairs_loaded"] > 0
         if any(tf not in latest for tf in PROBE_TIMEFRAMES):
             self._bootstrapped = False
             self._ctx.update(closed_bar_status="INCOMPLETE", error_code="stale_or_missing_candles")
@@ -290,19 +361,27 @@ class StrengthEngine:
             mark[0] = now_
 
         self._last_profile = profile
+        connected = False
+        ctx: dict = {}
         with db() as conn:
             lap("connect")
+            from .market_data import ensure_active_provider_snapshot
             from .provider_manager import ProviderManager
+
+            ensure_active_provider_snapshot(conn)
             ProviderManager(conn).refresh_health()
             ctx = market_context(conn)
-            for provider, status in ctx.get('providers', {}).items():
+            for provider, status in ctx.get("providers", {}).items():
                 ProviderManager(conn).record_health(provider, status)
-            # Release provider-health row locks now; holding them for the whole tick serializes every other instance.
             conn.commit()
             lap("context")
             from .market_data import configuration
             cfg = configuration(conn)
-            key = (ctx.get("active_provider"), cfg["tenant_id"], ctx.get("providers", {}).get(ctx.get("active_provider"), {}).get("account_id", cfg["account_id"]))
+            key = (
+                ctx.get("active_provider"),
+                cfg["tenant_id"],
+                ctx.get("providers", {}).get(ctx.get("active_provider"), {}).get("account_id", cfg["account_id"]),
+            )
             if key != self._provider_key:
                 self._ctx = {}
                 self._provider_key = key
@@ -321,43 +400,58 @@ class StrengthEngine:
                     self._scores_sig = None
                     self._mode_results = {}
                     self._last_persisted_at = None
-            repo = MarketRepository(conn, provider=ctx.get("active_provider") or "__unavailable__")
-            svc = CurrencyStrengthMatrixService(repo)
             connected = bool(ctx["market_data_ready"])
             with self._lock:
-                for field in ("provider_status", "symbols_resolved", "missing_pairs", "failed_symbol_mappings", "failed_candle_requests", "last_successful_sync", "closed_bar_status"):
+                for field in (
+                    "provider_status",
+                    "symbols_resolved",
+                    "missing_pairs",
+                    "failed_symbol_mappings",
+                    "failed_candle_requests",
+                    "last_successful_sync",
+                    "closed_bar_status",
+                ):
                     if key == self._provider_key and field in self._ctx:
                         ctx[field] = self._ctx[field]
                 self._ctx = ctx
-
             if not connected:
-                if ctx.get("providers"):
-                    ProviderManager(conn).finalize_snapshot()
                 with self._lock:
-                    self._state = ctx["provider_status"]
+                    self._state = "WAITING_PROVIDER"
+                    self._ctx["provider_status"] = ctx.get("provider_status") or "DISCONNECTED"
                     self._result = None
                     self._bootstrapped = False
+                    self._error = None
                 return
 
-            changed = False
-            result = None
-            now = datetime.now(timezone.utc)
-            if connected:
-                changed = self._sync_closed_bars(repo, svc)
-                result = None  # Calculate from synchronized closed bars only.
-            else:
-                self._bootstrapped = False
+        changed = False
+        now = datetime.now(timezone.utc)
+        with db() as conn:
+            provider = ctx.get("active_provider") or "__unavailable__"
+            repo = MarketRepository(conn, provider=provider)
+            svc = CurrencyStrengthMatrixService(repo)
+            changed = self._sync_closed_bars(repo, svc)
+            basket = self._refresh_repository_basket_meta(repo)
+            conn.commit()
             lap("sync")
-
-            if not self._bootstrapped:
+            if not self._bootstrapped and basket.get("pairs_loaded", 0) == 0:
                 with self._lock:
-                    self._state = "INCOMPLETE_BASKET"
+                    self._state = "BACKFILLING"
                     self._result = None
                 return
-            now_mono = time.monotonic()
-            if result is None and (
-                changed or self._result is None or now_mono - self._last_calc_mono >= HEARTBEAT_RECALC_SECONDS
-            ):
+            if not self._bootstrapped and basket.get("pairs_loaded", 0) > 0:
+                self._bootstrapped = True
+
+        result = None
+        now_mono = time.monotonic()
+        with db() as conn:
+            provider = ctx.get("active_provider") or "__unavailable__"
+            repo = MarketRepository(conn, provider=provider, snapshot_id=ctx.get("snapshot_id"))
+            svc = CurrencyStrengthMatrixService(repo)
+            with self._lock:
+                ctx.update(self._ctx)
+            with self._lock:
+                self._state = "CALCULATING"
+            if changed or self._result is None or now_mono - self._last_calc_mono >= HEARTBEAT_RECALC_SECONDS:
                 result = svc.calculate(calculation_mode=CalculationMode.CLOSE_CLOSE)
             lap("calculate")
             if result is not None:
@@ -367,7 +461,6 @@ class StrengthEngine:
                 if self._last_persist_mono == 0.0:
                     self._adopt_recent_persist(repo, now, now_mono)
                 lap("adopt")
-                # Persist only provider-synchronized closed-bar results.
                 persist_due = connected and signature != self._last_persisted_sig and (
                     self._last_persist_mono == 0.0
                     or now_mono - self._last_persist_mono >= SNAPSHOT_INTERVAL_SECONDS
@@ -400,7 +493,11 @@ class StrengthEngine:
             ctx.update(self._ctx)
             self._ctx = ctx
             self._last_tick_ok = datetime.now(timezone.utc)
-            self._state = "READY" if connected and self._result and self._result.pairs_loaded == 28 and self._result.historical_ok else "INCOMPLETE_BASKET"
+            self._state = (
+                "READY"
+                if connected and self._result and self._result.pairs_loaded == 28 and self._result.historical_ok
+                else "INCOMPLETE_BASKET"
+            )
             self._error = None
 
     def _adopt_recent_persist(self, repo: MarketRepository, now: datetime, now_mono: float) -> None:
@@ -483,7 +580,8 @@ class StrengthEngine:
             self._ctx = ctx
             if not ctx['market_data_ready']:
                 self._result = None
-                self._state = ctx['provider_status']
+                self._state = 'WAITING_PROVIDER'
+                self._error = None
             elif not self.running and not self._on_demand:
                 self._state = 'WORKER_UNAVAILABLE'
             elif not same_scope:
@@ -500,7 +598,52 @@ class StrengthEngine:
             last_persisted = self._last_persisted_at
             last_change = self._last_bar_change_at
         if result is None:
-            return {**ctx, "provider_connected": False, "strength_engine_status": state, "engine_state": state, "engine_error": error, "last_calculated_at": None, "as_of": None, "live_data": False, "stale": True, "historical_ok": False, "missing_history": [], "pairs_loaded": 0, "pairs_total": 28, "closed_bar_only": True, "calculation_mode": "CLOSE_CLOSE"}
+            connected = bool(
+                ctx.get("market_data_ready")
+                or ctx.get("connected")
+                or str(ctx.get("provider_status", "")).upper() == "CONNECTED"
+            )
+            display_error = error if connected and state == "ERROR" else None
+            if not display_error and not connected:
+                code = ctx.get("error_code")
+                display_error = str(code).replace("_", " ") if code else None
+            repo_loaded = int(ctx.get("repository_pairs_loaded") or ctx.get("pairs_loaded") or 0)
+            missing = ctx.get("missing_pairs") or []
+            if connected and repo_loaded == 0:
+                try:
+                    from .basket_status import repository_basket_status
+
+                    with db() as conn:
+                        snap = ctx.get("snapshot_id")
+                        scope = ctx.get("market_data_scope") or {}
+                        basket = repository_basket_status(
+                            conn,
+                            provider=ctx.get("active_provider"),
+                            snapshot_id=snap,
+                            account_id=scope.get("account_id"),
+                        )
+                    repo_loaded = basket["pairs_loaded"]
+                    missing = basket["missing_pairs"]
+                except Exception:
+                    pass
+            return {
+                **ctx,
+                "provider_connected": connected,
+                "strength_engine_status": state,
+                "engine_state": state,
+                "engine_error": display_error,
+                "last_calculated_at": None,
+                "as_of": None,
+                "live_data": False,
+                "stale": True,
+                "historical_ok": False,
+                "missing_history": [],
+                "pairs_loaded": repo_loaded,
+                "pairs_total": 28,
+                "missing_pairs": missing,
+                "closed_bar_only": True,
+                "calculation_mode": "CLOSE_CLOSE",
+            }
         now = datetime.now(timezone.utc)
         connected = bool(ctx.get("market_data_ready"))
         stale_reason = None

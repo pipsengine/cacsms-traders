@@ -83,9 +83,9 @@ class NormalizedProvider:
             if not c.is_closed or closed > now:
                 continue
             if not all(math.isfinite(v) and v > 0 for v in (c.open, c.high, c.low, c.close)):
-                raise MarketDataUnavailable('invalid_candle')
+                continue
             if c.high < max(c.open, c.close, c.low) or c.low > min(c.open, c.close, c.high):
-                raise MarketDataUnavailable('invalid_ohlc')
+                continue
             if (start is None or opened >= start) and (end is None or closed <= end):
                 normalized[opened] = replace(c, symbol=symbol.upper().replace('/', ''), timeframe=tf, open_time=opened, close_time=closed, source=self.provider_id, account_id=(self.get_account_context() or {}).get('account_id', ''))
         result = [normalized[t] for t in sorted(normalized)][-count:]

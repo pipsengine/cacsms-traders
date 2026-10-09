@@ -33,9 +33,29 @@ export type Mt5LocalSettings={
  terminal_path?:string;login_type?:string;auto_reconnect?:boolean;heartbeat_interval_seconds?:number;
  session_status?:string;last_connected_at?:string|null;
 };
+export type Mt5Lifecycle={
+ gateway_phase:string;
+ market_sync_phase:string;
+ overall_phase:string;
+};
+export type Mt5IntelligenceMeta={
+ engine_state?:string;
+ pairs_loaded?:number;
+ pairs_total?:number;
+ missing_pairs?:string[];
+ symbols_resolved?:number;
+ provider_status?:string;
+ market_data_ready?:boolean;
+ engine_error?:string|null;
+ last_calculated_at?:string|null;
+ closed_bar_status?:string;
+ failed_candle_requests?:{symbol?:string;timeframe?:string;error_code?:string}[];
+};
 export type ConnectionsPayload={
- gateway:Health['mt5'] & {status:string;adapter:string;message:string};
+ gateway:Health['mt5'] & {status:string;adapter:string;message:string} & Partial<Mt5Lifecycle>;
  settings?:Mt5LocalSettings;
+ lifecycle?:Mt5Lifecycle;
+ intelligence?:Mt5IntelligenceMeta|null;
  diagnostics?:{
   python_package:string;version?:string|null;hint?:string|null;
   terminal_launch_mode?:'WINDOWS_GATEWAY'|'WINDOWS_GATEWAY_REQUIRED';terminal_launch_supported?:boolean;bridge_connected?:boolean;

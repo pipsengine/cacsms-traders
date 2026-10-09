@@ -88,6 +88,16 @@ export function App() {
     });
   }, [authed, refresh]);
 
+  React.useEffect(() => {
+    if (!authed || route.page !== 'system-control') return;
+    const timer = window.setInterval(() => {
+      get<Health>('/system/health')
+        .then(setHealth)
+        .catch(() => {});
+    }, 20000);
+    return () => window.clearInterval(timer);
+  }, [authed, route.page]);
+
   async function logout() {
     try {
       await post('/auth/logout', {});

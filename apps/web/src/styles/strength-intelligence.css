@@ -506,6 +506,13 @@
   color: #475467;
 }
 
+.si-stateDetail {
+  display: block;
+  margin: 10px auto 0;
+  max-width: 42rem;
+  line-height: 1.45;
+}
+
 .si-banners {
   display: flex;
   flex-direction: column;

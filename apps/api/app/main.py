@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .core.config import APP_NAME, SESSION_COOKIE, app_env, cors_origins
-from .core.database import DatabaseUnavailable, database_url
+from .core.database import DatabaseUnavailable, database_url, hold_sqlite_process_lock, release_sqlite_process_lock
 from .core.env_loader import load_env_file
 from .routers import auth, ctrader, market_intelligence, platform, tenant_admin
 from .routers import mt5_bridge
@@ -49,6 +49,7 @@ def _log_startup_failure(component: str, exc: Exception) -> None:
 def _initialize_database(app: FastAPI) -> None:
     app.state.database_bootstrap_status = "initializing"
     try:
+        hold_sqlite_process_lock()
         load_env_file()
         bootstrap()
     except Exception as exc:
@@ -90,6 +91,33 @@ def _start_optional_services(app: FastAPI) -> None:
 
         if os.getenv("STRENGTH_ENGINE_ENABLED", "1").strip() not in ("0", "false", "no"):
             get_strength_engine().start()
+        if not _is_vercel():
+            try:
+                from .core.database import db
+                from .domain.mt5_connection import ensure_gateway_session
+                from .market.market_data import configuration
+
+                with db() as conn:
+                    from .market.market_data import bind_market_data_tenant
+
+                    cfg = configuration(conn)
+                    tenant_id = (cfg.get("tenant_id") or cfg.get("mt5_tenant_id") or "").strip()
+                    if tenant_id:
+                        bind_market_data_tenant(conn, tenant_id, account_id=cfg.get("account_id") or None)
+                        from .market.market_data import ensure_active_provider_snapshot
+
+                        ensure_active_provider_snapshot(conn)
+                        restored = ensure_gateway_session(conn, tenant_id)
+                        if restored.get("restored"):
+                            log.info("Restored local MT5 session for tenant %s", tenant_id)
+            except Exception as exc:
+                log.warning("MT5 auto-reconnect on startup skipped: %s", _safe_error_message(exc))
+        try:
+            from .domain.mt5_session_keeper import get_mt5_session_keeper
+
+            get_mt5_session_keeper().start()
+        except Exception as exc:
+            log.warning("Local MT5 session keeper failed to start: %s", _safe_error_message(exc))
         if scanner_enabled():
             get_scanner_engine().start()
         if os.getenv("AI_OUTLOOK_SCHEDULER_ENABLED", "1").strip().lower() not in ("0", "false", "no"):
@@ -125,6 +153,9 @@ def _stop_optional_services() -> None:
         from .market.scanner_engine import get_scanner_engine
         from .market.strength_engine import get_strength_engine
 
+        from .domain.mt5_session_keeper import get_mt5_session_keeper
+
+        get_mt5_session_keeper().stop()
         get_strength_engine().stop()
         get_scanner_engine().stop()
         from .market.outlook.service import get_outlook_service
@@ -138,6 +169,7 @@ def _stop_optional_services() -> None:
         get_autonomous_engine().stop()
     except Exception as exc:
         _log_startup_failure("Optional autonomous service shutdown", exc)
+    release_sqlite_process_lock()
 
 
 @asynccontextmanager

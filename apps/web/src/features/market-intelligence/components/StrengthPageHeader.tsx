@@ -26,6 +26,16 @@ function liveStatus(meta: MatrixMeta | null, apiError: boolean): LiveStatus {
   if (!meta) return { tone: 'warn', title: 'MARKET DATA UNAVAILABLE', sub: 'Awaiting provider diagnostics' };
   if (!meta.provider_connected) {
     if (meta.error_code === 'CTRADER_APP_INACTIVE') return { tone: 'off', title: 'MARKET DATA UNAVAILABLE', sub: 'cTrader provider authorization unavailable' };
+    const syncLike = ['SYNCING', 'STARTING', 'BACKFILLING', 'VALIDATING', 'CALCULATING', 'INCOMPLETE_BASKET', 'DISCOVERING_SYMBOLS'].includes(
+      meta.engine_state || '',
+    );
+    if (syncLike || (meta.pairs_loaded ?? 0) > 0) {
+      return {
+        tone: 'warn',
+        title: meta.engine_state || 'SYNCING',
+        sub: `${meta.pairs_loaded ?? 0}/${meta.pairs_total ?? 28} pairs in repository`,
+      };
+    }
     return { tone: 'off', title: 'MARKET DATA UNAVAILABLE', sub: meta.provider_status === 'AUTHORIZATION REQUIRED' ? 'cTrader authorization required' : (meta.error_code || meta.provider_status || 'Connect a provider in System Control') };
   }
   if (meta.stale_reason === 'ENGINE_STALLED') {

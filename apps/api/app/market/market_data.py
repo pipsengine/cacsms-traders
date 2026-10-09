@@ -11,11 +11,61 @@ def configuration(conn):
         cfg = {'provider': cfg}
     if not isinstance(cfg, dict):
         cfg = {}
+    provider = cfg.get('provider', os.getenv('MARKET_DATA_PROVIDER', 'auto')).lower()
+    tenant_id = str(cfg.get('tenant_id') or os.getenv('MARKET_DATA_TENANT_ID', '') or cfg.get('mt5_tenant_id') or '').strip()
+    if not tenant_id and provider in ('auto', 'mt5', ''):
+        from ..domain.mt5_connection import _active_tenant_id
+
+        tenant_id = (_active_tenant_id(conn) or '').strip()
     return {'selection_mode': cfg.get('selection_mode', os.getenv('MARKET_DATA_SELECTION_MODE', 'AUTO')).upper(),
-            'mt5_tenant_id': cfg.get('mt5_tenant_id', ''),
-            'provider': cfg.get('provider', os.getenv('MARKET_DATA_PROVIDER', 'auto')).lower(),
-            'tenant_id': cfg.get('tenant_id', os.getenv('MARKET_DATA_TENANT_ID', '')),
+            'mt5_tenant_id': cfg.get('mt5_tenant_id', '') or tenant_id,
+            'provider': provider,
+            'tenant_id': tenant_id,
             'account_id': str(cfg.get('account_id', os.getenv('MARKET_DATA_ACCOUNT_ID', '')))}
+
+
+def ensure_active_provider_snapshot(conn) -> str | None:
+    """Keep an open analytical scope when MT5/cTrader is configured (survives transient worker gaps)."""
+    cfg = configuration(conn)
+    provider = (cfg.get('provider') or 'auto').lower()
+    if provider not in ('mt5', 'ctrader'):
+        return None
+    account_id = str(cfg.get('account_id') or '').strip()
+    row = conn.execute(
+        "SELECT id FROM mi_provider_snapshot WHERE finalized_at IS NULL ORDER BY started_at DESC LIMIT 1"
+    ).fetchone()
+    if row:
+        scope = conn.execute("SELECT provider, account_id FROM mi_provider_snapshot WHERE id=?", (row['id'],)).fetchone()
+        if scope and scope['provider'] == provider and (scope['account_id'] or '') == account_id:
+            return row['id']
+    from .provider_manager import ProviderManager
+
+    return ProviderManager(conn).bind_snapshot(provider, account_id)
+
+
+def bind_market_data_tenant(conn, tenant_id: str, *, account_id: str | None = None) -> dict:
+    """Persist which tenant owns the local MT5 session so workers restore the same terminal path."""
+    from ..core.security import iso
+
+    tenant_id = (tenant_id or '').strip()
+    if not tenant_id:
+        return configuration(conn)
+    cfg = configuration(conn)
+    cfg['tenant_id'] = tenant_id
+    cfg['mt5_tenant_id'] = tenant_id
+    if account_id:
+        cfg['account_id'] = account_id
+    if cfg.get('provider') in ('', 'auto', 'none'):
+        cfg['provider'] = 'mt5'
+    if cfg.get('selection_mode', 'AUTO') == 'AUTO':
+        cfg['selection_mode'] = 'MT5_PREFERRED'
+    conn.execute(
+        """INSERT INTO system_settings(key,value_json,updated_at) VALUES(?,?,?)
+           ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at""",
+        ('market_data.provider', json.dumps(cfg), iso()),
+    )
+    ensure_active_provider_snapshot(conn)
+    return cfg
 
 
 def provider_context(conn, cfg):
@@ -108,7 +158,13 @@ def create_market_data_gateway(conn=None, context=None, verify_scope=True):
                 from .mt5_bridge_gateway import MT5BridgeGateway
                 adapter = MT5BridgeGateway(conn,context['bridge_tenant_id'])
             else:
+                from ..domain.mt5_connection import ensure_gateway_session
+
+                mt5_tenant = (cfg.get('tenant_id') or cfg.get('mt5_tenant_id') or '').strip()
+                if mt5_tenant:
+                    ensure_gateway_session(conn, mt5_tenant)
                 from .mt5_gateway import create_market_data_gateway as mt5_adapter
+
                 adapter = mt5_adapter()
             if not hasattr(adapter, 'get_account_context'):
                 raise MarketDataUnavailable('MT5_CONNECTION_FAILED')

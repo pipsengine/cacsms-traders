@@ -45,7 +45,9 @@ export function StatusRibbon({ data, error }: { data: Overview | null; error: st
   const clock = useServerClock(r?.server_time);
   const when = clock ? new Date(clock) : null;
   const system = error && !data ? 'ERROR' : r?.system_status ?? 'STARTING';
-  const connected = r?.provider_connection === 'CONNECTED';
+  const phase = r?.provider_connection ?? 'OFFLINE';
+  const connLabel = r?.connections_label ?? (phase === 'CONNECTED' ? 'Healthy' : phase === 'SYNCHRONIZING' ? 'Syncing' : 'Offline');
+  const connTone = phase === 'CONNECTED' ? 'ok' : phase === 'SYNCHRONIZING' ? 'warn' : 'bad';
   return (
     <header className="ae-head">
       <div className="ae-title">
@@ -68,7 +70,7 @@ export function StatusRibbon({ data, error }: { data: Overview | null; error: st
           state="info"
         />
         <Tile icon={<Server size={16} />} label="Active Provider" value={(r?.provider_label ?? 'None').toUpperCase()} state={r?.provider ? 'info' : 'bad'} />
-        <Tile icon={<Wifi size={16} />} label="Connections" value={connected ? 'Healthy' : 'Offline'} state={connected ? 'ok' : 'bad'} />
+        <Tile icon={<Wifi size={16} />} label="Connections" value={connLabel} state={connTone} />
         <Tile
           icon={<Users size={16} />}
           label="Workers"

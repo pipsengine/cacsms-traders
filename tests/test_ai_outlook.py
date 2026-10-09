@@ -97,11 +97,24 @@ def test_last_closed_day_skips_weekends_and_waits_for_close():
 # ----- data quality -----
 
 
+def test_validator_accepts_utc_midnight_d1_when_close_aligns_with_frozen_cutoff():
+    bars = market()
+    utc_d1, d = [], DAY - timedelta(days=1)
+    while len(utc_d1) < 300:
+        if cal.is_trading_day(d):
+            utc_d1.append(_bar(datetime(d.year, d.month, d.day, tzinfo=timezone.utc), timedelta(days=1)))
+        d -= timedelta(days=1)
+    utc_d1 = utc_d1[::-1]
+    ok = validate(dict(bars, D1=utc_d1), CUTOFF, cal.d1_open_for(DAY))
+    assert ok["status"] == "OK"
+    assert next(c for c in ok["checks"] if c["tf"] == "D1")["fresh"]
+
+
 def test_validator_accepts_complete_fresh_snapshot_and_rejects_stale_d1():
     bars = market()
     ok = validate(bars, CUTOFF, cal.d1_open_for(DAY))
     assert ok["status"] == "OK" and ok["score"] >= 90
-    stale = dict(bars, D1=bars["D1"][:-1])
+    stale = dict(bars, D1=[b for b in bars["D1"] if b.t + timedelta(days=1) <= CUTOFF - timedelta(days=3)])
     bad = validate(stale, CUTOFF, cal.d1_open_for(DAY))
     assert bad["status"] == "INSUFFICIENT_DATA"
     assert any(c["tf"] == "D1" and not c["fresh"] for c in bad["checks"])

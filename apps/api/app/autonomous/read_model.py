@@ -57,11 +57,15 @@ def _system_status(last: dict | None, last_ok: dict | None, ws: dict, now: datet
 
 
 def overview(repo: AERepository, now: datetime, ctx: dict, mode: str, engine_running: bool) -> dict:
+    from ..market.unified_status import compute_platform_status
+
     ae = ae_settings()
     last = repo.last_cycle()
     last_ok = repo.last_cycle("COMPLETED")
     ws = workers(repo, now)
     safety = (last_ok or {}).get("safety") or {}
+    platform = compute_platform_status(repo.conn)
+    ctx = {**ctx, **platform}
     stages_db = repo.stages()
     stale_after = _stale_after()
     stages = []
@@ -93,7 +97,11 @@ def overview(repo: AERepository, now: datetime, ctx: dict, mode: str, engine_run
             "execution": "EXECUTION_BLOCKED_ANALYSIS_ONLY",
             "provider": active_provider,
             "provider_label": {"mt5": "MT5", "ctrader": "cTrader"}.get(active_provider or "", active_provider),
-            "provider_connection": "CONNECTED" if ctx.get("market_data_ready") else "DISCONNECTED",
+            "provider_connection": platform.get("provider_phase") or ("CONNECTED" if ctx.get("market_data_ready") else "OFFLINE"),
+            "data_readiness": platform.get("data_phase"),
+            "connections_label": platform.get("connections_label"),
+            "strength_pairs_loaded": platform.get("strength_pairs_loaded"),
+            "strength_engine_state": platform.get("strength_engine_state"),
             "provider_heartbeat": active_state.get("last_heartbeat"),
             "account_id": (ctx.get("market_data_scope") or {}).get("account_id"),
             "workers_online": ws["online"], "workers_total": ws["total"],
@@ -112,6 +120,7 @@ def overview(repo: AERepository, now: datetime, ctx: dict, mode: str, engine_run
                    "warnings": safety.get("warnings") or [], "market_open": safety.get("market_open")},
         "workers": ws,
         "cycle": _cycle_public(last) if last else None,
+        "platform_status": platform,
     }
 
 

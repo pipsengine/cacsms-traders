@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from typing import Any
 
 from ..core.database import db, execute_retry
@@ -21,6 +22,13 @@ from .mt5_terminal_discovery import (
 
 SETTINGS_KEY = "mt5.local"
 ACTIVE_TENANT_KEY = "mt5.active_tenant_id"
+_IPC_LOCK = threading.RLock()
+_CONNECT_IN_PROGRESS: set[str] = set()
+
+
+def connection_in_progress(tenant_id: str | None) -> bool:
+    tid = (tenant_id or "").strip()
+    return bool(tid and tid in _CONNECT_IN_PROGRESS)
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "terminal_path": "",
@@ -68,24 +76,25 @@ def _terminal_paths_to_try(conn: sqlite3.Connection, tenant_id: str, primary: st
 def _initialize_mt5_for_tenant(
     conn: sqlite3.Connection | None, tenant_id: str, primary: str | None = None
 ) -> tuple[bool, str]:
-    if conn is not None:
-        paths = _terminal_paths_to_try(conn, tenant_id, primary)
-    else:
-        with db() as c:
-            paths = _terminal_paths_to_try(c, tenant_id, primary)
-    ok, used = mt5_session.initialize_first(paths)
-    if ok and used:
-        gw = LocalMT5Gateway(tenant_id)
+    with _IPC_LOCK:
         if conn is not None:
-            settings = gw._load_settings(conn)
-            settings["terminal_path"] = used
-            gw._save_settings(conn, settings)
+            paths = _terminal_paths_to_try(conn, tenant_id, primary)
         else:
             with db() as c:
-                settings = gw._load_settings(c)
+                paths = _terminal_paths_to_try(c, tenant_id, primary)
+        ok, used = mt5_session.initialize_first(paths)
+        if ok and used:
+            gw = LocalMT5Gateway(tenant_id)
+            if conn is not None:
+                settings = gw._load_settings(conn)
                 settings["terminal_path"] = used
-                gw._save_settings(c, settings)
-    return ok, used
+                gw._save_settings(conn, settings)
+            else:
+                with db() as c:
+                    settings = gw._load_settings(c)
+                    settings["terminal_path"] = used
+                    gw._save_settings(c, settings)
+        return ok, used
 
 
 def _snapshot_as_terminal_account(settings: dict[str, Any]) -> dict[str, Any] | None:
@@ -135,6 +144,8 @@ def ensure_gateway_session(conn: sqlite3.Connection, tenant_id: str) -> dict[str
     path = _resolve_terminal_path(conn, tenant_id)
     if not path:
         return {"restored": False, "reason": "no_terminal_path"}
+    if connection_in_progress(tenant_id):
+        return {"restored": False, "reason": "connect_in_progress"}
     ok, used = _initialize_mt5_for_tenant(conn, tenant_id, path)
     if not ok:
         settings["last_error"] = (
@@ -157,26 +168,20 @@ def read_terminal_account_for_tenant(
     gw = LocalMT5Gateway(tenant_id)
     settings = gw._load_settings(conn)
     keep_session = settings.get("session_status") == "CONNECTED"
-    attached = False
-    try:
-        if mt5_session.is_initialized():
-            terminal = read_terminal_account()
-        elif force_attach or keep_session:
-            ok, _used = _initialize_mt5_for_tenant(conn, tenant_id)
-            if not ok:
-                return _snapshot_as_terminal_account(settings)
-            attached = not keep_session
-            terminal = read_terminal_account()
-        else:
+    if mt5_session.is_initialized():
+        terminal = read_terminal_account()
+    elif force_attach or keep_session:
+        ok, _used = _initialize_mt5_for_tenant(conn, tenant_id)
+        if not ok:
             return _snapshot_as_terminal_account(settings)
-        if terminal and terminal.get("available"):
-            if persist_snapshot:
-                persist_terminal_account_snapshot(conn, tenant_id, terminal)
-            return terminal
-        return _snapshot_as_terminal_account(settings) or terminal
-    finally:
-        if attached:
-            mt5_session.shutdown()
+        terminal = read_terminal_account()
+    else:
+        return _snapshot_as_terminal_account(settings)
+    if terminal and terminal.get("available"):
+        if persist_snapshot:
+            persist_terminal_account_snapshot(conn, tenant_id, terminal)
+        return terminal
+    return _snapshot_as_terminal_account(settings) or terminal
 
 
 def _terminal_path_from_mt5() -> str:
@@ -489,9 +494,14 @@ class LocalMT5Gateway:
             }
         )
         market_connected = session == "CONNECTED" and bool(md.get("connected"))
-        status = "CONNECTED" if session == "CONNECTED" and market_connected else "DISCONNECTED"
-        if session == "CONNECTED" and not market_connected:
+        if session == "CONNECTED" and market_connected:
+            status = "CONNECTED"
+        elif session == "CONNECTED" and settings.get("auto_reconnect", True):
+            status = "RECONNECTING" if settings.get("last_error") else "CONNECTING"
+        else:
             status = "DISCONNECTED"
+        if connection_in_progress(self.tenant_id) and not market_connected:
+            status = "CONNECTING"
         execution_disabled = mode in ("ANALYSIS_ONLY", "PAUSED", "EMERGENCY_STOP")
         saved_path = (settings.get("terminal_path") or "").strip()
         path = saved_path
@@ -558,6 +568,24 @@ class LocalMT5Gateway:
     ) -> dict[str, Any]:
         def _run(c: sqlite3.Connection) -> dict[str, Any]:
             settings = self._load_settings(c)
+            tid = (self.tenant_id or "").strip()
+            if tid and tid in _CONNECT_IN_PROGRESS:
+                return {
+                    "ok": False,
+                    "code": "CONNECT_IN_PROGRESS",
+                    "error": "Connect already in progress for this tenant.",
+                    "settings": settings,
+                    "gateway": self._health(c, allow_reconnect=False),
+                }
+            if tid:
+                _CONNECT_IN_PROGRESS.add(tid)
+            try:
+                return _connect_body(c, settings, terminal_path)
+            finally:
+                if tid:
+                    _CONNECT_IN_PROGRESS.discard(tid)
+
+        def _connect_body(c: sqlite3.Connection, settings: dict[str, Any], terminal_path: str | None) -> dict[str, Any]:
             if not terminal_launch_capability()['terminal_launch_supported']:
                 return {'ok':False,'code':'MT5_WINDOWS_GATEWAY_REQUIRED','error':'No Windows MT5 gateway is connected. The hosted API cannot open the terminal on another machine.','settings':settings}
             path = normalize_terminal_exe((terminal_path or settings.get("terminal_path") or "").strip())
@@ -627,10 +655,29 @@ class LocalMT5Gateway:
                 self._touch_heartbeat(c, settings)
                 if self.tenant_id:
                     _set_active_tenant_id(c, self.tenant_id)
-                terminal = read_terminal_account()
-                if terminal and terminal.get("available"):
-                    persist_terminal_account_snapshot(c, self.tenant_id, terminal)
-                    sync_trading_registry_from_terminal(c, self.tenant_id, force_attach=False)
+                    from ..market.market_data import bind_market_data_tenant
+
+                    bind_market_data_tenant(c, self.tenant_id)
+                    terminal = read_terminal_account()
+                    if terminal and terminal.get("available"):
+                        persist_terminal_account_snapshot(c, self.tenant_id, terminal)
+                        bind_market_data_tenant(
+                            c,
+                            self.tenant_id,
+                            account_id=f"{terminal.get('server')}/{terminal.get('login')}",
+                        )
+                    tid = self.tenant_id
+
+                    def _registry_sync() -> None:
+                        from ..core.database import db
+
+                        try:
+                            with db() as bg:
+                                sync_trading_registry_from_terminal(bg, tid, force_attach=False)
+                        except Exception:
+                            pass
+
+                    threading.Thread(target=_registry_sync, name="mt5-registry-sync", daemon=True).start()
                 return {"ok": True, "settings": settings, "gateway": self._health(c), "terminal_launch": launch}
             except Exception as exc:
                 settings["last_error"] = str(exc)
@@ -651,7 +698,8 @@ class LocalMT5Gateway:
     def disconnect(self, conn: sqlite3.Connection | None = None) -> dict[str, Any]:
         def _run(c: sqlite3.Connection) -> dict[str, Any]:
             settings = self._load_settings(c)
-            mt5_session.shutdown()
+            with _IPC_LOCK:
+                mt5_session.shutdown()
             settings["session_status"] = "DISCONNECTED"
             self._save_settings(c, settings)
             if self.tenant_id and _active_tenant_id(c) == self.tenant_id:

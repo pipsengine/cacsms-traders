@@ -123,8 +123,28 @@ class ProviderManager:
             ctx.update(provider_status='MARKET DATA UNAVAILABLE', market_data_ready=False)
         binding = self.conn.execute("SELECT value_json FROM system_settings WHERE key='execution.provider'").fetchone()
         execution = json.loads(binding['value_json']) if binding else {}
-        ctx.update(active_provider=selected, market_data_ready=bool(selected), selection_mode=mode, market_data_scope={'tenant_id': self.cfg['tenant_id'], 'account_id': states[selected]['account_id'] if selected else ''}, providers={p: {k: v for k, v in s.items() if k != 'context'} for p, s in states.items()},
-                   execution_provider=execution.get('provider'), execution_account=execution.get('account_id'), execution_available=False, operating_mode='ANALYSIS_ONLY')
+        active = selected or (self.cfg['provider'] if self.cfg['provider'] in ('mt5', 'ctrader') else None) or diagnostic
+        active_state = states.get(active) or states.get(diagnostic) or {}
+        active_ctx = active_state.get('context') or ctx
+        ready = bool(
+            active_state.get('market_data_available')
+            or active_state.get('healthy')
+            or active_ctx.get('market_data_ready')
+        )
+        ctx.update(
+            active_provider=active,
+            market_data_ready=ready,
+            selection_mode=mode,
+            market_data_scope={
+                'tenant_id': self.cfg['tenant_id'],
+                'account_id': active_state.get('account_id') or active_ctx.get('account_id') or self.cfg.get('account_id') or '',
+            },
+            providers={p: {k: v for k, v in s.items() if k != 'context'} for p, s in states.items()},
+            execution_provider=execution.get('provider'),
+            execution_account=execution.get('account_id'),
+            execution_available=False,
+            operating_mode='ANALYSIS_ONLY',
+        )
         return ctx
 
     def bind_snapshot(self, provider, account_id=''):

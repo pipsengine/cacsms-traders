@@ -281,7 +281,9 @@ class AutonomousEngine:
         analysis: dict = st.get("analysis") or {}
         rows: dict = st.get("rows") or {}
         mode = _mode(conn)
-        ctx = market_context(conn)
+        from ..market.unified_status import compute_platform_status
+
+        ctx = {**market_context(conn), **compute_platform_status(conn)}
         snapshot = _open_snapshot(conn)
         try:
             smtp_ready = bool(smtp_config(conn).ready)
@@ -313,7 +315,7 @@ class AutonomousEngine:
         counts: dict = {"transitions": 0}
 
         stages["MARKET_DATA"] = self._stage_market_data(analysis, ok, ctx, safety, st, now)
-        stages["INTELLIGENCE"] = self._stage_intelligence(up.get("strength_meta") or {}, up.get("intel") or {}, safety)
+        stages["INTELLIGENCE"] = self._stage_intelligence(up.get("strength_meta") or {}, up.get("intel") or {}, safety, ctx)
         stages["SCANNER"] = self._stage_scanner(rows, up.get("scanner_meta") or {}, st, safety)
         trend = {s: trend_view(a["trend"], a["overview"], None, now, ts, ovs) for s, a in ok.items()
                  if a.get("trend") and a.get("overview") and a["overview"]["regimes"].get("W") is not None}
@@ -550,34 +552,53 @@ class AutonomousEngine:
             fresh[state] = fresh.get(state, 0) + 1
             rows.append({"symbol": sym, "last_close_at": a["last_close"][0].isoformat(), "close": a["last_close"][1], "freshness": state})
         excluded = len(analysis) - len(ok)
-        if not ctx.get("market_data_ready"):
-            status, op = "BLOCKED", "No market-data provider ready"
+        if ctx.get("provider_phase") == "OFFLINE" or not ctx.get("active_provider"):
+            status, op = "OFFLINE", "No market-data provider selected"
+        elif not ctx.get("market_data_ready") or ctx.get("provider_phase") == "SYNCHRONIZING":
+            loaded = ctx.get("strength_pairs_loaded") or 0
+            status, op = "SYNCHRONIZING", f"Synchronizing closed bars ({loaded}/28 strength basket)"
         elif not analysis:
             status, op = "WAITING", f"Awaiting first closed-bar sync from {label}"
         elif fresh.get("STALE"):
             status, op = "STALE", f"{fresh['STALE']} instruments with stale closed bars"
         else:
             status, op = "RUNNING", f"Closed-bar data current via {label}: {len(ok)}/{len(analysis)} instruments"
-        return self._base(status, op, f"Next H1 close {_next_h1_close(now).strftime('%H:%M')} UTC", processed=len(ok), active=len(analysis),
-                          waiting=0, errors=excluded,
-                          metrics={"provider": provider, "provider_label": label, "connected": bool(ctx.get("market_data_ready")),
+        nxt = (safety["blockers"][0] if status in ("BLOCKED", "OFFLINE", "SYNCHRONIZING") and safety.get("blockers")
+               else f"Next H1 close {_next_h1_close(now).strftime('%H:%M')} UTC")
+        return self._base(status, op, nxt, processed=len(ok), active=len(ok) if status == "RUNNING" else 0,
+                          waiting=len(analysis) - len(ok) if status == "SYNCHRONIZING" else 0, errors=excluded,
+                          metrics={"provider": provider, "provider_label": label, "connected": bool(ctx.get("provider_connected")),
+                                   "provider_phase": ctx.get("provider_phase"), "data_phase": ctx.get("data_phase"),
                                    "snapshot_id": st.get("snapshot_id"), "data_as_of": safety["data_as_of"], "freshness": fresh,
                                    "market_open": safety["market_open"], "selection_mode": ctx.get("selection_mode")},
                           blockers=blockers[:20], detail={"instruments": rows})
 
-    def _stage_intelligence(self, meta: dict, intel: dict, safety: dict) -> dict:
+    def _stage_intelligence(self, meta: dict, intel: dict, safety: dict, ctx: dict | None = None) -> dict:
         scores = intel.get("scores") or {}
         avg = sorted(((c, (v or {}).get("AVG")) for c, v in scores.items() if (v or {}).get("AVG") is not None), key=lambda x: -x[1])
-        loaded = meta.get("pairs_loaded") or 0
+        loaded = meta.get("pairs_loaded") or (ctx or {}).get("strength_pairs_loaded") or 0
         live = bool(meta.get("live_data"))
-        if not meta.get("as_of"):
-            status, op = ("BLOCKED" if not safety["progress_analysis"] else "WAITING"), "Awaiting first strength calculation"
+        engine_state = meta.get("engine_state") or (ctx or {}).get("strength_engine_state")
+        if not safety["progress_analysis"]:
+            status, op = "BLOCKED", "Upstream market data not ready"
+            nxt = safety["blockers"][0] if safety.get("blockers") else "Restore provider readiness"
+        elif not meta.get("as_of") and loaded < 1:
+            status, op = "SYNCHRONIZING", f"Building strength basket (0/28 pairs)"
+            nxt = "First closed-bar calculation"
+        elif loaded < 28:
+            status, op = "SYNCHRONIZING", f"Strength basket {loaded}/28 pairs ({engine_state or 'sync'})"
+            nxt = "Complete missing pair history" if meta.get("missing_pairs") else "Recalculate on next closed bar"
         elif not live:
-            status, op = "DEGRADED", f"Strength not live ({meta.get('stale_reason') or meta.get('engine_state')})"
+            status, op = "DEGRADED", f"Strength not live ({meta.get('stale_reason') or engine_state})"
+            nxt = "Recalculate on the next closed bar"
         else:
             status, op = "RUNNING", f"Currency strength on closed bars: {loaded}/28 pairs"
+            nxt = "Recalculate on the next closed bar"
         blockers = [f"{m['symbol']} {m['timeframe']}: missing history" for m in (meta.get("missing_history") or [])[:10]]
-        return self._base(status, op, "Recalculate on the next closed bar", processed=loaded, active=len(avg), waiting=max(0, 28 - loaded),
+        if not blockers and meta.get("missing_pairs"):
+            blockers = [f"Missing pair: {p}" for p in (meta.get("missing_pairs") or [])[:10]]
+        return self._base(status, op, nxt, processed=loaded, active=len(avg) if status == "RUNNING" else 0,
+                          waiting=max(0, 28 - loaded) if status == "SYNCHRONIZING" else max(0, 28 - loaded),
                           errors=len(meta.get("missing_history") or []),
                           metrics={"as_of": meta.get("as_of"), "live": live, "engine_state": meta.get("engine_state"),
                                    "strongest": avg[0][0] if avg else None, "weakest": avg[-1][0] if avg else None},
@@ -658,11 +679,15 @@ class AutonomousEngine:
                        "task": f"{CHANNEL_TASKS.get(c['state'], 'Monitoring')} — {c['symbol']} {c['timeframe']}",
                        "started_at": c.get("state_entered_at"), "next_step": CHANNEL_NEXT.get(c["state"]),
                        "progress": round(100 * (idx + 1) / len(path))}
-        status = "BLOCKED" if not safety["progress_analysis"] else "WAITING" if not lineages else "RUNNING"
-        op = current["task"] if current else "Awaiting channel geometry from closed bars"
+        paused = not safety["progress_analysis"]
+        status = "BLOCKED" if paused else "WAITING" if not lineages else "RUNNING"
+        op = ("Stored channel lineages (not refreshed this cycle)" if paused and lineages
+              else current["task"] if current else "Awaiting channel geometry from closed bars")
+        nxt = safety["blockers"][0] if paused and safety.get("blockers") else (current["next_step"] if current else "Next closed bar")
         markets = len({c["symbol"] for c in lineages})
         metrics = {
-            "active_channels": len(lineages), "markets": markets, "touches_today": today.get("TOUCHED", 0), "breaks_today": today.get("BROKEN", 0),
+            "active_channels": len(lineages), "stored_lineages": len(lineages), "live_refresh": not paused,
+            "markets": markets, "touches_today": today.get("TOUCHED", 0), "breaks_today": today.get("BROKEN", 0),
             "breaking_today": today.get("BREAKING", 0), "retests_today": today.get("RETESTING", 0),
             "continuations_today": today.get("CONTINUING", 0), "tit_active": len(tit_active),
             "avg_quality": round(sum(quality) / len(quality), 1) if quality else None,
@@ -670,8 +695,9 @@ class AutonomousEngine:
             "by_state": {s: sum(1 for c in lineages if c["state"] == s) for s in CHANNEL_PRIORITY}, "changes_this_cycle": changes,
         }
         waiting = sum(1 for c in lineages if c["state"] in ("FORMING", "ACTIVE", "MATURE"))
-        return self._base(status, op, current["next_step"] if current else "Next closed bar", processed=len(ok) * len(chan.EVENT_TIMEFRAMES),
-                          active=len(lineages) - waiting, waiting=waiting, errors=0, metrics=metrics,
+        live_active = 0 if paused else len(lineages) - waiting
+        return self._base(status, op, nxt, processed=len(ok) * len(chan.EVENT_TIMEFRAMES) if not paused else 0,
+                          active=live_active, waiting=len(lineages) if paused else waiting, errors=0, metrics=metrics,
                           blockers=safety["blockers"] if not safety["progress_analysis"] else [],
                           detail={"queue": queue, "current": current, "tit": tit_active[:20]})
 
@@ -698,11 +724,12 @@ class AutonomousEngine:
                      "focus": nearest[0]["symbol"] if nearest else None},
             blockers=blockers)
         awaiting, reacted = at("CONFIRMATION", "AWAITING_REACTION"), at("CONFIRMATION", "REACTION_CONFIRMED")
+        conf_next = blockers[0] if blocked and blockers else "Rejection candle, then close beyond it or H1 BOS"
         out["CONFIRMATION"] = self._base(
             "BLOCKED" if blocked else "RUNNING" if awaiting or reacted else "WAITING",
             (f"{len(awaiting)} awaiting reaction, {len(reacted)} awaiting break confirmation" if awaiting or reacted
              else "No opportunity inside its entry zone"),
-            "Rejection candle, then close beyond it or H1 BOS", processed=today.get("AWAITING_REACTION", 0), active=len(reacted),
+            conf_next, processed=today.get("AWAITING_REACTION", 0), active=len(reacted) if not blocked else 0,
             waiting=len(awaiting), errors=0,
             metrics={"confirmed_today": today.get("RISK_REVIEW", 0), "expired_today": today.get("EXPIRED", 0),
                      "invalidated_today": today.get("INVALIDATED", 0)},
@@ -715,10 +742,11 @@ class AutonomousEngine:
             b, q = opps.currencies(o["symbol"])
             exposure[b] = exposure.get(b, 0) + d
             exposure[q] = exposure.get(q, 0) - d
+        risk_next = blockers[0] if blocked and blockers else "Next confirmed opportunity"
         out["RISK"] = self._base(
             "BLOCKED" if blocked or report["halted"] else "RUNNING" if deferred or today.get("RISK_APPROVED") else "WAITING",
             (f"{today.get('RISK_APPROVED', 0)} authorised, {len(deferred)} deferred, {today.get('RISK_REJECTED', 0)} rejected today"),
-            "Next confirmed opportunity", processed=today.get("RISK_APPROVED", 0) + today.get("RISK_REJECTED", 0), active=len(execution),
+            risk_next, processed=today.get("RISK_APPROVED", 0) + today.get("RISK_REJECTED", 0), active=len(execution) if not blocked else 0,
             waiting=len(deferred), errors=0,
             metrics={"authorised_today": today.get("RISK_APPROVED", 0), "deferred": len(deferred), "rejected_today": today.get("RISK_REJECTED", 0),
                      "exposure": {k: v for k, v in exposure.items() if v}, "max_concurrent": ae.max_concurrent,

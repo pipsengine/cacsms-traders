@@ -37,7 +37,11 @@ def _catch_up() -> dict:
 
     Locally the scheduler thread owns the cycle."""
     if os.getenv("VERCEL", "").strip() != "1":
-        return {"ran": False, "reason": "scheduler_thread"}
+        reason = get_outlook_service().due()
+        if reason is None:
+            return {"ran": False, "reason": "scheduler_thread"}
+        report = get_outlook_service().tick(replay=False)
+        return {"ran": "skipped" not in report, "reason": reason}
     reason = get_outlook_service().due()
     if reason is None:
         return {"ran": False, "reason": None}

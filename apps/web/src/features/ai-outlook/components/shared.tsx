@@ -52,11 +52,14 @@ const RUN_STATE: Record<string, { label: string; tone: string }> = {
 };
 export const runState = (s?: string | null) => RUN_STATE[s ?? ''] ?? { label: s ? 'Running' : 'Not started', tone: s ? 'is-blue' : 'is-gray' };
 
-export function StatusCluster({ run, current, schedule, onReload, busy }: { run: RunSummary | null; current: RunSummary | null; schedule: Schedule | null; onReload: () => void; busy: boolean }) {
+const RERUN_STATES = new Set(['INSUFFICIENT_DATA', 'RETRY', 'FAILED', 'SCHEDULED']);
+
+export function StatusCluster({ run, current, schedule, onReload, onRunNow, runBusy, busy }: { run: RunSummary | null; current: RunSummary | null; schedule: Schedule | null; onReload: () => void; onRunNow?: () => void; runBusy?: boolean; busy: boolean }) {
   const now = useNow();
   const shown = current ?? run;
   const st = runState(shown?.state);
   const stamp = shown?.published_at ?? shown?.started_at ?? shown?.close_at;
+  const canRun = Boolean(onRunNow && current && RERUN_STATES.has(current.state ?? ''));
   return (
     <div className="mao-status">
       <div className="mao-status-card">
@@ -75,6 +78,11 @@ export function StatusCluster({ run, current, schedule, onReload, busy }: { run:
         <small>Next analysis in</small>
         <b>{countdown(schedule?.next_run_at, now)}</b>
       </div>
+      {canRun ? (
+        <button className="mao-run-btn" type="button" disabled={runBusy} onClick={onRunNow} title="Re-run today’s daily analysis with the latest market data">
+          {runBusy ? 'Analysing…' : 'Run analysis now'}
+        </button>
+      ) : null}
       <button className="mao-icon-btn" aria-label="Reload outlook" title="Reload latest published outlook" onClick={onReload}>
         <RefreshCw size={16} className={busy ? 'is-spin' : ''} />
       </button>

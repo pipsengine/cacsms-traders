@@ -31,14 +31,48 @@ export function MatrixBlockingState({
   label?: string;
 }) {
   if (error) return <ErrorState message={error} onRetry={onRetry} />;
-  if (meta && meta.engine_state !== "SYNCING" && meta.engine_state !== "READY") return (
-    <div className="si-state" role="status">
-      <strong>MARKET DATA UNAVAILABLE</strong>
-      <p>{meta.error_code === 'CTRADER_APP_INACTIVE' ? 'cTrader provider authorization unavailable' : meta.provider_status === "AUTHORIZATION REQUIRED" ? "cTrader authorization required" : (meta.engine_error || meta.error_code || meta.engine_state)}</p>
-      <p>{meta.pairs_loaded ?? 0}/{meta.pairs_total ?? 28} pairs loaded{meta.missing_pairs?.length ? ` - missing ${meta.missing_pairs.join(", ")}` : ""}</p>
-      <a href="#/system-control/mt5">System Control: Market &amp; Trading Connections</a>
-    </div>
-  );
+  const syncStates = new Set([
+    'SYNCING',
+    'STARTING',
+    'INCOMPLETE_BASKET',
+    'BACKFILLING',
+    'VALIDATING',
+    'CALCULATING',
+    'DISCOVERING_SYMBOLS',
+    'WAITING_PROVIDER',
+  ]);
+  if (meta && !syncStates.has(meta.engine_state) && meta.engine_state !== 'READY') {
+    return (
+      <div className="si-state" role="status">
+        <strong>Market data unavailable</strong>
+        <p className="si-stateDetail">
+          {meta.error_code === 'CTRADER_APP_INACTIVE'
+            ? 'cTrader provider authorization unavailable'
+            : meta.provider_status === 'AUTHORIZATION REQUIRED'
+              ? 'cTrader authorization required'
+              : meta.engine_error || meta.error_code || meta.engine_state}
+        </p>
+        <p className="si-stateDetail">
+          {meta.pairs_loaded ?? 0}/{meta.pairs_total ?? 28} pairs loaded in repository
+          {meta.missing_pairs?.length ? ` — missing ${meta.missing_pairs.slice(0, 12).join(', ')}${meta.missing_pairs.length > 12 ? '…' : ''}` : ''}
+        </p>
+        <a href="#/system-control/mt5">System Control: Market &amp; Trading Connections</a>
+      </div>
+    );
+  }
+  if (meta && meta.engine_state === 'INCOMPLETE_BASKET') {
+    return (
+      <div className="si-state si-state--calc" role="status">
+        <LoadingSkeleton />
+        <p>
+          <Loader2 size={14} className="si-spin" aria-hidden />
+          Building strength basket — {meta.pairs_loaded ?? 0}/{meta.pairs_total ?? 28} pairs ready in repository
+          {meta.missing_pairs?.length ? ` (missing ${meta.missing_pairs.slice(0, 8).join(', ')}${meta.missing_pairs.length > 8 ? '…' : ''})` : ''}
+        </p>
+        <a href="#/system-control/mt5">System Control: Market &amp; Trading Connections</a>
+      </div>
+    );
+  }
   return (
     <div className="si-state si-state--calc">
       <LoadingSkeleton />

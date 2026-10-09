@@ -77,39 +77,71 @@ export function SystemControlMT5Panel({
     setEditOpen(true);
   }
 
-  const load = React.useCallback(() => {
+  const accountsLoaded = React.useRef(false);
+
+  const load = React.useCallback((opts?: { silent?: boolean }) => {
     if (!tenantId) return Promise.resolve();
-    setPageLoading(true);
+    const silent = Boolean(opts?.silent);
+    if (!silent) setPageLoading(true);
     return get<ConnectionsPayload>(`/tenants/${tenantId}/connections`)
       .then((conn) => {
         setData(conn);
         const s = conn.settings;
-        if (s) {
+        if (s && !silent) {
           setTerminalPath(s.terminal_path ?? conn.diagnostics?.terminal_auto_detect_path ?? '');
           setLoginType(s.login_type ?? '');
           setAutoReconnect(s.auto_reconnect ?? true);
           setHeartbeatSec(s.heartbeat_interval_seconds ?? 30);
         }
+        if (silent && accountsLoaded.current) return null;
         return get<TradingAccount[]>(`/tenants/${tenantId}/accounts`);
       })
       .then((acc) => {
-        setAccounts(acc);
+        if (acc) {
+          setAccounts(acc);
+          accountsLoaded.current = true;
+        }
       })
       .catch((e) => {
         setError(e instanceof Error ? e.message : 'Failed to load MT5 connections.');
       })
-      .finally(() => setPageLoading(false));
+      .finally(() => {
+        if (!opts?.silent) setPageLoading(false);
+      });
   }, [tenantId]);
 
   React.useEffect(() => {
+    accountsLoaded.current = false;
     void load();
-    const timer = window.setInterval(() => void load(), 15000);
+    const timer = window.setInterval(() => void load({ silent: true }), 15000);
     return () => window.clearInterval(timer);
   }, [load]);
 
   const gw = data?.gateway;
   const sessionSaved = data?.settings?.session_status === 'CONNECTED';
-  const connected = gw?.status === 'CONNECTED' || sessionSaved;
+  const lifecycle = data?.lifecycle;
+  const intel = data?.intelligence;
+  const gatewayLive =
+    gw?.status === 'CONNECTED' ||
+    gw?.status === 'CONNECTING' ||
+    gw?.status === 'RECONNECTING' ||
+    lifecycle?.gateway_phase === 'CONNECTED' ||
+    lifecycle?.gateway_phase === 'RECONNECTING';
+  const connected = gatewayLive || sessionSaved;
+  const statusLabel =
+    lifecycle?.overall_phase === 'READY'
+      ? 'Ready'
+      : lifecycle?.overall_phase === 'SYNCHRONIZING'
+        ? 'Synchronizing…'
+        : gw?.status === 'CONNECTED'
+          ? 'Connected'
+          : gw?.status === 'RECONNECTING' || gw?.status === 'CONNECTING' || lifecycle?.gateway_phase === 'RECONNECTING'
+            ? 'Reconnecting…'
+            : lifecycle?.gateway_phase === 'NOT_CONFIGURED'
+              ? 'Not configured'
+              : connected
+                ? 'Reconnecting…'
+                : 'Disconnected';
   const terminalSaved = Boolean(data?.settings?.terminal_path?.trim());
   const terminalDisplay =
     data?.settings?.terminal_path?.trim() ||
@@ -243,11 +275,12 @@ export function SystemControlMT5Panel({
       if (res.ok) {
         setSuccess('MT5 gateway connected for this tenant.');
         onRefreshGlobal();
+        void load({ silent: true });
       } else {
         setSuccess(res.terminal_launch?.launched ? 'MT5 was opened. The gateway still needs the connection requirements shown below.' : '');
         setError(res.error ?? 'Connect failed');
+        await load();
       }
-      await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       await load();
@@ -468,11 +501,39 @@ export function SystemControlMT5Panel({
               <h3>{hostedGateway ? 'MT5 Market-data Connection' : 'Local MT5 Gateway'}</h3>
               <p>{hostedGateway ? 'Connection status reported by the hosted API' : 'Phase 1 adapter (Local Terminal)'}</p>
             </div>
-            <span className={`sc-pill ${connected ? 'ok' : 'danger'}`}>
-              <i className={`sc-dot ${connected ? 'green' : 'red'}`} />
-              {connected ? 'Connected' : 'Disconnected'}
+            <span
+              className={`sc-pill ${
+                lifecycle?.overall_phase === 'READY'
+                  ? 'ok'
+                  : connected
+                    ? lifecycle?.overall_phase === 'SYNCHRONIZING' || gw?.status !== 'CONNECTED'
+                      ? 'warn'
+                      : 'ok'
+                    : 'danger'
+              }`}
+            >
+              <i
+                className={`sc-dot ${
+                  lifecycle?.overall_phase === 'READY'
+                    ? 'green'
+                    : connected
+                      ? 'amber'
+                      : 'red'
+                }`}
+              />
+              {statusLabel}
             </span>
           </div>
+          {intel && lifecycle?.gateway_phase === 'CONNECTED' ? (
+            <p className="sc-muted sc-syncLine">
+              Strength Intelligence:{' '}
+              <b>
+                {intel.pairs_loaded ?? 0}/{intel.pairs_total ?? 28} pairs
+              </b>
+              {intel.engine_state ? ` · ${intel.engine_state.replace(/_/g, ' ')}` : null}
+              {intel.missing_pairs?.length ? ` · missing: ${intel.missing_pairs.slice(0, 4).join(', ')}${intel.missing_pairs.length > 4 ? '…' : ''}` : null}
+            </p>
+          ) : null}
           <div className="sc-kv">
             <div>
               <span>Adapter</span>

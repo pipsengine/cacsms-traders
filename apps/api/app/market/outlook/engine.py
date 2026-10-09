@@ -17,8 +17,23 @@ from .evidence import aggregate, digits_for
 MIN_BARS = {"MN": 24, "W1": 52, "D1": 120, "H8": 90, "H1": 120}
 TF_SPAN = {"W1": timedelta(days=7), "D1": timedelta(days=1), "H8": timedelta(hours=8), "H1": timedelta(hours=1)}
 STALE_AFTER = {"D1": timedelta(hours=6), "H8": timedelta(hours=12), "H1": timedelta(hours=4)}
+# MT5 stores D1 at UTC midnight; outlook calendar uses New York 17:00 rollover.
+D1_UTC_MIDNIGHT_MAX_LAG = timedelta(hours=27)
 MTF_ROWS = ("Y", "YTD", "HY", "Q", "MN", "W", "D1", "H8", "H1")
 WORD = {1: "Bullish", -1: "Bearish", 0: "Range"}
+
+
+def d1_bar_fresh(hist: list[Bar], cutoff: datetime, expected_d1_open: datetime) -> bool:
+    if not hist:
+        return False
+    last = hist[-1]
+    if abs((last.t - expected_d1_open).total_seconds()) <= 3 * 3600:
+        return True
+    close_at = last.t + TF_SPAN["D1"]
+    if close_at > cutoff + timedelta(hours=1):
+        return False
+    lag = cutoff - close_at
+    return timedelta(0) <= lag <= D1_UTC_MIDNIGHT_MAX_LAG
 
 
 def _f(v: float | None, dp: int) -> str:
@@ -39,7 +54,7 @@ def validate(bars: dict[str, list[Bar]], cutoff: datetime, expected_d1_open: dat
         ok_count = n >= MIN_BARS[tf]
         fresh, note = True, f"{n} closed bars"
         if tf == "D1":
-            fresh = bool(hist) and abs((hist[-1].t - expected_d1_open).total_seconds()) <= 3 * 3600
+            fresh = d1_bar_fresh(hist, cutoff, expected_d1_open)
             if not fresh:
                 note = f"Last D1 bar opened {hist[-1].t.isoformat()[:16] if hist else '—'}, expected {expected_d1_open.isoformat()[:16]}"
         elif tf in FRESHNESS_TIMEFRAMES and last_close is not None:

@@ -13,11 +13,13 @@ from ..domain.mt5_diagnostics import mt5_python_package_status
 from ..domain.mt5_terminal_launcher import terminal_launch_capability
 from ..market import mt5_session
 from ..domain.mt5_connection import (
+    connection_in_progress,
     ensure_autodetected_terminal_path,
     ensure_gateway_session,
     read_terminal_account_for_tenant,
     sync_trading_registry_from_terminal,
 )
+from ..domain.mt5_lifecycle import compute_connection_lifecycle
 from ..domain.mt5_terminal_account import environment_from_terminal, read_terminal_account
 from ..domain.mt5_terminal_discovery import filesystem_terminal_candidates, running_terminal64_processes
 router=APIRouter(prefix='/tenants/{tenant_id}',tags=['Tenant Administration'])
@@ -38,8 +40,6 @@ def roles(tenant_id:str,user=Depends(current_user)):
 def accounts(tenant_id:str,user=Depends(current_user)):
  with db() as c:
   require_permission(c,user,tenant_id,'accounts.read')
-  if mt5_session.is_initialized():
-   sync_trading_registry_from_terminal(c, tenant_id, force_attach=False)
   return [dict(r) for r in c.execute('SELECT * FROM trading_accounts WHERE tenant_id=? ORDER BY created_at DESC',(tenant_id,))]
 @router.post('/accounts')
 def add_account(tenant_id:str,x:AccountCreate,user=Depends(current_user)):
@@ -65,6 +65,9 @@ def connections(tenant_id:str,user=Depends(current_user)):
   require_permission(c,user,tenant_id,'connections.read')
   settings=gw_svc.settings(conn=c)
   session=settings.get('session_status')
+  reconnect = None
+  if session == 'CONNECTED' and not mt5_session.is_initialized() and not connection_in_progress(tenant_id):
+   reconnect = ensure_gateway_session(c, tenant_id)
   auto_meta=ensure_autodetected_terminal_path(
    c, tenant_id, allow_probe=False, persist=False,
   )
@@ -79,39 +82,42 @@ def connections(tenant_id:str,user=Depends(current_user)):
   if bridge:
    settings={**settings,'session_status':'CONNECTED' if bridge['connected'] else 'DISCONNECTED','terminal_path':bridge['terminal_path'],'last_heartbeat_at':bridge['received_at'],'last_error':None if bridge['connected'] else 'Windows bridge heartbeat expired.'}
    return {'gateway':bridge_gateway(bridge,tenant_id),'settings':settings,'connections':connection_rows,'diagnostics':{'python_package':'remote','terminal_launch_mode':'WINDOWS_GATEWAY_REQUIRED','terminal_launch_supported':False,'bridge_connected':bridge['connected'],'terminal_account':{**bridge['account'],'available':bridge['connected']}}}
- reconnect=None
- diag_reconnect=None
- if session == 'CONNECTED' and not mt5_session.is_initialized():
-  with db() as c:
-   reconnect=ensure_gateway_session(c, tenant_id)
- live=mt5_session.is_initialized()
- with db() as c:
+  live=mt5_session.is_initialized()
   terminal_account=read_terminal_account_for_tenant(
    c, tenant_id, force_attach=False, persist_snapshot=live,
   )
-  gateway=gw_svc.health(conn=c, allow_reconnect=(session == 'CONNECTED' and not live))
- if reconnect and reconnect.get('restored'):
-  diag_reconnect=reconnect
- from ..domain.mt5_terminal_launcher import terminal_launch_capability
- diag={**mt5_python_package_status(),**terminal_launch_capability()}
- diag['database_path']=str(db_path())
- diag['terminal_candidates']=filesystem_terminal_candidates()[:8]
- diag['terminal_running_processes']=running_terminal64_processes()
- if auto_meta.get('path'):
-  diag['terminal_auto_detect_path']=auto_meta['path']
-  diag['terminal_auto_detect_source']=auto_meta.get('source')
- diag['terminal_auto_saved']=auto_meta
- diag['terminal_account']=terminal_account
- if diag_reconnect:
-  diag['gateway_reconnect']=diag_reconnect
- if not (terminal_account and terminal_account.get('available')):
-  diag['terminal_account_hint']='Open MetaTrader 5, log in, then use Connect or Sync from MT5.'
- return {
-  'gateway':gateway,
-  'settings':settings,
-  'connections':connection_rows,
-  'diagnostics':diag,
- }
+  gateway=gw_svc.health(conn=c, allow_reconnect=False)
+  diag_reconnect = reconnect if reconnect and reconnect.get('restored') else None
+  from ..domain.mt5_terminal_launcher import terminal_launch_capability
+  diag={**mt5_python_package_status(),**terminal_launch_capability()}
+  diag['database_path']=str(db_path())
+  diag['terminal_candidates']=filesystem_terminal_candidates()[:8]
+  diag['terminal_running_processes']=running_terminal64_processes()
+  if auto_meta.get('path'):
+   diag['terminal_auto_detect_path']=auto_meta['path']
+   diag['terminal_auto_detect_source']=auto_meta.get('source')
+  diag['terminal_auto_saved']=auto_meta
+  diag['terminal_account']=terminal_account
+  if diag_reconnect:
+   diag['gateway_reconnect']=diag_reconnect
+  if not (terminal_account and terminal_account.get('available')):
+   diag['terminal_account_hint']='Open MetaTrader 5, log in, then use Connect or Sync from MT5.'
+  from ..market.market_data import configuration
+  from ..market.strength_engine import get_strength_engine
+  cfg=configuration(c)
+  scope_tid=(cfg.get('tenant_id') or cfg.get('mt5_tenant_id') or '').strip()
+  intelligence=get_strength_engine().engine_meta() if scope_tid == tenant_id else None
+  lifecycle=compute_connection_lifecycle(
+   gateway, settings, intelligence, connect_in_progress=connection_in_progress(tenant_id),
+  )
+  return {
+   'gateway':{**gateway, **lifecycle},
+   'settings':settings,
+   'connections':connection_rows,
+   'diagnostics':diag,
+   'lifecycle':lifecycle,
+   'intelligence':intelligence,
+  }
 @router.patch('/connections/settings')
 def patch_connection_settings(tenant_id:str,x:Mt5SettingsPatch,user=Depends(current_user)):
  with db() as c:
@@ -126,8 +132,6 @@ def gateway_connect(tenant_id:str,x:Mt5ConnectRequest,user=Depends(current_user)
   require_permission(c,user,tenant_id,'connections.manage')
   gw=LocalMT5Gateway(tenant_id)
   result=gw.connect(x.terminal_path, conn=c)
-  if result.get('ok'):
-    sync_trading_registry_from_terminal(c, tenant_id)
   write_audit(c,tenant_id,user['id'],'MT5_CONNECT','TenantSettings',f'{tenant_id}/mt5.local',after={'ok':result.get('ok'),'error':result.get('error'),'terminal_launch':result.get('terminal_launch')})
   return result
 @router.post('/connections/gateway/disconnect')

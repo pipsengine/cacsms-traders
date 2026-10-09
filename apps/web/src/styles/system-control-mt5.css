@@ -18,6 +18,14 @@
 .sc-hub .sc-dot{width:9px;height:9px;border-radius:50%;display:inline-block;flex:none}
 .sc-hub .sc-dot.green{background:#10b968;box-shadow:0 0 0 7px #e6f8ef}
 .sc-hub .sc-dot.red{background:#ff3d3d;box-shadow:0 0 0 7px #fff0f0}
+.sc-hub .sc-dot.amber{background:#f59e0b;box-shadow:0 0 0 7px #fff7ed}
+.sc-hub .sc-syncLine {
+  margin: 6px 0 0;
+  font-size: 12px;
+  text-align: center;
+}
+
+.sc-pill.warn{background:#fffbeb;border-color:#fcd34d;color:#92400e}
 .sc-hub .sc-tabsFigma{display:flex;border-bottom:1px solid #dce5ef;margin-top:17px;overflow:auto}
 .sc-hub .sc-tabsFigma button{border:0;background:transparent;padding:13px 18px;display:flex;gap:10px;align-items:center;color:#4d617b;font-weight:650;font-size:13px;white-space:nowrap}
 .sc-hub .sc-tabsFigma button.selected{color:#0868ed;background:#f2f7ff;border:1px solid #c9ddfb;border-bottom:2px solid #0874f9;border-radius:8px 8px 0 0;margin-bottom:-1px}

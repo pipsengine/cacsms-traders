@@ -37,6 +37,7 @@ export function AiMarketOutlook({ initialTab, onTab }: { initialTab?: string; on
   const [tf, setTf] = useState<OutlookTf>('D1');
   const [days, setDays] = useState(30);
   const [tick, setTick] = useState(0);
+  const [runBusy, setRunBusy] = useState(false);
 
   useEffect(() => {
     if (initialTab && TABS.some((t) => t.id === initialTab)) setTabState(initialTab as TabId);
@@ -166,7 +167,21 @@ export function AiMarketOutlook({ initialTab, onTab }: { initialTab?: string; on
           <p>End-of-day AI analysis, multi-timeframe context and next move projection for the upcoming sessions.</p>
         </div>
         <div className="mao-head-right">
-          <StatusCluster run={run} current={latestData?.current ?? null} schedule={schedule} onReload={() => setTick((t) => t + 1)} busy={latest.refreshing || detail.refreshing} />
+          <StatusCluster
+            run={run}
+            current={latestData?.current ?? null}
+            schedule={schedule}
+            onReload={() => setTick((t) => t + 1)}
+            busy={latest.refreshing || detail.refreshing}
+            runBusy={runBusy}
+            onRunNow={() => {
+              setRunBusy(true);
+              outlookApi
+                .runNow()
+                .then(() => setTick((t) => t + 1))
+                .finally(() => setRunBusy(false));
+            }}
+          />
           {tab !== 'daily' ? <SessionCards plans={sessions} schedule={schedule} captions={CAPTIONS[tab]} /> : null}
         </div>
       </header>

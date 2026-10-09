@@ -11,7 +11,17 @@ export type StageKey =
   | 'MANAGEMENT'
   | 'LEARNING';
 
-export type StageStatus = 'RUNNING' | 'WAITING' | 'BLOCKED' | 'STALE' | 'DEGRADED' | 'ERROR' | 'IDLE' | 'PENDING';
+export type StageStatus =
+  | 'RUNNING'
+  | 'WAITING'
+  | 'BLOCKED'
+  | 'STALE'
+  | 'DEGRADED'
+  | 'ERROR'
+  | 'IDLE'
+  | 'PENDING'
+  | 'SYNCHRONIZING'
+  | 'OFFLINE';
 
 // Stage metrics/detail differ per stage; the backend documents each key it writes.
 export type Metrics = Record<string, unknown>;
@@ -23,7 +33,11 @@ export type Ribbon = {
   execution: string;
   provider: string | null;
   provider_label: string | null;
-  provider_connection: 'CONNECTED' | 'DISCONNECTED';
+  provider_connection: 'CONNECTED' | 'SYNCHRONIZING' | 'OFFLINE' | 'DISCONNECTED';
+  data_readiness?: string;
+  connections_label?: string;
+  strength_pairs_loaded?: number;
+  strength_engine_state?: string;
   provider_heartbeat: string | null;
   account_id: string | null;
   workers_online: number;
