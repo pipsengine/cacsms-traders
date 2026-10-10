@@ -19,7 +19,7 @@ export const ANNOTATION_GROUPS = [
 export type GroupKey = (typeof ANNOTATION_GROUPS)[number]['key'];
 export const DEFAULT_GROUPS: GroupKey[] = ['channel', 'htf', 'sr', 'erz', 'bos', 'liquidity', 'fractal', 'path', 'targets', 'invalidation'];
 
-const TF_MS: Record<string, number> = { M30: 18e5, H1: 36e5, H8: 288e5, D1: 864e5, W: 6048e5, MN: 2.6e9, Q: 7.9e9, HY: 1.58e10, Y: 3.16e10, YTD: 864e5 };
+const TF_MS: Record<string, number> = { M5: 3e5, M15: 9e5, M30: 18e5, H1: 36e5, H8: 288e5, D1: 864e5, W: 6048e5, MN: 2.6e9, Q: 7.9e9, HY: 1.58e10, Y: 3.16e10, YTD: 864e5 };
 const ANN_TF: Record<string, string> = { M30: 'H1' };
 
 const tone = (t: string): OverlayTone => (['res', 'sup', 'mid', 'blue', 'red', 'green', 'amber', 'purple', 'gray'].includes(t) ? (t as OverlayTone) : 'blue');

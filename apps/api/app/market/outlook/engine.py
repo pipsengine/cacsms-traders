@@ -43,10 +43,18 @@ def _f(v: float | None, dp: int) -> str:
 # ----- DataQualityValidator -----
 
 
-def validate(bars: dict[str, list[Bar]], cutoff: datetime, expected_d1_open: datetime) -> dict:
-    """Completeness (bar counts) and freshness (last closed bar versus the frozen close) per timeframe."""
+def validate(bars: dict[str, list[Bar]], cutoff: datetime, expected_d1_open: datetime, horizon: str = "DAILY") -> dict:
+    """Completeness (bar counts) and freshness (last closed bar versus the frozen close) per timeframe.
+
+    Weekly and monthly candles close across the weekend, so H8 and H1 are fresh when their last
+    Friday bar is the one that had closed by that weekly or monthly cutoff.
+    """
     checks, score = [], 0.0
     weights = {"MN": 10, "W1": 15, "D1": 35, "H8": 20, "H1": 20}
+    stale_after = dict(STALE_AFTER)
+    if horizon in ("WEEKLY", "MONTHLY"):
+        stale_after["H8"] = timedelta(days=3)
+        stale_after["H1"] = timedelta(days=3)
     for tf in REQUIRED_TIMEFRAMES:
         hist = bars.get(tf) or []
         n = len(hist)
@@ -58,7 +66,7 @@ def validate(bars: dict[str, list[Bar]], cutoff: datetime, expected_d1_open: dat
             if not fresh:
                 note = f"Last D1 bar opened {hist[-1].t.isoformat()[:16] if hist else '—'}, expected {expected_d1_open.isoformat()[:16]}"
         elif tf in FRESHNESS_TIMEFRAMES and last_close is not None:
-            fresh = cutoff - last_close <= STALE_AFTER[tf]
+            fresh = cutoff - last_close <= stale_after[tf]
             if not fresh:
                 note = f"Last {tf} close {last_close.isoformat()[:16]} is stale versus the frozen close"
         if not ok_count:
@@ -185,6 +193,39 @@ def _summary(facts: dict, d: int, evidence: list[dict]) -> dict:
             lines.append({"tone": tone, "text": f"{e['title']} — {e['detail']}", "evidence_id": e["id"]})
         out[g] = lines
     return out
+
+
+def _context(d: int, b: dict) -> str:
+    htf = b.get("htf_dir") or 0
+    if htf and d and htf != d:
+        return "MIXED"
+    if not d:
+        return "NEUTRAL"
+    return WORD[d].upper()
+
+
+def _regime_kind(regime: dict, family: str, facts: dict) -> dict:
+    channels = facts.get("channels") or {}
+    breakout = any(str((v.get("state") or {}).get("key", "")).startswith("BREAKOUT") for v in channels.values() if isinstance(v, dict))
+    pulling = (facts.get("tit") or {}).get("countertrend") or "pullback" in (regime.get("reason") or "").lower()
+    vol = facts.get("volatility") or {}
+    if breakout:
+        key = "BREAKOUT"
+    elif family == "REV":
+        key = "REVERSAL"
+    elif pulling:
+        key = "PULLBACK"
+    elif vol.get("key") == "LOW" and vol.get("trend") == "CONTRACTING":
+        key = "COMPRESSION"
+    elif regime.get("key") == "RANGING":
+        key = "RANGING"
+    elif regime.get("key") == "TRANSITIONAL":
+        key = "TRANSITION"
+    elif regime.get("key") in ("BULLISH", "BEARISH"):
+        key = "TRENDING"
+    else:
+        key = "TRANSITION"
+    return {"key": key, "label": key.title(), "source_regime": regime.get("key")}
 
 
 def _system_action(qualified: bool, erz: dict, d: int) -> dict:
@@ -369,6 +410,20 @@ def build_outlook(symbol: str, a: dict, price: float, anchor: datetime, strength
         "data_quality": quality,
         "chart_annotations": ann,
         "handoff": "Prediction is not trade authorisation — Opportunity, Confirmation and Risk engines decide execution.",
+        "directional_context": _context(d, b),
+        "market_regime": _regime_kind(regime, primary["family"], facts),
+        "evidence_score": {
+            "value": round(dirs[d], 1),
+            "scale": "0-100",
+            "label": "Evidence Score",
+            "meaning": "Alignment of closed-bar evidence. Not a statistically calibrated win probability.",
+        },
+        "evidence_balance": {
+            "supporting": len(primary.get("evidence_for") or []),
+            "conflicting": len(primary.get("evidence_against") or []),
+            "missing": [c["note"] for c in quality["checks"] if not (c["complete"] and c["fresh"])],
+        },
+        "lifecycle": "PUBLISHED" if opp["qualified"] else "NO_OPPORTUNITY",
     }
 
 

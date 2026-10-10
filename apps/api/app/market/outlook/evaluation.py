@@ -80,6 +80,8 @@ def evaluate(outlook: dict, h1: list[Bar], next_close: datetime, evaluated_date:
         "target1_hit": t1, "target2_hit": t2, "invalidated": invalidated, "erz_touched": erz_touched,
         "move_pct": round(move / px * 100, 4) if px else None, "move_atr": round(move / atr, 2) if atr else None,
         "close": close, "high": hi, "low": lo, "bars": len(path), "first_event": first,
+        "mfe": round(((hi - px) if d != -1 else (px - lo)) / atr, 2) if atr else None,
+        "mae": round(((px - lo) if d != -1 else (hi - px)) / atr, 2) if atr else None,
         "raw_confidence": (conf.get("calibration") or {}).get("raw", conf.get("primary")),
         "realised_direction": "BULLISH" if move > 0 else "BEARISH" if move < 0 else "FLAT",
     }
@@ -149,6 +151,7 @@ def performance(evaluations: list[dict], qualified_only: bool = False) -> dict:
         "buckets": buckets,
         "by_scenario": by_scenario,
         "by_direction": by_direction,
+        "by_regime": _grouped(rows, "regime"),
     }
 
 
@@ -166,12 +169,16 @@ def _structure_hit(events: list[dict], kind: str, d: int, after: datetime) -> da
     return None
 
 
-def _condition_hit(cond: dict, h1: list[Bar], m30: list[Bar], events: list[dict] | None, after: datetime) -> datetime | None:
+def _condition_hit(cond: dict, h1: list[Bar], m30: list[Bar], events: list[dict] | None, after: datetime, m15: list[Bar] | None = None) -> datetime | None:
     kind = cond["type"]
     if kind == "structure":
         return None if events is None else _structure_hit(events, cond["kind"], cond["dir"], after)
-    bars = m30 if cond.get("tf") == "M30" and m30 else h1
-    span = 1800 if bars is m30 else 3600
+    if cond.get("tf") == "M15":
+        bars, span = m15 or [], 900
+    elif cond.get("tf") == "M30" and m30:
+        bars, span = m30, 1800
+    else:
+        bars, span = h1, 3600
     for b in bars:
         if b.t < after:
             continue
@@ -192,7 +199,25 @@ def _condition_hit(cond: dict, h1: list[Bar], m30: list[Bar], events: list[dict]
     return None
 
 
-def monitor(outlook: dict, h1: list[Bar], m30: list[Bar], events: list[dict] | None, now: datetime) -> dict:
+def _grouped(rows: list[dict], key: str) -> dict:
+    out: dict[str, dict] = {}
+    for row in rows:
+        name = row.get(key) or (row.get("detail") or {}).get(key)
+        if not name:
+            continue
+        bucket = out.setdefault(str(name), {"n": 0, "wins": 0, "losses": 0})
+        bucket["n"] += 1
+        if row.get("outcome") == "WIN":
+            bucket["wins"] += 1
+        elif row.get("outcome") == "LOSS":
+            bucket["losses"] += 1
+    for bucket in out.values():
+        decided = bucket["wins"] + bucket["losses"]
+        bucket["accuracy"] = round(100 * bucket["wins"] / decided, 1) if decided else None
+    return out
+
+
+def monitor(outlook: dict, h1: list[Bar], m30: list[Bar], events: list[dict] | None, now: datetime, m15: list[Bar] | None = None) -> dict:
     """Progress of the published confirmation sequence plus invalidation; the system action follows from it."""
     anchor = _t(outlook["anchor"])
     h1 = [b for b in h1 if b.t >= anchor]
@@ -206,7 +231,7 @@ def monitor(outlook: dict, h1: list[Bar], m30: list[Bar], events: list[dict] | N
         invalid_at = next((datetime.fromtimestamp(b.t.timestamp() + 3600, tz=b.t.tzinfo) for b in h1 if (b.c - inv) * d < 0), None)
     blocked = False
     for st in outlook.get("confirmation_sequence") or []:
-        at = None if blocked else _condition_hit(st["condition"], h1, m30, events, after)
+        at = None if blocked else _condition_hit(st["condition"], h1, m30, events, after, m15)
         if invalid_at and at and at > invalid_at:
             at = None
         pending_structure = st["condition"]["type"] == "structure" and events is None
@@ -238,6 +263,10 @@ def monitor(outlook: dict, h1: list[Bar], m30: list[Bar], events: list[dict] | N
         action = {"key": "PREPARE", "label": "Prepare", "detail": "Price reacted at the ERZ — waiting for H1 structure confirmation."}
     else:
         action = {"key": "WATCH", "label": "Watch", "detail": "Waiting for price to reach the expected reaction zone."}
-    return {"status": status, "steps": steps, "invalidated_at": invalid_at.isoformat() if invalid_at else None, "price": last,
-            "observed_at": now.isoformat(), "system_action": action, "structure_source": "scanner" if events is not None else None,
-            "bars": {"H1": len(h1), "M30": len(m30)}}
+    result = {"status": status, "steps": steps, "invalidated_at": invalid_at.isoformat() if invalid_at else None, "price": last,
+              "observed_at": now.isoformat(), "system_action": action, "structure_source": "scanner" if events is not None else None,
+              "bars": {"H1": len(h1), "M30": len(m30), "M15": len(m15 or [])}}
+    from .lifecycle import lifecycle_for
+
+    result["lifecycle"] = lifecycle_for(outlook, result, now, m15_confirmed=False)
+    return result

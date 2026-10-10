@@ -4,7 +4,8 @@ import { StructureChart } from '../../market-structure/components/StructureChart
 import type { LiveState } from '../../market-structure/live';
 import { buildOverlay, futureBarsFor, legendFor, type GroupKey, type OverlayMode, DEFAULT_GROUPS } from '../overlay';
 import type { Outlook, VCandle } from '../types';
-import { CANDLE_LIMIT, TFS, type OutlookTf } from './shared';
+import { SchPane } from './SchPane';
+import { CANDLE_LIMIT, GOLD_TFS, TFS, type OutlookTf } from './shared';
 
 /** Closed candles plus the live forming bar; ``price`` is the latest tick (null when the feed has no quote). */
 export type CandleState = { candles: VCandle[]; loading: boolean; error: string | null; price?: number | null; live?: LiveState; forming?: boolean };
@@ -33,6 +34,7 @@ export function OutlookChart({
   onPick,
   selected,
   footer,
+  tfs,
 }: {
   o: Outlook;
   tf: OutlookTf;
@@ -45,7 +47,9 @@ export function OutlookChart({
   onPick?: (id: string) => void;
   selected?: string | null;
   footer?: ReactNode;
+  tfs?: readonly OutlookTf[];
 }) {
+  const choices = tfs ?? (o.horizon === 'H8' ? GOLD_TFS : TFS);
   const framed = useMemo(() => candles.candles.slice(-CANDLE_LIMIT[tf]), [candles.candles, tf]);
   const overlay = useMemo(() => buildOverlay(o, tf, framed, groups, mode), [o, tf, framed, groups, mode]);
   const future = useMemo(() => futureBarsFor(o, tf, framed), [o, tf, framed]);
@@ -77,7 +81,7 @@ export function OutlookChart({
         }
         actions={
           <select className="mao-tf-select" value={tf} onChange={(e) => onTf(e.target.value as OutlookTf)} aria-label="Chart timeframe">
-            {TFS.map((t) => (
+            {choices.map((t) => (
               <option key={t} value={t}>
                 {t}
               </option>
@@ -85,6 +89,7 @@ export function OutlookChart({
           </select>
         }
       />
+      {tf === 'W' && o.horizon === 'WEEKLY' && o.sch?.series?.length ? <SchPane series={o.sch.series} /> : null}
       {footer}
     </div>
   );

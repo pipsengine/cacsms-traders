@@ -14,9 +14,10 @@ ALERT_TYPES = {
     "BREAK_RETEST_CONTINUATION": "Break & Retest / Trend Continuation",
     "TIT_DETECTED": "Trend-in-Trend (TiT)",
     "AI_OUTLOOK_PUBLISHED": "AI Analysis Complete",
+    "AI_OUTLOOK_EVENT": "AI Outlook Update",
 }
 # Platform-wide alerts (not tied to one symbol or timeframe): symbol, timeframe and XAUUSD filters do not apply.
-SYSTEM_ALERT_TYPES = frozenset({"AI_OUTLOOK_PUBLISHED"})
+SYSTEM_ALERT_TYPES = frozenset({"AI_OUTLOOK_PUBLISHED", "AI_OUTLOOK_EVENT"})
 # Suppression reasons that concern email delivery only: the event still passed the alert rules and belongs in the in-app bell.
 EMAIL_OFF_REASON = "Email notifications are disabled"
 SMTP_NOT_READY_REASON = "SMTP transport not ready"

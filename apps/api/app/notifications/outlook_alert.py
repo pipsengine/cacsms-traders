@@ -5,15 +5,36 @@ cannot send a second email. The alert summarises analysis only — it never auth
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from ..market.channel_events import DomainEvent
 from ..market.outlook import calendar as cal
 from .engine import AlertEngine
 
 EVENT_TYPE = "AI_OUTLOOK_PUBLISHED"
+LIFECYCLE_EVENT = "AI_OUTLOOK_EVENT"
 ALL_SYMBOLS = "ALL"
+_SPAN = {"WEEKLY": timedelta(days=7), "MONTHLY": timedelta(days=31), "H8": timedelta(hours=8)}
+_TF = {"DAILY": "D1", "WEEKLY": "W1", "MONTHLY": "MN", "H8": "H8"}
 TOP_OPPORTUNITIES = 5
+
+
+def close_is_current(close: datetime, latest: datetime | None) -> bool:
+    """A recovered older candle is stored, but only the latest close of that horizon notifies."""
+    if latest is None:
+        return True
+    if close.tzinfo is None:
+        close = close.replace(tzinfo=timezone.utc)
+    if latest.tzinfo is None:
+        latest = latest.replace(tzinfo=timezone.utc)
+    return abs((latest - close).total_seconds()) <= 90
+
+
+def _latest_broker_close(conn, horizon: str) -> datetime | None:
+    from ..market.outlook.horizons import CLOCK, TIMEFRAME, recent_closes
+
+    found = recent_closes(conn, TIMEFRAME[horizon], CLOCK[horizon], datetime.now(timezone.utc), 1)
+    return found[0] if found else None
 
 
 def _price(v) -> float | None:
@@ -40,13 +61,26 @@ def opportunity(o: dict) -> dict:
 
 
 def outlook_event(run: dict, outlooks: list[dict], counts: dict, published_at: str, late: bool, provider: str | None) -> DomainEvent:
-    day = date.fromisoformat(run["analysis_date"])
-    cutoff = cal.close_time(day)
+    horizon = run.get("horizon") or "DAILY"
+    if horizon == "DAILY":
+        day = date.fromisoformat(run["analysis_date"])
+        cutoff = cal.close_time(day)
+        outlook_for = cal.next_trading_day(day).isoformat()
+        analysis_label = run["analysis_date"]
+        structure = f"AI_OUTLOOK|{run['analysis_date']}"
+    else:
+        cutoff = datetime.fromisoformat(run["close_at"])
+        if cutoff.tzinfo is None:
+            cutoff = cutoff.replace(tzinfo=timezone.utc)
+        outlook_for = (cutoff + _SPAN[horizon]).date().isoformat()
+        analysis_label = cutoff.date().isoformat()
+        structure = f"AI_OUTLOOK|{horizon}|{run['close_at']}"
     qualified = sorted((o for o in outlooks if o.get("qualified")), key=lambda o: o.get("opportunity_rank") or 10**6)
     metadata = {
         "run_id": run["id"],
-        "analysis_date": run["analysis_date"],
-        "outlook_for": cal.next_trading_day(day).isoformat(),
+        "horizon": horizon,
+        "analysis_date": analysis_label,
+        "outlook_for": outlook_for,
         "published_at": published_at,
         "asian_open": cal.session_windows(cutoff)[0]["start"],
         "late": bool(late),
@@ -54,8 +88,8 @@ def outlook_event(run: dict, outlooks: list[dict], counts: dict, published_at: s
         "total": len(outlooks),
         "opportunities": [opportunity(o) for o in qualified[:TOP_OPPORTUNITIES]],
     }
-    return DomainEvent(EVENT_TYPE, ALL_SYMBOLS, "D1", None, provider, cutoff.isoformat(), None, None,
-                       structure_id=f"AI_OUTLOOK|{run['analysis_date']}", metadata=metadata)
+    return DomainEvent(EVENT_TYPE, ALL_SYMBOLS, _TF[horizon], None, provider, cutoff.isoformat(), None, None,
+                       structure_id=structure, metadata=metadata)
 
 
 def publish_outlook_published(conn, run: dict, outlooks: list[dict], counts: dict, published_at: str, late: bool,
@@ -68,12 +102,43 @@ def publish_outlook_published(conn, run: dict, outlooks: list[dict], counts: dic
         return {"skipped": "notifications_disabled"}
     if run.get("origin") != "LIVE":
         return {"skipped": "not_live"}
+    horizon = run.get("horizon") or "DAILY"
+    if horizon != "DAILY" and run.get("close_at"):
+        close = datetime.fromisoformat(run["close_at"])
+        if not close_is_current(close, _latest_broker_close(conn, horizon)):
+            return {"skipped": "historical_catch_up"}
     try:
         provider = market_context(conn).get("active_provider")
     except Exception:  # noqa: BLE001 - provider label is cosmetic
         provider = None
     tenant, account = alert_scope(conn)
     event = outlook_event(run, outlooks, counts, published_at, late, provider)
+    return AlertEngine(conn, tenant, account).process([event], [], now or datetime.now(timezone.utc))
+
+
+def publish_lifecycle(conn, outlook: dict, run: dict, progress: dict, now: datetime | None = None) -> dict:
+    """Deduplicated in-app/email notice for a scenario transition. Replay runs and unchanged states do not alert."""
+    from ..market.market_data import market_context
+    from .worker import alert_scope, enabled
+
+    if not enabled() or run.get("origin") != "LIVE":
+        return {"skipped": "not_live"}
+    life = progress.get("lifecycle")
+    if life in (None, "PUBLISHED", "WATCHING"):
+        return {"skipped": "quiet"}
+    try:
+        provider = market_context(conn).get("active_provider")
+    except Exception:
+        provider = None
+    tenant, account = alert_scope(conn)
+    event = DomainEvent(
+        LIFECYCLE_EVENT, outlook.get("symbol") or ALL_SYMBOLS, _TF.get(run.get("horizon") or "", "H8"),
+        outlook.get("expected_direction"), provider, progress.get("observed_at") or (now or datetime.now(timezone.utc)).isoformat(),
+        progress.get("price"), None, structure_id=f"AI_OUTLOOK_EVENT|{outlook.get('outlook_id')}|{life}",
+        identity=str(life),
+        metadata={"horizon": run.get("horizon"), "lifecycle": life, "summary": (progress.get("m15") or {}).get("reason") or progress.get("status"),
+                  "execution_ref": progress.get("execution_ref"), "force_trade": False},
+    )
     return AlertEngine(conn, tenant, account).process([event], [], now or datetime.now(timezone.utc))
 
 

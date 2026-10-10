@@ -96,8 +96,8 @@ export function ConfidenceMeter({ o }: { o: Outlook }) {
       <small className="mao-foot">
         {c.calibration.applied
           ? `Calibrated on ${c.calibration.samples} evaluated outlooks (bucket ${c.calibration.bucket}: ${pct(c.calibration.hit_rate)} hit rate; raw ${pct(c.calibration.raw)}).`
-          : `Raw model probability — calibration starts once evaluated outlooks exist in the ${c.calibration.bucket} bucket.`}{' '}
-        Uncertainty {o.uncertainty.toFixed(0)}%.
+          : `Evidence score in the ${c.calibration.bucket} bucket — historical calibration starts once evaluated outlooks exist.`}{' '}
+        This score is closed-bar evidence alignment, not a win probability. Uncertainty {o.uncertainty.toFixed(0)}%.
       </small>
     </Card>
   );
@@ -228,7 +228,7 @@ export function DailyOutlook({ o, tf, onTf, candles, chartHeight }: { o: Outlook
   return (
     <>
       <div className="mao-kpis is-daily is-six">
-        <Kpi icon={dirIcon(o.expected_direction)} tone={dirTone(o.expected_direction)} label="AI Bias (Next Session)" value={<span className={dirTone(o.expected_direction)}>{word}</span>} bar={o.confidence.primary} sub={`${pct(o.confidence.primary)} probability · ${o.regime.label} regime`} />
+        <Kpi icon={dirIcon(o.expected_direction)} tone={dirTone(o.expected_direction)} label="AI Bias" value={<span className={dirTone(o.expected_direction)}>{o.directional_context ?? word}</span>} bar={o.evidence_score?.value ?? o.confidence.primary} sub={`${pct(o.evidence_score?.value ?? o.confidence.primary)} evidence score · ${(o.market_regime ?? o.regime).label} regime`} />
         <Kpi icon={<ListChecks size={18} />} tone="is-blue" label="Key Drivers">
           <ul className="mao-drivers">
             {o.key_drivers.map((k) => (

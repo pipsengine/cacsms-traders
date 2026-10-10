@@ -146,9 +146,16 @@ class OutlookService:
                 try:
                     report = {"at": now.isoformat()}
                     report["evaluated"] = self._evaluate_due(conn, store, now, s)
-                    report["live"] = self._ensure_live(conn, store, now, s)
+                    cycle = self._ordered_cycle(conn, store, now, s)
+                    report["horizons"] = cycle["horizons"]
+                    report["live"] = cycle["live"]
                     if monitor_live:
                         report["monitored"] = self._monitor(conn, store, now, s)
+                        try:
+                            report["gold_monitor"] = self._monitor_gold(conn, store, now, s)
+                        except Exception:
+                            log.exception("Gold H8 monitor failed")
+                            report["gold_monitor"] = {"error": "monitor_failed"}
                     if replay and s.replay_days > 0:
                         report["replayed"] = self._replay(conn, store, now, s)
                     self.last_tick = report
@@ -185,7 +192,7 @@ class OutlookService:
     def target_day(now: datetime, s: OutlookSettings) -> date:
         return cal.last_closed_day(now - timedelta(minutes=s.close_grace_minutes))
 
-    def _ensure_live(self, conn, store: OutlookRepository, now: datetime, s: OutlookSettings) -> dict:
+    def _ensure_live(self, conn, store: OutlookRepository, now: datetime, s: OutlookSettings, prepared: tuple | None = None) -> dict:
         day = self.target_day(now, s)
         for r in store.runs(origin="LIVE", limit=12):
             if r["analysis_date"] < day.isoformat() and r["state"] not in DONE_STATES + ("MISSED", "FAILED"):
@@ -197,16 +204,65 @@ class OutlookService:
             store.update_run(run["id"], log=_entry("SCHEDULED", f"D1 close {cal.close_time(day).isoformat()} detected"))
             self._audit(conn, store, "AI_OUTLOOK_RUN_SCHEDULED", run["id"], {"analysis_date": run["analysis_date"]})
         if self._execute_due(run, day, now, s):
-            self.execute(conn, store, store.run_by_id(run["id"]), now, s)  # type: ignore[arg-type]
+            self.execute(conn, store, store.run_by_id(run["id"]), now, s, prepared=prepared)  # type: ignore[arg-type]
             run = store.run_by_id(run["id"])
         return {"analysis_date": day.isoformat(), "state": run["state"], "run_id": run["id"]}  # type: ignore[index]
 
+    def _ordered_cycle(self, conn, store: OutlookRepository, now: datetime, s: OutlookSettings) -> dict:
+        """Monthly → Weekly → Daily → H8. Coincident closes share one frozen snapshot."""
+        from .horizons import coincident, due_closes, freeze_at, ordered, repack, run_key
+
+        extra: dict = {}
+        try:
+            extra = due_closes(conn, store, now, s.close_grace_minutes)
+        except Exception:
+            log.exception("Outlook close scan failed")
+        day = self.target_day(now, s)
+        closes = dict(extra)
+        closes["DAILY"] = cal.close_time(day)
+        shared = None
+        if coincident(closes, timedelta(minutes=s.close_grace_minutes)):
+            try:
+                cutoff = max(closes.values())
+                _manifest, bars = freeze_at(conn, cutoff, "LIVE", list(SCANNER_UNIVERSE), "SHARED", cutoff.isoformat())
+                repo = MarketRepository(conn)
+                shared = (bars, getattr(repo, "provider", None), getattr(repo, "account_id", None))
+            except Exception:
+                log.exception("Shared outlook snapshot failed; each horizon will freeze its own close")
+        horizons: dict = {}
+        live = None
+        for name in ordered(list(closes)):
+            if name == "DAILY":
+                prepared = repack(shared[0], closes["DAILY"], "LIVE", "DAILY", day.isoformat(), shared[1], shared[2]) if shared else None
+                live = self._ensure_live(conn, store, now, s, prepared=prepared)
+                continue
+            prepared = repack(shared[0], closes[name], "LIVE", name, run_key(name, closes[name]), shared[1], shared[2]) if shared else None
+            try:
+                horizons[name] = self._run_close(conn, store, name, closes[name], now, s, prepared)
+            except Exception as exc:
+                log.exception("Outlook %s close failed", name)
+                horizons[name] = {"error": type(exc).__name__}
+        return {"live": live, "horizons": horizons}
+
+    def _run_close(self, conn, store: OutlookRepository, horizon: str, close: datetime, now: datetime, s: OutlookSettings, prepared: tuple | None) -> dict:
+        from .horizons import SPAN, run_key
+
+        key = run_key(horizon, close)
+        run = store.run(key, "LIVE", horizon)
+        if run is None:
+            run = store.create_run(key, "LIVE", close.isoformat(), ENGINE_VERSION, horizon)
+            store.update_run(run["id"], log=_entry("SCHEDULED", f"{horizon} broker close {close.isoformat()}"))
+            self._audit(conn, store, "AI_OUTLOOK_RUN_SCHEDULED", run["id"], {"analysis_date": key, "horizon": horizon})
+        if self._execute_due(run, close.date(), now, s, deadline=close + SPAN[horizon]):
+            run = self.execute(conn, store, store.run_by_id(run["id"]), now, s, prepared=prepared)  # type: ignore[arg-type]
+        return {"horizon": horizon, "analysis_date": key, "close_at": close.isoformat(), "state": run["state"], "run_id": run["id"]}
+
     @staticmethod
-    def _execute_due(run: dict, day: date, now: datetime, s: OutlookSettings) -> bool:
+    def _execute_due(run: dict, day: date, now: datetime, s: OutlookSettings, deadline: datetime | None = None) -> bool:
+        limit = deadline or cal.close_time(cal.next_trading_day(day))
         retry_due = run["state"] in ("RETRY", "INSUFFICIENT_DATA", "SCHEDULED") and (not run["next_retry_at"] or run["next_retry_at"] <= now.isoformat())
         stale = run["state"] in ACTIVE_STATES and run["updated_at"] < (now - timedelta(seconds=s.lock_seconds)).isoformat()
-        recover = (run["state"] == "FAILED" and run["updated_at"] < (now - timedelta(minutes=FAILED_RECOVERY_MINUTES)).isoformat()
-                   and now < cal.close_time(cal.next_trading_day(day)))
+        recover = run["state"] == "FAILED" and run["updated_at"] < (now - timedelta(minutes=FAILED_RECOVERY_MINUTES)).isoformat() and now < limit
         return retry_due or stale or recover
 
     def due(self, now: datetime | None = None) -> str | None:
@@ -223,62 +279,93 @@ class OutlookService:
         if run["state"] in ("PUBLISHED", "MONITORING") and (
                 not run["monitored_at"] or run["monitored_at"] <= (now - timedelta(seconds=s.monitor_seconds - 5)).isoformat()):
             return "monitor"
+        try:
+            from .horizons import due_closes
+
+            with db() as conn:
+                if due_closes(conn, OutlookRepository(conn, active_scope(conn)), now, s.close_grace_minutes):
+                    return "horizon"
+        except Exception:
+            log.warning("Outlook horizon due-check failed", exc_info=True)
         return None
 
     # ----- AIIntelligenceOrchestrator (state machine) -----
 
-    def execute(self, conn, store: OutlookRepository, run: dict, now: datetime, s: OutlookSettings) -> dict:
+    def execute(self, conn, store: OutlookRepository, run: dict, now: datetime, s: OutlookSettings, prepared: tuple | None = None) -> dict:
         rid, origin = run["id"], run["origin"]
-        day = date.fromisoformat(run["analysis_date"])
-        cutoff = cal.close_time(day)
-        deadline = cal.close_time(cal.next_trading_day(day))
+        horizon = run.get("horizon") or "DAILY"
+        if horizon == "DAILY":
+            day = date.fromisoformat(run["analysis_date"])
+            cutoff = cal.close_time(day)
+            deadline = cal.close_time(cal.next_trading_day(day))
+            universe = list(SCANNER_UNIVERSE)
+        else:
+            cutoff = datetime.fromisoformat(run["close_at"])
+            if cutoff.tzinfo is None:
+                cutoff = cutoff.replace(tzinfo=timezone.utc)
+            day = cal.last_closed_day(cutoff)
+            from .horizons import SPAN
+            deadline = cutoff + SPAN[horizon]
+            universe = [GOLD] if horizon == "H8" else list(SCANNER_UNIVERSE)
         attempts = int(run["attempts"] or 0) + 1
         store.update_run(rid, state="SNAPSHOTTING", attempts=attempts, started_at=now_iso(), error=None, next_retry_at=None,
                          log=_entry("SNAPSHOTTING", f"Attempt {attempts}: freezing closed bars as of {cutoff.isoformat()}"))
         counts = {"published": 0, "failed": 0, "insufficient": 0, "qualified": 0}
         try:
             repo = MarketRepository(conn)
-            manifest, bars = freeze_snapshot(repo, day, origin)
+            if prepared is not None:
+                manifest, bars = prepared
+            elif horizon == "DAILY":
+                manifest, bars = freeze_snapshot(repo, day, origin)
+            else:
+                from .horizons import freeze_at
+                manifest, bars = freeze_at(conn, cutoff, origin, universe, horizon, run["analysis_date"])
             ref = reference_scores(conn, cutoff)
-            prior = [e for e in store.evaluations() if e["analysis_date"] < day.isoformat()]
+            prior = [e for e in store.evaluations(horizon=horizon) if e["analysis_date"] < run["analysis_date"]]
             table, samples = calibration_table(prior)
-            manifest.update(strength_as_of=ref[0].isoformat() if ref else None, calibration_samples=samples)
-            sid = store.save_snapshot(rid, day.isoformat(), cutoff.isoformat(), manifest)
-            store.update_run(rid, snapshot_id=sid, state="VALIDATING_DATA", symbols_total=len(SCANNER_UNIVERSE),
-                             log=_entry("SNAPSHOTTING", f"Snapshot {sid} frozen ({len(SCANNER_UNIVERSE)} instruments)"))
+            manifest.update(strength_as_of=ref[0].isoformat() if ref else None, calibration_samples=samples, horizon=horizon)
+            sid = store.save_snapshot(rid, run["analysis_date"], cutoff.isoformat(), manifest)
+            store.update_run(rid, snapshot_id=sid, state="VALIDATING_DATA", symbols_total=len(universe),
+                             log=_entry("SNAPSHOTTING", f"Snapshot {sid} frozen ({len(universe)} instruments)"))
 
             expected = cal.d1_open_for(day)
-            quality = {sym: validate(bars[sym], cutoff, expected) for sym in SCANNER_UNIVERSE}
-            ok = [sym for sym in SCANNER_UNIVERSE if quality[sym]["status"] == "OK"]
-            store.update_run(rid, state="ANALYSING", log=_entry("VALIDATING_DATA", f"{len(ok)}/{len(SCANNER_UNIVERSE)} instruments passed data validation"))
-            if origin == "LIVE" and len(ok) < len(SCANNER_UNIVERSE) / 2 and now < deadline - timedelta(hours=1):
+            quality = {sym: validate(bars[sym], cutoff, expected, horizon) for sym in universe}
+            ok = [sym for sym in universe if quality[sym]["status"] == "OK"]
+            store.update_run(rid, state="ANALYSING", log=_entry("VALIDATING_DATA", f"{len(ok)}/{len(universe)} instruments passed data validation"))
+            if origin == "LIVE" and len(ok) < len(universe) / 2 and now < deadline - timedelta(hours=1):
                 store.update_run(rid, state="INSUFFICIENT_DATA", next_retry_at=(now + timedelta(minutes=10)).isoformat(),
-                                 symbols_insufficient=len(SCANNER_UNIVERSE) - len(ok),
-                                 log=_entry("INSUFFICIENT_DATA", "Closed D1 bars not yet available for most instruments; retrying in 10 minutes"))
+                                 symbols_insufficient=len(universe) - len(ok),
+                                 log=_entry("INSUFFICIENT_DATA", "Closed bars not yet available for most instruments; retrying in 10 minutes"))
                 return store.run_by_id(rid)  # type: ignore[return-value]
 
             outs: list[dict] = []
             cores: dict[str, dict] = {}
-            for sym in SCANNER_UNIVERSE:
+            for sym in universe:
                 if sym not in ok:
                     bad = [c["note"] for c in quality[sym]["checks"] if not (c["complete"] and c["fresh"])]
                     outs.append(insufficient(sym, quality[sym], day.isoformat(), sid, cutoff, "; ".join(bad) or "Data quality below threshold"))
                     counts["insufficient"] += 1
                     continue
                 try:
-                    cores[sym] = analysis_cores(bars[sym], h8bb=False)
+                    cores[sym] = analysis_cores(bars[sym], h8bb=horizon == "H8")
                 except Exception as exc:
                     log.exception("AI outlook analysis failed for %s", sym)
                     outs.append(insufficient(sym, quality[sym], day.isoformat(), sid, cutoff, f"Engine error: {exc}", status="FAILED"))
                     counts["failed"] += 1
             store.update_run(rid, state="GENERATING_HYPOTHESES", log=_entry("ANALYSING", f"Specialist engines evaluated {len(cores)} instruments"))
 
+            price_tf = {"WEEKLY": "W1", "MONTHLY": "MN", "H8": "H8"}.get(horizon, "D1")
             calibrated = 0
             for sym, a in cores.items():
                 try:
-                    d1 = bars[sym]["D1"]
-                    o = build_outlook(sym, a, d1[-1].c, cutoff, strength_for(sym, ref, cutoff), quality[sym], table, s,
+                    hist = bars[sym].get(price_tf) or bars[sym]["D1"]
+                    o = build_outlook(sym, a, hist[-1].c, cutoff, strength_for(sym, ref, cutoff), quality[sym], table, s,
                                       analysis_date=day.isoformat(), snapshot_id=sid)
+                    o["horizon"] = horizon
+                    o["candle_close"] = cutoff.isoformat()
+                    if horizon != "DAILY":
+                        from .horizons import decorate
+                        decorate(o, horizon, bars[sym])
                     calibrated += 1 if o["confidence"]["calibration"]["applied"] else 0
                     outs.append(o)
                     counts["published"] += 1
@@ -300,15 +387,15 @@ class OutlookService:
             published_at = now_iso()
             asian = cal.session_windows(cutoff)[0]["start"]
             for o in outs:
-                o.update(outlook_id=str(uuid.uuid4()), run_id=rid, origin=origin, published_at=published_at,
-                         late=origin == "LIVE" and published_at > asian)
+                o.update(outlook_id=str(uuid.uuid4()), run_id=rid, origin=origin, published_at=published_at, horizon=horizon,
+                         candle_close=cutoff.isoformat(), late=origin == "LIVE" and horizon == "DAILY" and published_at > asian)
             store.insert_outlooks(run, outs)
             store.save_calibration(rid, table, samples)
             store.update_run(rid, state="PUBLISHED", published_at=published_at, symbols_published=counts["published"], symbols_failed=counts["failed"],
                              symbols_insufficient=counts["insufficient"], qualified=counts["qualified"],
-                             log=_entry("PUBLISHED", f"Immutable outlook published: {counts['published']} analysed, {counts['qualified']} qualified, "
+                             log=_entry("PUBLISHED", f"Immutable {horizon} outlook published: {counts['published']} analysed, {counts['qualified']} qualified, "
                                                      f"{counts['insufficient']} insufficient data, {counts['failed']} failed"))
-            self._audit(conn, store, "AI_OUTLOOK_PUBLISHED", rid, {"analysis_date": day.isoformat(), "origin": origin, "snapshot_id": sid, **counts})
+            self._audit(conn, store, "AI_OUTLOOK_PUBLISHED", rid, {"analysis_date": run["analysis_date"], "horizon": horizon, "origin": origin, "snapshot_id": sid, **counts})
             if origin == "LIVE":
                 self._notify_published(conn, store.run_by_id(rid) or run, outs, counts, published_at, published_at > asian)
         except Exception as exc:
@@ -377,6 +464,46 @@ class OutlookService:
             if not remaining or now > nclose + timedelta(days=4):
                 store.update_run(run["id"], state="ARCHIVED", evaluated_at=now_iso(),
                                  log=_entry("EVALUATING", f"Outcomes evaluated for {len(outlooks) - len(remaining)}/{len(outlooks)} outlooks; archived"))
+        if runs is None:
+            try:
+                done += self._evaluate_horizons(conn, store, now, s)
+            except Exception:
+                log.exception("Horizon outcome evaluation failed")
+        return done
+
+    def _evaluate_horizons(self, conn, store: OutlookRepository, now: datetime, s: OutlookSettings) -> int:
+        from .horizons import SPAN
+
+        done = 0
+        repo = MarketRepository(conn)
+        if repo is None:
+            return 0
+        for horizon in ("MONTHLY", "WEEKLY", "H8"):
+            for run in store.runs(states=("PUBLISHED", "MONITORING", "EVALUATING"), limit=20, horizon=horizon):
+                close = datetime.fromisoformat(run["close_at"])
+                if close.tzinfo is None:
+                    close = close.replace(tzinfo=timezone.utc)
+                nxt = close + SPAN[horizon]
+                if now < nxt + timedelta(minutes=s.close_grace_minutes):
+                    continue
+                outlooks = [o for o in store.outlooks(run["id"]) if o["status"] == "PUBLISHED"]
+                seen = store.evaluated_ids(run["id"])
+                pending = [o for o in outlooks if o["outlook_id"] not in seen]
+                if not pending:
+                    if outlooks:
+                        store.update_run(run["id"], state="ARCHIVED", evaluated_at=now_iso())
+                    continue
+                store.update_run(run["id"], state="EVALUATING")
+                h1 = candles_between(repo, "H1", [o["symbol"] for o in pending], close, nxt + timedelta(hours=1))
+                for o in pending:
+                    ev = evaluate(o, h1.get(o["symbol"], []), nxt, nxt.date().isoformat())
+                    if ev is None:
+                        continue
+                    ev["horizon"] = horizon
+                    ev["regime"] = (o.get("market_regime") or o.get("regime") or {}).get("key")
+                    store.add_evaluation(run, o, ev)
+                    done += 1
+                conn.commit()
         return done
 
     # ----- IntradayOutlookMonitor -----
@@ -402,8 +529,8 @@ class OutlookService:
             ev = (events or {}).get(o["symbol"]) if events is not None else None
             res = monitor(o, h1.get(o["symbol"], []), m30.get(o["symbol"], []), ev, now)
             prev = store.latest_revision(o["outlook_id"])
-            sig = (res["status"], sum(1 for st in res["steps"] if st["done"]), res["system_action"]["key"])
-            prev_sig = None if prev is None else (prev["status"], sum(1 for st in prev.get("steps", []) if st["done"]), (prev.get("system_action") or {}).get("key"))
+            sig = (res["status"], sum(1 for st in res["steps"] if st["done"]), res["system_action"]["key"], res.get("lifecycle"))
+            prev_sig = None if prev is None else (prev["status"], sum(1 for st in prev.get("steps", []) if st["done"]), (prev.get("system_action") or {}).get("key"), prev.get("lifecycle"))
             if sig != prev_sig:
                 store.add_revision(o, run["id"], res["status"], prev["status"] if prev else None, res["observed_at"], res["price"],
                                    {k: v for k, v in res.items() if k not in ("status", "observed_at", "price")})
@@ -424,6 +551,62 @@ class OutlookService:
         if not st["analysis"] or not st["cycle_at"] or st["cycle_at"] <= anchor:
             return None
         return {sym: ((a.get("bos") or {}).get("H1") or {}).get("events", []) for sym, a in st["analysis"].items() if "bos" in a}
+
+    def _monitor_gold(self, conn, store: OutlookRepository, now: datetime, s: OutlookSettings) -> int:
+        """Closed H1 and M15 bars between H8 closes. Stage 8 approval is observed, never granted here."""
+        from .horizons import SPAN, gold_position_active, gold_progress, risk_approval_id
+
+        run = store.latest_published("H8")
+        if not run or run["state"] not in ("PUBLISHED", "MONITORING"):
+            return 0
+        if run["monitored_at"] and run["monitored_at"] > (now - timedelta(seconds=s.monitor_seconds - 5)).isoformat():
+            return 0
+        outlooks = [o for o in store.outlooks(run["id"]) if o.get("status") == "PUBLISHED" and o.get("symbol") == GOLD]
+        anchor = datetime.fromisoformat(run["close_at"])
+        if anchor.tzinfo is None:
+            anchor = anchor.replace(tzinfo=timezone.utc)
+        repo = MarketRepository(conn)
+        if repo is None or not outlooks:
+            store.update_run(run["id"], state="MONITORING", monitored_at=now_iso())
+            return 0
+        try:
+            h1 = candles_between(repo, "H1", [GOLD], anchor, now + timedelta(hours=1))
+            m15 = candles_between(repo, "M15", [GOLD], anchor, now + timedelta(minutes=20))
+        except Exception:
+            log.warning("Gold H8 monitor could not read closed bars", exc_info=True)
+            return 0
+        active = gold_position_active(conn)
+        changed = 0
+        for o in outlooks:
+            res = gold_progress(o, h1.get(GOLD, []), m15.get(GOLD, []), now, anchor + SPAN["H8"])
+            if res["lifecycle"] == "AUTHORIZATION_PENDING":
+                ref = risk_approval_id(conn, GOLD)
+                if ref:
+                    res["lifecycle"] = "AUTHORIZED"
+                    res["execution_ref"] = ref
+            res["discovery_priority"] = active is False
+            prev = store.latest_revision(o["outlook_id"])
+            sig = (res["lifecycle"], bool((res.get("m15") or {}).get("confirmed")), res["status"])
+            prev_sig = None if prev is None else (prev.get("lifecycle"), bool((prev.get("m15") or {}).get("confirmed")), prev.get("status"))
+            if sig == prev_sig:
+                continue
+            store.add_revision(o, run["id"], res["lifecycle"], prev.get("lifecycle") if prev else o.get("lifecycle"), res["observed_at"], res["price"],
+                               {k: v for k, v in res.items() if k not in ("status", "observed_at", "price")})
+            store.save_handoff(o, run, res["lifecycle"], {"m15": res.get("m15"), "status": res["status"], "discovery_priority": res["discovery_priority"]}, res.get("execution_ref"))
+            self._notify_lifecycle(conn, o, run, res)
+            changed += 1
+        store.update_run(run["id"], state="MONITORING", monitored_at=now_iso())
+        return changed
+
+    def _notify_lifecycle(self, conn, outlook: dict, run: dict, progress: dict) -> None:
+        try:
+            from ...notifications.outlook_alert import publish_lifecycle
+
+            publish_lifecycle(conn, outlook, run, progress)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            log.warning("Outlook lifecycle alert could not be queued", exc_info=True)
 
     # ----- walk-forward replay (history for calibration and the Historical tab) -----
 
@@ -489,16 +672,36 @@ def get_outlook_service() -> OutlookService:
 # ----- read models for the API -----
 
 
-def schedule_payload(now: datetime | None = None) -> dict:
+def schedule_payload(now: datetime | None = None, horizon: str = "DAILY", conn=None) -> dict:
     now = now or utcnow()
     s = outlook_settings()
     day = OutlookService.target_day(now, s)
     nxt = cal.next_trading_day(day)
     next_run = cal.close_time(nxt) + timedelta(minutes=s.close_grace_minutes)
-    return {"now": now.isoformat(), "analysis_date": day.isoformat(), "close_at": cal.close_time(day).isoformat(),
-            "next_close_at": cal.close_time(nxt).isoformat(), "next_run_at": next_run.isoformat(),
-            "seconds_to_next_run": max(0, int((next_run - now).total_seconds())), "active_session": cal.active_session(now),
-            "sessions": cal.session_windows(cal.close_time(day)), "timezone": "America/New_York 17:00 rollover"}
+    payload = {"now": now.isoformat(), "analysis_date": day.isoformat(), "close_at": cal.close_time(day).isoformat(),
+               "next_close_at": cal.close_time(nxt).isoformat(), "next_run_at": next_run.isoformat(),
+               "seconds_to_next_run": max(0, int((next_run - now).total_seconds())), "active_session": cal.active_session(now),
+               "sessions": cal.session_windows(cal.close_time(day)), "timezone": "America/New_York 17:00 rollover", "horizon": horizon}
+    if horizon == "DAILY":
+        return payload
+    from .horizons import CLOCK, TIMEFRAME, project_next_close, recent_closes
+
+    def apply(c):
+        closes = recent_closes(c, TIMEFRAME[horizon], CLOCK[horizon], now, 48)
+        return project_next_close(closes, horizon, now)
+
+    if conn is not None:
+        projected = apply(conn)
+    else:
+        with db() as c:
+            projected = apply(c)
+    if projected is None:
+        return payload
+    run_at = projected + timedelta(minutes=s.close_grace_minutes)
+    payload.update(next_close_at=projected.isoformat(), next_run_at=run_at.isoformat(),
+                   seconds_to_next_run=max(0, int((run_at - now).total_seconds())),
+                   timezone={"WEEKLY": "W1 broker close", "MONTHLY": "MN broker close", "H8": "XAUUSD H8 broker close"}.get(horizon, payload["timezone"]))
+    return payload
 
 
 def run_summary(run: dict | None) -> dict | None:
@@ -506,10 +709,11 @@ def run_summary(run: dict | None) -> dict | None:
         return None
     return {k: run[k] for k in ("id", "analysis_date", "origin", "state", "attempts", "snapshot_id", "close_at", "engine_version", "symbols_total",
                                  "symbols_published", "symbols_failed", "symbols_insufficient", "qualified", "started_at", "published_at",
-                                 "monitored_at", "evaluated_at", "next_retry_at", "error")} | {"log": json.loads(run.get("log_json") or "[]")}
+                                 "monitored_at", "evaluated_at", "next_retry_at", "error") if k in run} | {
+        "horizon": run.get("horizon") or "DAILY", "log": json.loads(run.get("log_json") or "[]")}
 
 
-def performance_payload(store: OutlookRepository, days: int, symbol: str | None = None) -> dict:
+def performance_payload(store: OutlookRepository, days: int, symbol: str | None = None, horizon: str = "DAILY") -> dict:
     since = (utcnow() - timedelta(days=days)).date().isoformat()
-    ev = store.evaluations(symbol=symbol, since=since)
-    return {"window_days": days, "since": since, "symbol": symbol, "all": performance(ev), "qualified": performance(ev, qualified_only=True)}
+    ev = store.evaluations(symbol=symbol, since=since, horizon=horizon)
+    return {"window_days": days, "since": since, "symbol": symbol, "horizon": horizon, "all": performance(ev), "qualified": performance(ev, qualified_only=True)}

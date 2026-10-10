@@ -20,6 +20,7 @@ from ..market.strength_intel_store import active_scope
 
 router = APIRouter(prefix="/api/ai-outlook", tags=["AI Market Outlook"])
 log = logging.getLogger("cacsms.ai_outlook")
+HORIZONS = {"DAILY", "WEEKLY", "MONTHLY", "H8"}
 ROW_FIELDS = ("symbol", "status", "qualified", "opportunity_rank", "opportunity_score", "expected_direction", "regime", "confidence", "reason",
               "system_action", "price", "digits", "late")
 MTF_CHART = ("Y", "YTD", "HY", "Q", "MN", "W", "D1", "H8", "H1", "M30")
@@ -58,14 +59,23 @@ def _store(conn) -> OutlookRepository:
     return OutlookRepository(conn, active_scope(conn))
 
 
-def _run_for(store: OutlookRepository, analysis_date: str | None) -> dict | None:
+def _horizon(value: str | None) -> str:
+    name = (value or "DAILY").upper()
+    if name in ("GOLD", "XAUUSD"):
+        name = "H8"
+    if name not in HORIZONS:
+        raise HTTPException(400, "Unknown outlook horizon")
+    return name
+
+
+def _run_for(store: OutlookRepository, analysis_date: str | None, horizon: str = "DAILY") -> dict | None:
     if analysis_date:
         for origin in ("LIVE", "REPLAY"):
-            r = store.run(analysis_date, origin)
+            r = store.run(analysis_date, origin, horizon)
             if r and r["state"] in DONE_STATES:
                 return r
         return None
-    return store.latest_published()
+    return store.latest_published(horizon)
 
 
 def _summaries(store: OutlookRepository, run_id: str, timing: dict | None = None) -> tuple[list[dict], dict[str, dict]]:
@@ -101,11 +111,11 @@ def _symbol(symbol: str) -> str:
     return sym
 
 
-def _outlook(symbol: str, analysis_date: str | None) -> tuple[dict, dict]:
+def _outlook(symbol: str, analysis_date: str | None, horizon: str = "DAILY") -> tuple[dict, dict]:
     sym = _symbol(symbol)
     with db() as conn:
         store = _store(conn)
-        run = _run_for(store, analysis_date)
+        run = _run_for(store, analysis_date, horizon)
         if not run:
             raise HTTPException(404, "No published outlook yet")
         o = store.outlook(run["id"], sym)
@@ -120,27 +130,32 @@ def status():
         store = _store(conn)
         latest = store.latest_published()
         live = store.run(get_outlook_service().target_day(utcnow(), outlook_settings()).isoformat(), "LIVE")
-    return {"schedule": schedule_payload(), "latest": run_summary(latest), "current": run_summary(live), "engine_version": ENGINE_VERSION,
-            "settings": settings_payload(), "last_tick": get_outlook_service().last_tick, "analysis_only": True}
+        horizons = {name: run_summary(store.latest_published(name)) for name in HORIZONS}
+    return {"schedule": schedule_payload(), "latest": run_summary(latest), "current": run_summary(live), "horizons": horizons,
+            "engine_version": ENGINE_VERSION, "settings": settings_payload(), "last_tick": get_outlook_service().last_tick, "analysis_only": True}
 
 
 @router.get("/latest")
-def latest(response: Response, analysis_date: str | None = Query(None)):
-    """Latest published daily outlook: every instrument's status plus the ranked qualified opportunities."""
+def latest(response: Response, analysis_date: str | None = Query(None), horizon: str | None = Query(None)):
+    """Latest published outlook for one horizon: every instrument's status plus the ranked qualified opportunities."""
     timing: dict[str, float] = {}
-    data = _latest(analysis_date, timing)
+    data = _latest(analysis_date, timing, _horizon(horizon))
     response.headers["Server-Timing"] = ", ".join(f"{k};dur={v:.0f}" for k, v in timing.items())
     return data
 
 
-def _latest(analysis_date: str | None, timing: dict[str, float]) -> dict:
+def _latest(analysis_date: str | None, timing: dict[str, float], horizon: str = "DAILY") -> dict:
     t = time.perf_counter()
     with db() as conn:
         timing["connect"] = (time.perf_counter() - t) * 1000
         t = time.perf_counter()
         store = _store(conn)
-        run = _run_for(store, analysis_date)
-        live = store.run(get_outlook_service().target_day(utcnow(), outlook_settings()).isoformat(), "LIVE")
+        run = _run_for(store, analysis_date, horizon)
+        if horizon == "DAILY":
+            live = store.run(get_outlook_service().target_day(utcnow(), outlook_settings()).isoformat(), "LIVE", "DAILY")
+        else:
+            current = store.runs(origin="LIVE", limit=1, horizon=horizon)
+            live = current[0] if current else None
         timing["runs"] = (time.perf_counter() - t) * 1000
         rows = []
         if run:
@@ -151,28 +166,30 @@ def _latest(analysis_date: str | None, timing: dict[str, float]) -> dict:
                 r["system_action"] = rev.get("system_action") or o.get("system_action")
                 r["monitor_status"] = rev.get("status")
                 rows.append(r)
+        schedule = schedule_payload(horizon=horizon, conn=conn)
     rows.sort(key=lambda r: (r["opportunity_rank"] is None, r["opportunity_rank"] or 0, r["symbol"]))
-    stale = bool(run) and run["analysis_date"] < schedule_payload()["analysis_date"]
-    return {"schedule": schedule_payload(), "run": run_summary(run), "current": run_summary(live), "stale": stale, "rows": rows,
+    stale = bool(run) and horizon == "DAILY" and run["analysis_date"] < schedule["analysis_date"]
+    return {"schedule": schedule, "horizon": horizon, "run": run_summary(run), "current": run_summary(live), "stale": stale, "rows": rows,
             "opportunities": [r for r in rows if r["qualified"]], "engine_version": ENGINE_VERSION, "analysis_only": True}
 
 
 @router.get("/opportunities")
-def opportunities(analysis_date: str | None = Query(None)):
-    data = _latest(analysis_date, {})
+def opportunities(analysis_date: str | None = Query(None), horizon: str | None = Query(None)):
+    data = _latest(analysis_date, {}, _horizon(horizon))
     return {"run": data["run"], "stale": data["stale"], "opportunities": data["opportunities"],
             "message": None if data["opportunities"] else "No qualified opportunities today"}
 
 
 @router.get("/symbol/{symbol}")
-def symbol_outlook(symbol: str, analysis_date: str | None = Query(None)):
-    run, o = _outlook(symbol, analysis_date)
-    return {"run": run_summary(run), "schedule": schedule_payload(), "outlook": o}
+def symbol_outlook(symbol: str, analysis_date: str | None = Query(None), horizon: str | None = Query(None)):
+    name = _horizon(horizon)
+    run, o = _outlook(symbol, analysis_date, name)
+    return {"run": run_summary(run), "schedule": schedule_payload(horizon=name), "outlook": o}
 
 
 @router.get("/symbol/{symbol}/scenarios")
-def scenarios(symbol: str, analysis_date: str | None = Query(None)):
-    run, o = _outlook(symbol, analysis_date)
+def scenarios(symbol: str, analysis_date: str | None = Query(None), horizon: str | None = Query(None)):
+    run, o = _outlook(symbol, analysis_date, _horizon(horizon))
     keys = ("symbol", "analysis_date", "status", "price", "digits", "anchor", "regime", "htf_bias", "expected_direction", "primary_scenario",
             "alternative_scenario", "range_scenario", "scenario_conditions", "hypotheses", "confidence", "uncertainty", "evidence", "key_drivers",
             "erz", "targets", "invalidation", "expected_path", "chart_annotations", "monitoring", "reason", "data_quality")
@@ -180,16 +197,16 @@ def scenarios(symbol: str, analysis_date: str | None = Query(None)):
 
 
 @router.get("/symbol/{symbol}/key-levels")
-def key_levels(symbol: str, analysis_date: str | None = Query(None)):
-    run, o = _outlook(symbol, analysis_date)
+def key_levels(symbol: str, analysis_date: str | None = Query(None), horizon: str | None = Query(None)):
+    run, o = _outlook(symbol, analysis_date, _horizon(horizon))
     keys = ("symbol", "analysis_date", "status", "price", "digits", "anchor", "expected_direction", "key_levels", "key_zones", "supports",
             "resistances", "liquidity", "erz", "targets", "invalidation", "chart_annotations", "fractals", "channels", "reason", "data_quality", "confidence")
     return {"run": run_summary(run), "outlook": {k: o.get(k) for k in keys}}
 
 
 @router.get("/symbol/{symbol}/annotations")
-def annotations(symbol: str, analysis_date: str | None = Query(None), tf: str | None = Query(None)):
-    run, o = _outlook(symbol, analysis_date)
+def annotations(symbol: str, analysis_date: str | None = Query(None), tf: str | None = Query(None), horizon: str | None = Query(None)):
+    run, o = _outlook(symbol, analysis_date, _horizon(horizon))
     items = o.get("chart_annotations") or []
     if tf:
         items = [a for a in items if a.get("tf") in (tf.upper(), None) or tf.upper() in (a.get("tfs") or [])]
@@ -197,29 +214,29 @@ def annotations(symbol: str, analysis_date: str | None = Query(None), tf: str | 
 
 
 @router.get("/symbol/{symbol}/mtf")
-def mtf(symbol: str, analysis_date: str | None = Query(None), limit: int = Query(60, ge=10, le=200)):
+def mtf(symbol: str, analysis_date: str | None = Query(None), limit: int = Query(60, ge=10, le=200), horizon: str | None = Query(None)):
     """Multi-timeframe matrix: channel state per timeframe from the outlook plus closed candles per timeframe."""
-    run, o = _outlook(symbol, analysis_date)
+    run, o = _outlook(symbol, analysis_date, _horizon(horizon))
     candles = {}
     for tf in MTF_CHART:
         try:
             candles[tf] = chart_candles(o["symbol"], tf, limit)["candles"]
         except ValueError:
             candles[tf] = []
-    return {"run": run_summary(run), "symbol": o["symbol"], "channels": o.get("channels") or [], "candles": candles,
+    return {"horizon": _horizon(horizon), "run": run_summary(run), "symbol": o["symbol"], "channels": o.get("channels") or [], "candles": candles,
             "annotations": o.get("chart_annotations") or []}
 
 
 @router.get("/symbol/{symbol}/session-plan")
-def session_plan(symbol: str, analysis_date: str | None = Query(None)):
-    run, o = _outlook(symbol, analysis_date)
+def session_plan(symbol: str, analysis_date: str | None = Query(None), horizon: str | None = Query(None)):
+    run, o = _outlook(symbol, analysis_date, _horizon(horizon))
     return {"run": run_summary(run), "symbol": o["symbol"], "session_plan": o.get("session_plan") or [], "active_session": cal.active_session(utcnow()),
             "confirmation_sequence": o.get("confirmation_sequence") or [], "monitoring": o.get("monitoring")}
 
 
 @router.get("/symbol/{symbol}/monitoring")
-def monitoring(symbol: str, analysis_date: str | None = Query(None)):
-    run, o = _outlook(symbol, analysis_date)
+def monitoring(symbol: str, analysis_date: str | None = Query(None), horizon: str | None = Query(None)):
+    run, o = _outlook(symbol, analysis_date, _horizon(horizon))
     with db() as conn:
         revisions = _store(conn).revisions(o["outlook_id"])
     return {"run": run_summary(run), "symbol": o["symbol"], "original": {k: o.get(k) for k in ("expected_direction", "confidence", "erz", "targets", "invalidation",
@@ -228,14 +245,15 @@ def monitoring(symbol: str, analysis_date: str | None = Query(None)):
 
 
 @router.get("/history")
-def history(symbol: str = Query(...), days: int = Query(30, ge=5, le=365)):
-    """Immutable published outlooks for one instrument with their next-day evaluation (audit trail)."""
+def history(symbol: str = Query(...), days: int = Query(30, ge=5, le=365), horizon: str | None = Query(None)):
+    """Immutable published outlooks for one instrument and horizon, with outcome tracking."""
     sym = _symbol(symbol)
+    name = _horizon(horizon)
     since = (utcnow() - timedelta(days=days)).date().isoformat()
     with db() as conn:
         store = _store(conn)
-        rows = store.history(sym, since)
-        perf = performance_payload(store, days, sym)
+        rows = store.history(sym, since, name)
+        perf = performance_payload(store, days, sym, name)
     out = []
     for r in rows:
         p = r.pop("payload")
@@ -247,19 +265,19 @@ def history(symbol: str = Query(...), days: int = Query(30, ge=5, le=365)):
                   "snapshot_id": p.get("snapshot_id"), "published_at": p.get("published_at"), "reason": p.get("reason"),
                   "opportunity_score": p.get("opportunity_score"), "late": p.get("late")})
         out.append(r)
-    return {"symbol": sym, "days": days, "rows": out, "performance": perf}
+    return {"symbol": sym, "days": days, "horizon": name, "rows": out, "performance": perf}
 
 
 @router.get("/performance")
-def performance(days: int = Query(30, ge=5, le=365), symbol: str | None = Query(None)):
+def performance(days: int = Query(30, ge=5, le=365), symbol: str | None = Query(None), horizon: str | None = Query(None)):
     with db() as conn:
-        return performance_payload(_store(conn), days, _symbol(symbol) if symbol else None)
+        return performance_payload(_store(conn), days, _symbol(symbol) if symbol else None, _horizon(horizon))
 
 
 @router.get("/runs")
-def runs(limit: int = Query(40, ge=1, le=200)):
+def runs(limit: int = Query(40, ge=1, le=200), horizon: str | None = Query(None)):
     with db() as conn:
-        return {"runs": [run_summary(r) for r in _store(conn).runs(limit=limit)]}
+        return {"horizon": _horizon(horizon), "runs": [run_summary(r) for r in _store(conn).runs(limit=limit, horizon=_horizon(horizon))]}
 
 
 def _cron_authorized(authorization: str | None) -> None:

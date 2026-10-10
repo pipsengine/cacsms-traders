@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from test_notifications import NOW, SECRET, TRADE_WORDS, FakeSMTP, _body, _db, _recipient, _store, env  # noqa: F401
 
@@ -90,6 +90,18 @@ def test_bell_inbox_shows_analysis_summary(env):
     item = inbox["items"][0]
     assert inbox["unread"] == 1 and item["symbol"] == "ALL" and item["qualified"] == 2 and item["late"] is True
     assert item["label"] == "AI Analysis Complete"
+
+
+def test_historical_horizon_catch_up_does_not_alert(env, monkeypatch):
+    from apps.api.app.notifications import outlook_alert
+
+    latest = datetime(2026, 10, 9, 16, tzinfo=timezone.utc)
+    monkeypatch.setattr(outlook_alert, "_latest_broker_close", lambda conn, horizon: latest)
+    old = {**RUN, "horizon": "H8", "close_at": "2026-10-02T00:00:00+00:00", "analysis_date": "H8|2026-10-02T00:00:00+00:00"}
+    assert _publish(old) == {"skipped": "historical_catch_up"}
+    current = {**RUN, "id": "run-h8", "horizon": "H8", "close_at": latest.isoformat(), "analysis_date": f"H8|{latest.isoformat()}"}
+    _recipient()
+    assert _publish(current)["queued"] == 1
 
 
 def test_replay_runs_never_alert(env):

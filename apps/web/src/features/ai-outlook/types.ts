@@ -22,6 +22,7 @@ export type RunSummary = {
   evaluated_at: string | null;
   next_retry_at: string | null;
   error: string | null;
+  horizon?: string;
   log: RunLog[];
 };
 
@@ -58,6 +59,7 @@ export type OutlookRow = {
 };
 
 export type LatestPayload = {
+  horizon?: string;
   schedule: Schedule;
   run: RunSummary | null;
   current: RunSummary | null;
@@ -272,6 +274,24 @@ export type Outlook = {
   chart_annotations: Annotation[];
   handoff: string;
   monitoring?: Monitoring | null;
+  horizon?: string;
+  candle_close?: string;
+  directional_context?: 'BULLISH' | 'BEARISH' | 'NEUTRAL' | 'MIXED';
+  market_regime?: { key: string; label: string; source_regime?: string };
+  evidence_score?: { value: number; scale: string; label: string; meaning: string };
+  lifecycle?: string;
+  sch?: { pane: string; timeframe: string; only: string; series: { t: string; fast: number; signal: number }[] };
+  weekly?: {
+    interpretation?: string;
+    intact_range?: boolean;
+    structural_breakout?: boolean;
+    fractal_state?: string | null;
+    direction?: string;
+    state?: string;
+    available?: boolean;
+  };
+  strategic?: { overrides_shorter: boolean; role: string };
+  gold_session?: { chain: string[]; execution_tf: string; validation_tf: string; force_trade: boolean };
 };
 
 export type SymbolPayload = { run: RunSummary; schedule: Schedule; outlook: Outlook };
@@ -343,9 +363,10 @@ export type Performance = {
 export type HistoryPayload = {
   symbol: string;
   days: number;
+  horizon?: string;
   rows: HistoryRow[];
   performance: { window_days: number; since: string; all: Performance; qualified: Performance };
 };
 
 export type VCandle = { t: string; o: number; h: number; l: number; c: number; v: number };
-export type MtfPayload = { symbol: string; channels: MtfRow[]; candles: Record<string, VCandle[]>; annotations: Annotation[] };
+export type MtfPayload = { symbol: string; horizon?: string; channels: MtfRow[]; candles: Record<string, VCandle[]>; annotations: Annotation[] };

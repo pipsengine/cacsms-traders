@@ -501,3 +501,69 @@ def test_latest_falls_back_to_full_payloads_when_summary_sql_fails(service_env, 
         assert {k: v.get("status") for k, v in slow_revs.items()} == {k: v.get("status") for k, v in fast_revs.items()}
     finally:
         ctx.__exit__(None, None, None)
+
+
+def test_horizon_run_is_idempotent_and_a_failed_close_recovers_before_the_next_one(service_env):
+    from apps.api.app.market.outlook.horizons import run_key
+
+    svc = service_env
+    close = CUTOFF
+    key = run_key("H8", close)
+    now = close + timedelta(hours=2)
+    ctx, conn, store = _store(svc)
+    try:
+        first = store.create_run(key, "LIVE", close.isoformat(), "test", "H8")
+        second = store.create_run(key, "LIVE", close.isoformat(), "test", "H8")
+        assert first["id"] == second["id"] and first["horizon"] == "H8"
+        store.update_run(first["id"], state="FAILED", attempts=1, error="restart")
+        conn.execute("UPDATE ai_outlook_run SET updated_at=? WHERE id=?", ((now - timedelta(minutes=svc.FAILED_RECOVERY_MINUTES + 1)).isoformat(), first["id"]))
+        conn.commit()
+        run = store.run(key, "LIVE", "H8")
+        assert svc.OutlookService._execute_due(run, close.date(), now, outlook_settings(), deadline=close + timedelta(hours=8))
+        assert len(store.runs(origin="LIVE")) == 0
+    finally:
+        ctx.__exit__(None, None, None)
+
+
+def test_h8_execute_persists_an_immutable_gold_snapshot(service_env):
+    from apps.api.app.market.outlook.horizons import run_key
+
+    svc = service_env
+    bars = market()
+    manifest = {"snapshot_id": "snap-h8-test", "frozen_at": svc.now_iso(), "symbols": {}}
+    prepared = (manifest, {"XAUUSD": bars, "EURUSD": bars, "GBPUSD": bars})
+    close = CUTOFF
+    service = svc.OutlookService()
+    ctx, conn, store = _store(svc)
+    try:
+        run = store.create_run(run_key("H8", close), "LIVE", close.isoformat(), "test", "H8")
+        done = service.execute(conn, store, store.run_by_id(run["id"]), close + timedelta(hours=2), outlook_settings(), prepared=prepared)
+        assert done["state"] in ("PUBLISHED", "MONITORING")
+        assert done["horizon"] == "H8"
+        rows = store.outlooks(done["id"])
+        assert {row["symbol"] for row in rows} == {"XAUUSD"}
+        published = rows[0]
+        assert published["horizon"] == "H8"
+        assert published["gold_session"]["execution_tf"] == "M15"
+        assert published["gold_session"]["force_trade"] is False
+        assert "Stage 8" in published["handoff"]
+        with pytest.raises(Exception, match="immutable"):
+            conn.execute("UPDATE ai_outlook_symbol SET status='EDITED' WHERE run_id=?", (done["id"],))
+    finally:
+        ctx.__exit__(None, None, None)
+
+
+def test_latest_horizon_endpoint_rejects_unknown_and_serves_weekly(service_env, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    for key in ("STRENGTH_ENGINE_ENABLED", "AI_OUTLOOK_SCHEDULER_ENABLED", "NOTIFICATIONS_ENABLED", "MARKET_SCANNER_ENABLED"):
+        monkeypatch.setenv(key, "0")
+    from apps.api.app.main import app
+
+    with TestClient(app) as client:
+        missing = client.get("/api/ai-outlook/latest?horizon=WEEKLY")
+        assert missing.status_code == 200
+        body = missing.json()
+        assert body["horizon"] == "WEEKLY" and body["run"] is None
+        assert client.get("/api/ai-outlook/latest?horizon=NOPE").status_code == 400
+        assert set(client.get("/api/ai-outlook/status").json()["horizons"]) == {"DAILY", "WEEKLY", "MONTHLY", "H8"}

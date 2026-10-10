@@ -73,6 +73,9 @@ def app_link(path: str) -> str | None:
 
 def subject(e: dict) -> str:
     sym, tf, t, m = e["symbol"], e.get("timeframe") or "", e["event_type"], e.get("metadata") or {}
+    if t == "AI_OUTLOOK_EVENT":
+        life = (m.get("lifecycle") or "update").replace("_", " ").title()
+        return f"[{BRAND}] {sym} — Outlook {life}"
     if t == "AI_OUTLOOK_PUBLISHED":
         n = (m.get("counts") or {}).get("qualified", 0)
         return (f"[{BRAND}] {'[Late] ' if m.get('late') else ''}AI Analysis Complete — Outlook for {_day(m.get('outlook_for'))} "
@@ -97,6 +100,8 @@ def _alert_label(e: dict) -> str:
         return m.get("label") or "Trend Continuation"
     if t == "TIT_DETECTED":
         return f"Trend-in-Trend {e.get('tit_level') or ''}".strip()
+    if e["event_type"] == "AI_OUTLOOK_EVENT":
+        return f"Outlook {(m.get('lifecycle') or 'update').replace('_', ' ').title()}"
     return f"{_title(e.get('direction'))} Channel Break"
 
 
@@ -266,7 +271,7 @@ def outlook_sections(e: dict) -> tuple[str, list[tuple[str, list[tuple[str, str]
     timing = (f"Late — completed after market open (Asian session opened {asian})" if m.get("late")
               else f"On time — ready before market open (Asian session opens {asian})")
     summary = [
-        ("Analysis", f"D1 close of {_day(m.get('analysis_date'))}"),
+        ("Analysis", f"{ {'DAILY': 'D1', 'WEEKLY': 'W1', 'MONTHLY': 'MN', 'H8': 'H8'}.get(m.get('horizon') or '', 'D1') } close of {_day(m.get('analysis_date'))}"),
         ("Outlook for", _day(m.get("outlook_for"))),
         ("Completed", _time(m.get("published_at"))),
         ("Timing", timing),

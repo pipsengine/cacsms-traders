@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, fields
 
-ENGINE_VERSION = "ai-outlook-1.0.0"
+ENGINE_VERSION = "ai-outlook-1.1.0"
 OUTLOOK_TIMEFRAMES = ("Y", "YTD", "HY", "Q", "MN", "W", "D1", "H8", "H1", "M30")
 REQUIRED_TIMEFRAMES = ("MN", "W1", "D1", "H8", "H1")
 FRESHNESS_TIMEFRAMES = ("D1", "H8", "H1")

@@ -10,12 +10,12 @@ const q = (params: Record<string, string | null | undefined>) => {
 };
 
 export const outlookApi = {
-  latest: (date?: string | null) => api<LatestPayload>(`${root}/latest${q({ analysis_date: date })}`),
-  symbol: (symbol: string, date?: string | null) =>
-    api<SymbolPayload>(`${root}/symbol/${encodeURIComponent(symbol)}${q({ analysis_date: date })}`),
-  mtf: (symbol: string, date?: string | null, limit = 60) =>
-    api<MtfPayload>(`${root}/symbol/${encodeURIComponent(symbol)}/mtf${q({ analysis_date: date, limit: String(limit) })}`),
-  history: (symbol: string, days: number) => api<HistoryPayload>(`${root}/history${q({ symbol, days: String(days) })}`),
+  latest: (date?: string | null, horizon = 'DAILY') => api<LatestPayload>(`${root}/latest${q({ analysis_date: date, horizon })}`),
+  symbol: (symbol: string, date?: string | null, horizon = 'DAILY') =>
+    api<SymbolPayload>(`${root}/symbol/${encodeURIComponent(symbol)}${q({ analysis_date: date, horizon })}`),
+  mtf: (symbol: string, date?: string | null, limit = 60, horizon = 'DAILY') =>
+    api<MtfPayload>(`${root}/symbol/${encodeURIComponent(symbol)}/mtf${q({ analysis_date: date, limit: String(limit), horizon })}`),
+  history: (symbol: string, days: number, horizon = 'DAILY') => api<HistoryPayload>(`${root}/history${q({ symbol, days: String(days), horizon })}`),
   runNow: () => post<{ run: RunSummary | null; skipped: string | null }>(`${root}/jobs/run`, {}),
   catchUp: () => post<{ ran: boolean; reason: string | null }>(`${root}/jobs/catch-up`, {}),
 };

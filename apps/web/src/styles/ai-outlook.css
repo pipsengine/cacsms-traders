@@ -20,8 +20,8 @@
 .mao-status-card div { display: flex; flex-direction: column; }
 .mao-status-card b { font-size: 12.5px; color: #1d2b45; }
 .mao-status-card small { font-size: 11px; color: #6a7890; }
-.mao-status-card.is-next { flex-direction: column; align-items: flex-start; justify-content: center; gap: 1px; min-width: 112px; }
-.mao-status-card.is-next b { font-size: 15px; font-variant-numeric: tabular-nums; color: #14223b; }
+.mao-status-card.is-next { flex-direction: column; align-items: flex-start; justify-content: center; gap: 1px; min-width: 168px; }
+.mao-status-card.is-next b { font-size: 15px; font-variant-numeric: tabular-nums; color: #14223b; white-space: nowrap; }
 .mao-run-btn { border: 1px solid #c9d4e6; border-radius: 9px; background: #eef3fb; color: #1d3a66; font-size: 12px; font-weight: 600; padding: 0 12px; cursor: pointer; white-space: nowrap; }
 .mao-run-btn:disabled { opacity: 0.65; cursor: wait; }
 .mao-icon-btn { width: 40px; border: 1px solid #d9e2ef; border-radius: 9px; background: #fff; display: grid; place-items: center; color: #42506a; cursor: pointer; }
@@ -44,6 +44,18 @@
 .mao-tabs { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .mao-tabs button { border: 1px solid transparent; background: #f2f5f9; border-radius: 8px; padding: 8px 16px; min-width: 128px; color: #42506a; font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
 .mao-tabs button.is-on { background: var(--mst-blue); color: #fff; box-shadow: 0 4px 10px rgba(23, 101, 239, 0.22); }
+.mao-tabs.is-sub { gap: 6px; }
+.mao-tabs.is-sub button { min-width: 0; background: transparent; border-color: transparent; padding: 6px 12px; font-weight: 600; color: #607089; }
+.mao-tabs.is-sub button.is-on { background: #e8f0fe; color: #174ea6; box-shadow: none; }
+.mao-horizon-note { margin: 0; padding: 8px 12px; background: #f7f9fc; border: 1px solid var(--mst-line); border-radius: 8px; color: #3b4a63; font-size: 12.5px; }
+.mao-sch { margin: 8px 0 0; padding: 8px 10px 4px; background: #fff; border: 1px solid var(--mst-line); border-radius: 10px; }
+.mao-sch figcaption { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+.mao-sch figcaption b { font-size: 12px; }
+.mao-sch figcaption small, .mao-sch small { color: #6a7890; font-size: 11px; }
+.mao-sch svg { width: 100%; height: 96px; display: block; }
+.mao-sch-grid { stroke: #e1e7f0; stroke-dasharray: 3 3; }
+.mao-sch-fast { fill: none; stroke: #1765ef; stroke-width: 1.6; }
+.mao-sch-signal { fill: none; stroke: #d97706; stroke-width: 1.3; }
 .mao-stale { margin-left: auto; font-size: 11.5px; color: #b45309; background: #fff7e6; border: 1px solid #fcd9a3; border-radius: 6px; padding: 4px 9px; }
 .mao-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .mao-toolbar .mao-sessions { margin-left: auto; }

@@ -5,11 +5,12 @@ import { fmtPrice } from '../../market-scanner/format';
 import type { Annotation, OutlookRow, RunSummary, Schedule, SessionPlan, VCandle } from '../types';
 
 export const TFS = ['Y', 'YTD', 'HY', 'Q', 'MN', 'W', 'D1', 'H8', 'H1', 'M30'] as const;
-export type OutlookTf = (typeof TFS)[number];
+export const GOLD_TFS = ['MN', 'W', 'D1', 'H8', 'H1', 'M30', 'M15', 'M5'] as const;
+export type OutlookTf = (typeof TFS)[number] | 'M15' | 'M5';
 export const MINI_TFS: OutlookTf[] = ['Y', 'YTD', 'HY', 'Q', 'MN', 'W', 'D1', 'H8', 'H1'];
-export const CANDLE_LIMIT: Record<OutlookTf, number> = { Y: 40, YTD: 220, HY: 40, Q: 48, MN: 120, W: 120, D1: 110, H8: 120, H1: 140, M30: 140 };
+export const CANDLE_LIMIT: Record<OutlookTf, number> = { Y: 40, YTD: 220, HY: 40, Q: 48, MN: 120, W: 120, D1: 110, H8: 120, H1: 140, M30: 140, M15: 160, M5: 180 };
 /** History loaded for zooming out / panning back; the chart opens on CANDLE_LIMIT bars. */
-export const HISTORY_LIMIT: Record<OutlookTf, number> = { Y: 40, YTD: 220, HY: 40, Q: 48, MN: 240, W: 260, D1: 400, H8: 360, H1: 420, M30: 420 };
+export const HISTORY_LIMIT: Record<OutlookTf, number> = { Y: 40, YTD: 220, HY: 40, Q: 48, MN: 240, W: 260, D1: 400, H8: 360, H1: 420, M30: 420, M15: 480, M5: 480 };
 
 export const dirWord = (d?: string | null) => (d === 'BULLISH' ? 'Bullish' : d === 'BEARISH' ? 'Bearish' : d === 'RANGE' ? 'Range' : '—');
 export const dirTone = (d?: string | null) => (d === 'BULLISH' || d === 'Bullish' ? 'is-bull' : d === 'BEARISH' || d === 'Bearish' ? 'is-bear' : 'is-range');
@@ -18,7 +19,8 @@ export const px = (v: number | null | undefined, dp: number) => fmtPrice(v ?? nu
 
 export function dayLabel(iso: string | null | undefined, opts: Intl.DateTimeFormatOptions = { day: '2-digit', month: 'short', year: 'numeric' }) {
   if (!iso) return '—';
-  const d = iso.length === 10 ? new Date(`${iso}T12:00:00Z`) : new Date(iso);
+  const raw = iso.includes('|') ? iso.split('|')[1] : iso;
+  const d = raw.length === 10 ? new Date(`${raw}T12:00:00Z`) : new Date(raw);
   return new Intl.DateTimeFormat('en-GB', { ...opts, timeZone: 'UTC' }).format(d);
 }
 
@@ -31,12 +33,13 @@ export function useNow(intervalMs = 1000) {
   return now;
 }
 
-function countdown(target: string | undefined, now: number) {
+function countdown(target: string | undefined, now: number, withDays = false) {
   if (!target) return '—';
-  const s = Math.max(0, Math.floor((Date.parse(target) - now) / 1000));
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  return `${h}h ${String(m).padStart(2, '0')}m ${String(s % 60).padStart(2, '0')}s`;
+  const total = Math.max(0, Math.floor((Date.parse(target) - now) / 1000));
+  const h = withDays ? Math.floor((total % 86400) / 3600) : Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const clock = `${h}h ${String(m).padStart(2, '0')}m ${String(total % 60).padStart(2, '0')}s`;
+  return withDays ? `${Math.floor(total / 86400)}d ${clock}` : clock;
 }
 
 const RUN_STATE: Record<string, { label: string; tone: string }> = {
@@ -54,7 +57,7 @@ export const runState = (s?: string | null) => RUN_STATE[s ?? ''] ?? { label: s 
 
 const RERUN_STATES = new Set(['INSUFFICIENT_DATA', 'RETRY', 'FAILED', 'SCHEDULED']);
 
-export function StatusCluster({ run, current, schedule, onReload, onRunNow, runBusy, busy }: { run: RunSummary | null; current: RunSummary | null; schedule: Schedule | null; onReload: () => void; onRunNow?: () => void; runBusy?: boolean; busy: boolean }) {
+export function StatusCluster({ run, current, schedule, onReload, onRunNow, runBusy, busy, title = 'Daily Analysis (Market Close)', withDays = false }: { run: RunSummary | null; current: RunSummary | null; schedule: Schedule | null; onReload: () => void; onRunNow?: () => void; runBusy?: boolean; busy: boolean; title?: string; withDays?: boolean }) {
   const now = useNow();
   const shown = current ?? run;
   const st = runState(shown?.state);
@@ -65,7 +68,7 @@ export function StatusCluster({ run, current, schedule, onReload, onRunNow, runB
       <div className="mao-status-card">
         <CalendarClock size={18} />
         <div>
-          <b>Daily Analysis (Market Close)</b>
+          <b>{title}</b>
           <small>
             {shown ? `${dayLabel(shown.analysis_date, { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' })} • ${stamp ? new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZoneName: 'short' }).format(new Date(stamp)) : '—'}` : 'No cycle yet'}
           </small>
@@ -76,7 +79,7 @@ export function StatusCluster({ run, current, schedule, onReload, onRunNow, runB
       </div>
       <div className="mao-status-card is-next">
         <small>Next analysis in</small>
-        <b>{countdown(schedule?.next_run_at, now)}</b>
+        <b>{countdown(schedule?.next_run_at, now, withDays)}</b>
       </div>
       {canRun ? (
         <button className="mao-run-btn" type="button" disabled={runBusy} onClick={onRunNow} title="Re-run today’s daily analysis with the latest market data">
@@ -117,10 +120,16 @@ export function SessionCards({ plans, schedule, captions }: { plans: SessionPlan
   );
 }
 
-export function SymbolPicker({ symbol, rows, onSelect, allowAll = false }: { symbol: string | null; rows: OutlookRow[]; onSelect: (s: string) => void; allowAll?: boolean }) {
+export function qualifiedByConfidence(rows: OutlookRow[]) {
+  return rows
+    .filter((r) => r.qualified)
+    .sort((a, b) => (b.confidence ?? -1) - (a.confidence ?? -1) || a.symbol.localeCompare(b.symbol));
+}
+
+export function SymbolPicker({ symbol, rows, onSelect, allowAll = false, label = 'Symbols with Opportunities' }: { symbol: string | null; rows: OutlookRow[]; onSelect: (s: string) => void; allowAll?: boolean; label?: string }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  const opps = rows.filter((r) => r.qualified);
+  const opps = qualifiedByConfidence(rows);
   const others = allowAll ? rows.filter((r) => !r.qualified && r.status === 'PUBLISHED') : [];
   useEffect(() => {
     if (!open) return;
@@ -146,7 +155,7 @@ export function SymbolPicker({ symbol, rows, onSelect, allowAll = false }: { sym
       {open ? (
         <div className="mao-picker-pop" role="listbox">
           <header>
-            Symbols with Opportunities Today <span>{opps.length}</span>
+            {label} <span>{opps.length}</span>
           </header>
           {opps.length ? opps.map(item) : <p className="mao-picker-empty">No qualified opportunities today</p>}
           {others.length ? (

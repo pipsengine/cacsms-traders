@@ -15,7 +15,8 @@ RUN_STATES = (
 DONE_STATES = ("PUBLISHED", "MONITORING", "EVALUATING", "ARCHIVED")
 RUN_COLUMNS = ("id", "tenant_id", "trading_account_id", "analysis_date", "origin", "state", "attempts", "snapshot_id", "close_at",
                "engine_version", "symbols_total", "symbols_published", "symbols_failed", "symbols_insufficient", "qualified",
-               "started_at", "published_at", "monitored_at", "evaluated_at", "next_retry_at", "error", "log_json", "created_at", "updated_at")
+               "started_at", "published_at", "monitored_at", "evaluated_at", "next_retry_at", "error", "log_json", "created_at", "updated_at",
+               "horizon")
 
 
 def now_iso() -> str:
@@ -51,10 +52,10 @@ class OutlookRepository:
 
     # ----- runs -----
 
-    def run(self, analysis_date: str, origin: str = "LIVE") -> dict | None:
+    def run(self, analysis_date: str, origin: str = "LIVE", horizon: str = "DAILY") -> dict | None:
         r = self.conn.execute(
-            f"SELECT {','.join(RUN_COLUMNS)} FROM ai_outlook_run WHERE tenant_id=? AND trading_account_id=? AND analysis_date=? AND origin=?",
-            (self.tenant, self.account, analysis_date, origin),
+            f"SELECT {','.join(RUN_COLUMNS)} FROM ai_outlook_run WHERE tenant_id=? AND trading_account_id=? AND analysis_date=? AND origin=? AND horizon=?",
+            (self.tenant, self.account, analysis_date, origin, horizon),
         ).fetchone()
         return _row(r) if r else None
 
@@ -62,16 +63,16 @@ class OutlookRepository:
         r = self.conn.execute(f"SELECT {','.join(RUN_COLUMNS)} FROM ai_outlook_run WHERE id=?", (run_id,)).fetchone()
         return _row(r) if r else None
 
-    def create_run(self, analysis_date: str, origin: str, close_at: str, engine_version: str) -> dict:
+    def create_run(self, analysis_date: str, origin: str, close_at: str, engine_version: str, horizon: str = "DAILY") -> dict:
         stamp = now_iso()
         rid = str(uuid.uuid4())
         self.conn.execute(
-            "INSERT INTO ai_outlook_run(id, tenant_id, trading_account_id, analysis_date, origin, state, close_at, engine_version, created_at, updated_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
-            (rid, self.tenant, self.account, analysis_date, origin, "SCHEDULED", close_at, engine_version, stamp, stamp),
+            "INSERT INTO ai_outlook_run(id, tenant_id, trading_account_id, analysis_date, origin, state, close_at, engine_version, created_at, updated_at, horizon) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
+            (rid, self.tenant, self.account, analysis_date, origin, "SCHEDULED", close_at, engine_version, stamp, stamp, horizon),
         )
         self.conn.commit()
-        return self.run(analysis_date, origin)  # type: ignore[return-value]
+        return self.run(analysis_date, origin, horizon)  # type: ignore[return-value]
 
     def update_run(self, run_id: str, **fields) -> None:
         if "log" in fields:
@@ -85,28 +86,28 @@ class OutlookRepository:
         self.conn.execute(f"UPDATE ai_outlook_run SET {cols} WHERE id=?", (*fields.values(), run_id))
         self.conn.commit()
 
-    def runs(self, origin: str | None = None, states: tuple[str, ...] | None = None, limit: int = 120) -> list[dict]:
-        sql = f"SELECT {','.join(RUN_COLUMNS)} FROM ai_outlook_run WHERE tenant_id=? AND trading_account_id=?"
-        params: list = [self.tenant, self.account]
+    def runs(self, origin: str | None = None, states: tuple[str, ...] | None = None, limit: int = 120, horizon: str = "DAILY") -> list[dict]:
+        sql = f"SELECT {','.join(RUN_COLUMNS)} FROM ai_outlook_run WHERE tenant_id=? AND trading_account_id=? AND horizon=?"
+        params: list = [self.tenant, self.account, horizon]
         if origin:
             sql += " AND origin=?"
             params.append(origin)
         if states:
             sql += f" AND state IN ({','.join('?' * len(states))})"
             params += list(states)
-        sql += " ORDER BY analysis_date DESC LIMIT ?"
+        sql += " ORDER BY close_at DESC LIMIT ?"
         params.append(limit)
         return [_row(r) for r in self.conn.execute(sql, params).fetchall()]
 
-    def latest_published(self) -> dict | None:
-        rows = self.runs(states=DONE_STATES, limit=4)
+    def latest_published(self, horizon: str = "DAILY") -> dict | None:
+        rows = self.runs(states=DONE_STATES, limit=4, horizon=horizon)
         live = [r for r in rows if r["origin"] == "LIVE"]
         return (live or rows or [None])[0]
 
-    def dates_with_outlooks(self) -> set[str]:
+    def dates_with_outlooks(self, horizon: str = "DAILY") -> set[str]:
         rows = self.conn.execute(
-            "SELECT DISTINCT analysis_date FROM ai_outlook_run WHERE tenant_id=? AND trading_account_id=? AND state IN ("
-            + ",".join("?" * len(DONE_STATES)) + ")", (self.tenant, self.account, *DONE_STATES)).fetchall()
+            "SELECT DISTINCT analysis_date FROM ai_outlook_run WHERE tenant_id=? AND trading_account_id=? AND horizon=? AND state IN ("
+            + ",".join("?" * len(DONE_STATES)) + ")", (self.tenant, self.account, horizon, *DONE_STATES)).fetchall()
         return {str(values(r)[0]) for r in rows}
 
     # ----- snapshots and symbol outlooks (append-only) -----
@@ -128,12 +129,12 @@ class OutlookRepository:
         for o in outlooks:
             self.conn.execute(
                 "INSERT INTO ai_outlook_symbol(id, run_id, tenant_id, trading_account_id, analysis_date, origin, symbol, status, qualified, "
-                "opportunity_rank, opportunity_score, direction, confidence, regime, engine_version, payload_json, created_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
+                "opportunity_rank, opportunity_score, direction, confidence, regime, engine_version, payload_json, created_at, horizon) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
                 (o["outlook_id"], run["id"], self.tenant, self.account, run["analysis_date"], run["origin"], o["symbol"], o["status"],
                  1 if o.get("qualified") else 0, o.get("opportunity_rank"), o.get("opportunity_score"), o.get("expected_direction"),
                  (o.get("confidence") or {}).get("primary"), (o.get("regime") or {}).get("key"), o["engine_version"],
-                 json.dumps(o, default=str), stamp),
+                 json.dumps(o, default=str), stamp, run.get("horizon") or "DAILY"),
             )
         self.conn.commit()
 
@@ -230,11 +231,17 @@ class OutlookRepository:
              ev["outcome"], ev["scenario_result"], ev["direction_correct"], int(ev["target1_hit"]), int(ev["target2_hit"]), int(ev["invalidated"]),
              int(ev["erz_touched"]), ev["move_pct"], json.dumps(ev, default=str), now_iso()))
 
-    def evaluations(self, symbol: str | None = None, since: str | None = None, qualified_only: bool = False) -> list[dict]:
+    def evaluations(self, symbol: str | None = None, since: str | None = None, qualified_only: bool = False, horizon: str = "DAILY") -> list[dict]:
         sql = ("SELECT symbol, analysis_date, evaluated_date, direction, confidence, qualified, outcome, scenario_result, direction_correct, "
                "target1_hit, target2_hit, invalidated, erz_touched, move_pct, detail_json, outlook_id FROM ai_outlook_evaluation "
                "WHERE tenant_id=? AND trading_account_id=?")
         params: list = [self.tenant, self.account]
+        if horizon == "DAILY":
+            sql += " AND analysis_date NOT LIKE '%|%'"
+        else:
+            prefix = {"WEEKLY": "W1|", "MONTHLY": "MN|", "H8": "H8|"}[horizon]
+            sql += " AND analysis_date LIKE ?"
+            params.append(prefix + "%")
         if symbol:
             sql += " AND symbol=?"
             params.append(symbol)
@@ -253,17 +260,25 @@ class OutlookRepository:
             out.append(d)
         return out
 
-    def history(self, symbol: str, since: str) -> list[dict]:
-        """Every published outlook for one symbol joined with its evaluation (if the next day has closed)."""
-        rows = self.conn.execute(
+    def history(self, symbol: str, since: str, horizon: str = "DAILY") -> list[dict]:
+        """Every published outlook for one symbol and horizon, joined with its evaluation when the next period has closed."""
+        sql = (
             "SELECT s.id, s.analysis_date, s.origin, s.status, s.qualified, s.direction, s.confidence, s.regime, s.engine_version, s.payload_json, "
             "e.outcome, e.scenario_result, e.direction_correct, e.target1_hit, e.target2_hit, e.invalidated, e.erz_touched, e.move_pct, e.detail_json "
             "FROM ai_outlook_symbol s LEFT JOIN ai_outlook_evaluation e ON e.outlook_id = s.id "
-            "WHERE s.tenant_id=? AND s.trading_account_id=? AND s.symbol=? AND s.analysis_date>=? ORDER BY s.analysis_date DESC, s.origin",
-            (self.tenant, self.account, symbol, since)).fetchall()
+            "WHERE s.tenant_id=? AND s.trading_account_id=? AND s.symbol=? AND s.horizon=?"
+        )
+        params: list = [self.tenant, self.account, symbol, horizon]
+        if horizon == "DAILY":
+            sql += " AND s.analysis_date>=?"
+            params.append(since)
+        sql += " ORDER BY s.analysis_date DESC, s.origin"
+        rows = self.conn.execute(sql, params).fetchall()
         seen, out = set(), []
         for r in rows:
             (oid, date, origin, status, qualified, direction, conf, regime, version, payload, outcome, sres, dc, t1, t2, inv, erz, move, detail) = values(r)
+            if horizon != "DAILY" and str(date).split("|", 1)[-1][:10] < since:
+                continue
             if date in seen:
                 continue
             seen.add(date)
@@ -273,6 +288,18 @@ class OutlookRepository:
                                                                     "target2_hit": bool(t2), "invalidated": bool(inv), "erz_touched": bool(erz), "move_pct": move,
                                                                     **json.loads(detail or "{}")}})
         return out
+
+    def save_handoff(self, outlook: dict, run: dict, lifecycle: str, evidence: dict, execution_ref: str | None) -> None:
+        stamp = now_iso()
+        self.conn.execute(
+            "INSERT INTO ai_outlook_handoff(id, outlook_id, run_id, tenant_id, trading_account_id, symbol, horizon, close_at, lifecycle, "
+            "execution_ref, evidence_json, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(outlook_id) DO UPDATE SET lifecycle=excluded.lifecycle, execution_ref=excluded.execution_ref, "
+            "evidence_json=excluded.evidence_json, updated_at=excluded.updated_at",
+            (str(uuid.uuid4()), outlook["outlook_id"], run["id"], self.tenant, self.account, outlook["symbol"], run.get("horizon") or "DAILY",
+             run["close_at"], lifecycle, execution_ref, json.dumps(evidence, default=str), stamp, stamp),
+        )
+        self.conn.commit()
 
     def save_calibration(self, run_id: str, table: dict, samples: int) -> None:
         self.conn.execute(
