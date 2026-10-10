@@ -61,6 +61,35 @@ def session_windows(after: datetime) -> list[dict]:
     return out
 
 
+def market_open(now: datetime) -> bool:
+    """FX week: Sunday 17:00 to Friday 17:00 New York."""
+    ny = now.astimezone(NEW_YORK)
+    wd, t = ny.weekday(), ny.time()
+    if wd == 5:
+        return False
+    if wd == 6:
+        return t >= ROLLOVER
+    if wd == 4:
+        return t < ROLLOVER
+    return True
+
+
+def freshness_now(now: datetime) -> datetime:
+    """Clock for aging a closed bar.
+
+    While the market is shut, and for the first two hours after Sunday's reopen, Friday's last bar is still the newest bar that can exist. It must not be marked stale just because the weekend has passed.
+    """
+    close = close_time(last_closed_day(now))
+    if not market_open(now):
+        return close
+    ny = now.astimezone(NEW_YORK)
+    if ny.weekday() == 6:
+        reopen = datetime.combine(ny.date(), ROLLOVER, tzinfo=NEW_YORK)
+        if now - reopen < timedelta(hours=2):
+            return close
+    return now
+
+
 def active_session(now: datetime) -> str | None:
     h = now.astimezone(timezone.utc).hour
     if now.astimezone(NEW_YORK).weekday() >= 5 and now.astimezone(NEW_YORK).time() < ROLLOVER:

@@ -185,6 +185,15 @@ def _cron_authorized(authorization: str | None) -> None:
         raise HTTPException(401, "Invalid cron credentials")
 
 
+@router.get("/command-centre")
+def command_centre(user=Depends(current_user)):
+    """Overview command centre. Reads persisted engine, outlook, scanner and account state. It does not advance a stage."""
+    from ..autonomous.command_centre import build_command_centre
+
+    with db() as conn:
+        return build_command_centre(conn, _repo(conn, user), _now(), _mode(conn), get_autonomous_engine().running)
+
+
 @router.get("/jobs/cycle")
 def cron_cycle(authorization: str | None = Header(default=None)):
     """Scheduler entry point (cron / external pinger). Idempotent: replays only closed bars newer than each watermark."""

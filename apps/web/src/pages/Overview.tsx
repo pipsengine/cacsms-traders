@@ -1,584 +1,313 @@
-import React from 'react';
-import {
-  Activity,
-  BarChart3,
-  Briefcase,
-  Calendar,
-  ChevronRight,
-  LayoutGrid,
-  LineChart,
-  Link2,
-  Radio,
-  Target,
-  User,
-  Wallet,
-} from 'lucide-react';
-import type { ConnectionsPayload, Health, Summary, Tenant, TradingAccount, AuditEvent } from '../types';
-import { marketIntelligenceApi } from '../features/market-intelligence/api';
+import { useCallback, useState } from 'react';
+import { LayoutGrid } from 'lucide-react';
+import { InstrumentIcon } from '../features/market-scanner/components/InstrumentIcon';
+import { CurrencyFlag } from '../features/market-intelligence/components/CurrencyFlag';
+import { usePollingAsync } from '../features/market-intelligence/hooks/useMarketIntelligence';
 import { get } from '../lib/api';
 import { writeHashRoute, type Page } from '../lib/routes';
+import type { Health, Summary, Tenant } from '../types';
 
-function fmtClock(d: Date) {
-  return d.toLocaleString(undefined, {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    timeZoneName: 'shortOffset',
-  });
+type OutlookSymbol = { symbol: string | null; direction: string | null; confidence: number | null };
+type CommandCentre = {
+  as_of: string;
+  mode: string;
+  market_open: boolean | null;
+  safety_status: string;
+  system_status: string | null;
+  execution: string;
+  execution_note: string;
+  provider: string | null;
+  provider_connection: string | null;
+  data_as_of: string | null;
+  workers_online: number | null;
+  workers_total: number | null;
+  warnings: string[];
+  limits: { max_open_positions: number | null; max_concurrent: number | null; max_trade_risk_pct: number | null; max_total_risk_pct: number | null; source: string };
+  positions: { broker_open: number; shadow_open: number; orders_submitted: number };
+  account: { currency: string | null; environment: string | null; balance: number | null; equity: number | null; floating_pnl: number | null; floating_pnl_basis: string | null; margin_used_pct: number | null; stale: boolean | null; connection_status: string | null };
+  outlook: { analysis_date: string | null; published_at: string | null; state: string | null; qualified: number; published: number | null; bias: string | null; confidence: number | null; confidence_basis: string; narrative: string | null; symbols: OutlookSymbol[] };
+  strength: { currency: string; score: number; label: string; tone: string }[];
+  scanner: { total: number; actionable: number; watchlist: number; no_setup: number; excluded: number; groups: Record<string, Record<string, number>>; excluded_reasons: { symbol: string; reason: string }[] };
+  tit: { count: number; levels: Record<string, number> };
+  opportunities: { id: string; symbol: string | null; direction: string | null; type_label: string | null; tit_level: string | null; timeframe: string | null; stage: string | null; state: string | null; confidence: number | null; next_condition: string | null }[];
+  workflow: { steps: { key: string; label: string; state: string; errors: number }[]; current_label: string; step_of: number; step_count: number; position_pct: number; position_basis: string; operation: string | null; next_action: string | null; focus_symbol: string | null; errors: number; blockers: string[] };
+  shadow_plans: { symbol: string | null; direction: string | null; type_label: string | null; unrealized_r: number | null; entry_reference: number | null; price_status: string | null; order_status: string | null }[];
+  performance: { basis: string | null; closed_30d: number | null; hit_rate: number | null; avg_r: number | null; profit_factor: number | null; max_drawdown_pct: number | null; daily: { day: string; blocked: number; resolved: number }[] };
+  alerts: { at: string | null; symbol: string | null; timeframe: string | null; label: string | null; direction: string | null; level: string | null; source: string }[];
+};
+
+const GROUPS: { key: string; label: string }[] = [
+  { key: 'majors', label: 'FX Majors' },
+  { key: 'minors', label: 'FX Minors' },
+  { key: 'jpy', label: 'JPY Pairs' },
+  { key: 'commodities', label: 'Commodities' },
+];
+const STACK = [
+  { key: 'HIGH_INSPECTION', color: '#16a34a', label: 'Actionable' },
+  { key: 'WATCHING', color: '#f59e0b', label: 'Watchlist' },
+  { key: 'NEUTRAL', color: '#94a3b8', label: 'No setup' },
+  { key: 'EXCLUDED', color: '#e2e8f0', label: 'Excluded' },
+];
+
+function go(page: Page, tab?: string) {
+  writeHashRoute(page, tab);
+  window.dispatchEvent(new HashChangeEvent('hashchange'));
 }
 
-function fmtShortTs(v?: string | null) {
-  if (!v) return '—';
-  try {
-    return new Date(v).toLocaleString(undefined, {
-      day: '2-digit',
-      month: 'short',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
-  } catch {
-    return v;
-  }
+function pairOf(symbol: string) {
+  if (symbol.startsWith('XAU')) return { base: 'XAU', quote: symbol.slice(3) || 'USD' };
+  return { base: symbol.slice(0, 3), quote: symbol.slice(3, 6) };
 }
 
-function auditLabel(action: string) {
-  const map: Record<string, string> = {
-    MT5_CONNECT: 'MT5 gateway connected',
-    MT5_DISCONNECT: 'MT5 gateway disconnected',
-    MT5_AUTO_LINK: 'Account linked from MT5 terminal',
-    MT5_SETTINGS_UPDATED: 'MT5 connection settings updated',
-    TRADING_ACCOUNT_CREATED: 'Trading account registered',
-    CONNECTION_CONFIGURED: 'Trading connection configured',
-  };
-  return map[action] ?? action.replaceAll('_', ' ');
+function words(value: string | null | undefined) {
+  if (!value) return '—';
+  return value.replaceAll('_', ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-export function Overview({
-  health,
-  summary,
-  tenant,
-  tenantId,
-  instrumentCount = 29,
-}: {
-  health: Health | null;
-  summary: Summary | null;
-  tenant?: Tenant;
-  tenantId: string;
-  instrumentCount?: number;
-}) {
-  const [miReady, setMiReady] = React.useState(false);
-  const [accounts, setAccounts] = React.useState<TradingAccount[]>([]);
-  const [recentAudit, setRecentAudit] = React.useState<AuditEvent[]>([]);
-  const [connections, setConnections] = React.useState<ConnectionsPayload | null>(null);
-  const [now, setNow] = React.useState(() => new Date());
-  const [chartRange, setChartRange] = React.useState('1D');
+function when(iso: string | null | undefined) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' }).format(d) + ' UTC';
+}
 
-  React.useEffect(() => {
-    const t = window.setInterval(() => setNow(new Date()), 1000);
-    return () => window.clearInterval(t);
-  }, []);
+function money(value: number | null | undefined, currency: string | null) {
+  if (value == null || !Number.isFinite(value)) return '—';
+  const sign = value > 0 ? '+' : '';
+  return `${sign}${value.toFixed(2)} ${currency ?? ''}`.trim();
+}
 
-  React.useEffect(() => {
-    marketIntelligenceApi.health().then((h) => setMiReady(h.status === 'ready')).catch(() => setMiReady(false));
-  }, []);
-
-  const loadTenantData = React.useCallback(() => {
-    if (!tenantId) return;
-    get<TradingAccount[]>(`/tenants/${tenantId}/accounts`)
-      .then((acc) => {
-        setAccounts(acc);
-        return get<ConnectionsPayload>(`/tenants/${tenantId}/connections`);
-      })
-      .then((conn) => setConnections(conn))
-      .catch(() => undefined);
-    get<AuditEvent[]>(`/tenants/${tenantId}/audit?limit=8`).then(setRecentAudit).catch(() => setRecentAudit([]));
-  }, [tenantId]);
-
-  React.useEffect(() => {
-    loadTenantData();
-  }, [loadTenantData, health?.mt5?.status]);
-
-  React.useEffect(() => {
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') loadTenantData();
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => document.removeEventListener('visibilitychange', onVisible);
-  }, [loadTenantData]);
-
-  const go = (page: Page, tab?: string) => {
-    writeHashRoute(page, tab);
-    window.dispatchEvent(new HashChangeEvent('hashchange'));
-  };
-
-  const balance = accounts.reduce((s, a) => s + (a.balance ?? 0), 0);
-  const equity = accounts.reduce((s, a) => s + (a.equity ?? 0), 0);
-  const freeMargin = accounts.reduce((s, a) => s + (a.free_margin ?? 0), 0);
-  const primary = accounts[0];
-  const currency = primary?.account_currency ?? tenant?.reporting_currency ?? 'USD';
-  const terminal = connections?.diagnostics?.terminal_account;
-  const registryRow = connections?.connections?.[0];
-  const mt5Server =
-    primary?.server ?? registryRow?.account_server ?? registryRow?.server_name ?? terminal?.server ?? '—';
-  const mt5Login = primary?.account_number ?? terminal?.login ?? '—';
-  const nextBarSec = 60 - (now.getSeconds() % 60);
-  const nextUpdateLabel = miReady ? `00:00:${String(nextBarSec).padStart(2, '0')}` : '—';
-
-  const mt5Status = health?.mt5?.status ?? 'DISCONNECTED';
-  const mt5Persisted = health?.mt5?.session_status === 'CONNECTED';
-  const mt5Connected = mt5Status === 'CONNECTED' || mt5Persisted;
-  const apiOk = health?.api === 'HEALTHY';
-  const dbOk = health?.database === 'HEALTHY';
-  const systemOk = apiOk && dbOk;
-
-  const marginUsedPct =
-    equity > 0 && freeMargin >= 0 ? Math.min(100, Math.max(0, ((equity - freeMargin) / equity) * 100)) : 0;
+export function Overview({ health, summary }: { health: Health | null; summary: Summary | null; tenant?: Tenant; tenantId: string; instrumentCount?: number }) {
+  const loader = useCallback(() => get<CommandCentre>('/autonomous/command-centre'), []);
+  const board = usePollingAsync(loader, [loader], { intervalMs: 15000 });
+  const [period, setPeriod] = useState<'today' | 'week' | 'month' | 'all'>('today');
+  const data = board.data;
+  const mode = data?.mode ?? summary?.mode ?? '—';
+  const env = data?.account.environment;
 
   return (
     <div className="ov-dashboard">
-      <header className="ov-hero">
-        <div className="ov-hero-title">
-          <div className="ov-hero-icon" aria-hidden>
-            <LayoutGrid />
-          </div>
+      <header className="cc-head">
+        <div className="cc-title">
+          <div className="cc-mark" aria-hidden><LayoutGrid size={18} /></div>
           <div>
-            <h1>Overview</h1>
-            <p>Operational command surface — live platform context, health and autonomous posture.</p>
+            <h1>Trading Overview</h1>
+            <p>Live outlook, engine stage, scanner and account state from the running platform.</p>
+            <div className="cc-strip" style={{ marginTop: 8 }}>
+              <span className={data?.market_open === false ? 'is-closed' : 'is-live'}>{data?.market_open === false ? 'Market closed' : data?.market_open ? 'Market open' : 'Market session unknown'}</span>
+              <span className={mode === 'SHADOW' ? 'is-shadow' : ''}>{words(mode)}</span>
+              <span className="is-block">Execution disabled</span>
+              {env ? <span>{words(env)}</span> : null}
+              {data?.safety_status ? <span>{words(data.safety_status)} safety</span> : null}
+            </div>
           </div>
         </div>
-        <div className="ov-hero-meta">
-          <div className="ov-datetime">
-            <Calendar aria-hidden />
-            {fmtClock(now)}
-          </div>
-          <div className={systemOk ? 'ov-system-ok' : 'ov-system-ok degraded'}>
-            <strong>{systemOk ? 'SYSTEM OPERATIONAL' : 'SYSTEM DEGRADED'}</strong>
-            <span>{systemOk ? 'All core services healthy' : 'One or more core services need attention'}</span>
-          </div>
+        <div className="cc-facts">
+          <div className="cc-fact"><small>Trading mode</small><b>{words(mode)}</b></div>
+          <div className="cc-fact"><small>Risk limit</small><b>{data?.limits.max_trade_risk_pct != null ? `${data.limits.max_trade_risk_pct}% / trade` : 'Profile not set'}</b></div>
+          <div className="cc-fact"><small>Max positions</small><b>{data?.limits.max_open_positions ?? data?.limits.max_concurrent ?? '—'}</b><em>{data?.limits.source === 'account_risk_profiles' ? 'Risk profile' : 'Concurrent plan limit'}</em></div>
+          <div className="cc-fact"><small>Current positions</small><b>{data ? data.positions.broker_open : '—'}</b><em>{data ? `${data.positions.shadow_open} shadow plans` : ''}</em></div>
         </div>
       </header>
 
-      <div className="ov-kpi-row">
-        <article className="ov-kpi">
-          <div className="ov-kpi-icon blue">
-            <User aria-hidden />
-          </div>
-          <div className="ov-kpi-body">
-            <span className="ov-kpi-label">Tenant &amp; account</span>
-            <span className="ov-kpi-value">
-              {tenant?.name ?? '—'} · {currency}
-            </span>
-            <span className="ov-kpi-sub">
-              {accounts.length || summary?.accounts || 0} registered account
-              {(accounts.length || summary?.accounts || 0) === 1 ? '' : 's'}
-            </span>
-          </div>
-        </article>
-        <article className="ov-kpi">
-          <div className="ov-kpi-icon green">
-            <Wallet aria-hidden />
-          </div>
-          <div className="ov-kpi-body">
-            <span className="ov-kpi-label">Total balance</span>
-            <span className="ov-kpi-value">
-              {accounts.length ? `${balance.toFixed(2)} ${currency}` : `— ${currency}`}
-            </span>
-            <span className="ov-kpi-sub">
-              Equity {equity.toFixed(2)} · Free margin {freeMargin.toFixed(2)}
-            </span>
-          </div>
-        </article>
-        <article className="ov-kpi">
-          <div className="ov-kpi-icon purple">
-            <BarChart3 aria-hidden />
-          </div>
-          <div className="ov-kpi-body">
-            <span className="ov-kpi-label">Instruments monitored</span>
-            <span className="ov-kpi-value">{instrumentCount}</span>
-            <span className="ov-kpi-sub">Reference universe</span>
-          </div>
-        </article>
-        <article className="ov-kpi">
-          <div className="ov-kpi-icon orange">
-            <Target aria-hidden />
-          </div>
-          <div className="ov-kpi-body">
-            <span className="ov-kpi-label">Active opportunities</span>
-            <span className="ov-kpi-value">0</span>
-            <span className="ov-kpi-sub">Opportunity engine not connected</span>
-          </div>
-        </article>
-        <article className="ov-kpi">
-          <div className="ov-kpi-icon red">
-            <Briefcase aria-hidden />
-          </div>
-          <div className="ov-kpi-body">
-            <span className="ov-kpi-label">Open positions</span>
-            <span className="ov-kpi-value">0</span>
-            <span className="ov-kpi-sub">Execution layer disabled</span>
-          </div>
-        </article>
-      </div>
+      {board.error ? <p className="cc-error">{board.error}</p> : null}
+      {board.loading && !data ? <p className="cc-muted">Loading the command centre…</p> : null}
 
-      <div className="ov-triple-row ov-row-mid">
-        <article className="ov-panel">
-          <div className="ov-panel-head">
-            <div className="ov-panel-title">
-              <div className="ov-panel-title-icon">
-                <Radio aria-hidden />
+      {data ? (
+        <>
+          <section className="cc-grid">
+            <article className="cc-card">
+              <div className="cc-card-head">
+                <h2>AI Market Outlook</h2>
+                <button className="cc-link" type="button" onClick={() => go('ai-market-outlook', 'daily')}>View full analysis</button>
               </div>
-              <h2>MT5 connection</h2>
-            </div>
-            <span className={`ov-badge ${mt5Connected ? 'success' : 'neutral'}`}>
-              {mt5Connected ? 'CONNECTED' : 'DISCONNECTED'}
-            </span>
-          </div>
-          <dl className="ov-dl">
-            <div className="ov-dl-row">
-              <dt>Server</dt>
-              <dd>{mt5Server}</dd>
-            </div>
-            <div className="ov-dl-row">
-              <dt>Login</dt>
-              <dd>{mt5Login}</dd>
-            </div>
-            <div className="ov-dl-row">
-              <dt>Connection time</dt>
-              <dd>{fmtShortTs(health?.mt5?.last_connected_at)}</dd>
-            </div>
-            <div className="ov-dl-row">
-              <dt>Last heartbeat</dt>
-              <dd>
-                {health?.mt5?.heartbeat_at
-                  ? `${fmtShortTs(health.mt5.heartbeat_at)}${mt5Status === 'CONNECTED' ? ' (Live)' : ''}`
-                  : '—'}
-              </dd>
-            </div>
-          </dl>
-          <div className="ov-link-foot">
-            <button type="button" onClick={() => go('system-control', 'mt5')}>
-              View details <ChevronRight size={14} aria-hidden />
-            </button>
-          </div>
-        </article>
+              <p className="cc-muted">{data.outlook.published_at ? `Published ${when(data.outlook.published_at)} · ${data.outlook.qualified} qualified` : 'No published daily outlook yet'}</p>
+              <div className={`cc-bias ${data.outlook.bias === 'BULLISH' ? 'is-bull' : data.outlook.bias === 'BEARISH' ? 'is-bear' : ''}`}>
+                <b>{data.outlook.bias ? words(data.outlook.bias) : 'No bias'}</b>
+                <div className="cc-conf">
+                  <b>{data.outlook.confidence != null ? `${data.outlook.confidence}%` : '—'}</b>
+                  <span className="cc-muted">Evidence score</span>
+                </div>
+              </div>
+              <p className="cc-narrative">{data.outlook.narrative ?? 'The published rows did not store a narrative. Open the daily outlook for the instrument evidence.'}</p>
+              <p className="cc-muted">{data.outlook.confidence_basis}</p>
+              <div className="cc-chips" style={{ marginTop: 8 }}>
+                {data.outlook.symbols.map((s) => s.symbol ? (
+                  <button key={s.symbol} className="cc-chip" type="button" onClick={() => go('ai-market-outlook', 'daily')}>
+                    {s.symbol} {s.confidence != null ? `${s.confidence.toFixed(0)}%` : ''}
+                  </button>
+                ) : null)}
+              </div>
+            </article>
 
-        <article className="ov-panel">
-          <div className="ov-panel-head">
-            <div className="ov-panel-title">
-              <div className="ov-panel-title-icon">
-                <LineChart aria-hidden />
+            <article className="cc-card">
+              <div className="cc-card-head">
+                <h2>Key Market Summary</h2>
+                <button className="cc-link" type="button" onClick={() => go('strength-intelligence')}>View all</button>
               </div>
-              <h2>Market data status</h2>
-            </div>
-            <span className={`ov-badge ${miReady ? 'success' : 'neutral'}`}>{miReady ? 'READY' : 'OFFLINE'}</span>
-          </div>
-          <dl className="ov-dl">
-            <div className="ov-dl-row">
-              <dt>Data source</dt>
-              <dd>{mt5Connected ? 'MT5 (Live)' : 'MT5 (Pending)'}</dd>
-            </div>
-            <div className="ov-dl-row">
-              <dt>Instruments</dt>
-              <dd>
-                {instrumentCount} (FX + XAUUSD)
-              </dd>
-            </div>
-            <div className="ov-dl-row">
-              <dt>Last update</dt>
-              <dd>{miReady ? fmtShortTs(now.toISOString()) : '—'}</dd>
-            </div>
-            <div className="ov-dl-row">
-              <dt>Next update</dt>
-              <dd>{nextUpdateLabel}</dd>
-            </div>
-          </dl>
-          <div className="ov-link-foot">
-            <button type="button" onClick={() => go('strength-intelligence')}>
-              View details <ChevronRight size={14} aria-hidden />
-            </button>
-          </div>
-        </article>
+              {data.strength.length === 0 ? <p className="cc-muted">The strength engine has not published scores.</p> : (
+                <div className="cc-rows">
+                  {data.strength.slice(0, 8).map((c) => (
+                    <div className="cc-row" key={c.currency}>
+                      <CurrencyFlag code={c.currency} />
+                      <b>{c.currency}</b>
+                      <span className={c.tone === 'positive' ? 'cc-up' : c.tone === 'negative' ? 'cc-down' : 'cc-flat'}>{c.score.toFixed(0)} · {c.label}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </article>
 
-        <article className="ov-panel">
-          <div className="ov-panel-head">
-            <div className="ov-panel-title">
-              <div className="ov-panel-title-icon">
-                <Activity aria-hidden />
+            <article className="cc-card">
+              <div className="cc-card-head">
+                <h2>Active Opportunities</h2>
+                <button className="cc-link" type="button" onClick={() => go('trading-opportunities')}>View all</button>
               </div>
-              <h2>Autonomous engine health</h2>
-            </div>
-            <span className={`ov-badge ${miReady ? 'warning' : 'neutral'}`}>PARTIAL</span>
-          </div>
-          <ul className="ov-engine-list">
-            <li>
-              <span>Market intelligence</span>
-              <span className={`ov-engine-dot ${miReady ? 'green' : 'orange'}`}>
-                <i aria-hidden /> {miReady ? 'Healthy' : 'Awaiting worker'}
-              </span>
-            </li>
-            <li>
-              <span>Workflow Orchestrator</span>
-              <span className="ov-engine-dot orange">
-                <i aria-hidden /> Paused
-              </span>
-            </li>
-            <li>
-              <span>Execution Engine</span>
-              <span className="ov-engine-dot red">
-                <i aria-hidden /> Disabled (Analysis Only)
-              </span>
-            </li>
-            <li>
-              <span>Risk Engine</span>
-              <span className="ov-engine-dot orange">
-                <i aria-hidden /> Paused
-              </span>
-            </li>
-            <li>
-              <span>AI Engine</span>
-              <span className="ov-engine-dot orange">
-                <i aria-hidden /> Paused
-              </span>
-            </li>
-          </ul>
-          <div className="ov-link-foot">
-            <button type="button" onClick={() => go('autonomous-engine')}>
-              View details <ChevronRight size={14} aria-hidden />
-            </button>
-          </div>
-        </article>
-      </div>
-
-      <div className="ov-triple-row ov-row-bot">
-        <article className="ov-panel ov-chart-panel">
-          <div className="ov-chart-head">
-            <div className="ov-chart-title-row">
-              <div className="ov-panel-title-icon" aria-hidden>
-                <BarChart3 />
-              </div>
-              <h2 className="ov-panel-heading">Account balance &amp; equity</h2>
-            </div>
-            <div className="ov-chart-tabs" role="tablist" aria-label="Chart range">
-              {(['1D', '1W', '1M', '3M', '1Y'] as const).map((r) => (
-                <button
-                  key={r}
-                  type="button"
-                  role="tab"
-                  aria-selected={chartRange === r}
-                  className={chartRange === r ? 'ov-chart-tab active' : 'ov-chart-tab'}
-                  onClick={() => setChartRange(r)}
-                >
-                  {r}
+              {data.opportunities.length === 0 ? <p className="cc-muted">No active opportunity is in the engine.</p> : data.opportunities.map((o) => (
+                <button className="cc-opp" key={o.id} type="button" onClick={() => go('trading-opportunities')} style={{ width: '100%', background: 'none', borderLeft: 0, borderRight: 0, textAlign: 'left', cursor: 'pointer' }}>
+                  {o.symbol ? <InstrumentIcon {...pairOf(o.symbol)} size="sm" /> : <span />}
+                  <span>
+                    <b>{o.symbol}</b> <span className={o.direction === 'BULLISH' ? 'cc-up' : 'cc-down'}>{words(o.direction)}</span>
+                    <small>{o.type_label}{o.tit_level ? ` · ${o.tit_level}` : ''} · {o.timeframe ?? '—'} · {words(o.state)}</small>
+                  </span>
+                  <b>{o.confidence != null ? `${o.confidence.toFixed(0)}%` : '—'}</b>
                 </button>
               ))}
-            </div>
-          </div>
-          <div className="ov-chart-legend">
-            <span>
-              <i className="balance" aria-hidden /> Balance
-            </span>
-            <span>
-              <i className="equity" aria-hidden /> Equity
-            </span>
-          </div>
-          <BalanceEquityChart
-            balance={balance}
-            equity={equity}
-            currency={currency}
-            active={hasFinancialActivity(balance, equity)}
-          />
-        </article>
+            </article>
+          </section>
 
-        <article className="ov-panel">
-          <div className="ov-activity-head">
-            <h2>Recent activity / alerts</h2>
-            <button type="button" className="ov-link-foot" style={{ padding: 0 }} onClick={() => go('system-control', 'audit')}>
-              View all
-            </button>
-          </div>
-          {recentAudit.length === 0 ? (
-            <p className="muted ov-activity-empty" style={{ margin: 0 }}>
-              No recent audit events. Connect MT5 and link accounts in System Control.
-            </p>
-          ) : (
-            <ul className="ov-activity-list">
-              {recentAudit.slice(0, 3).map((e) => (
-                <li key={e.id} className="ov-activity-item">
-                  <div className="ov-activity-icon">
-                    <Link2 aria-hidden />
-                    <span className={`ov-activity-dot ${auditDotClass(e.action)}`} aria-hidden />
-                  </div>
-                  <div className="ov-activity-body">
-                    <b>{e.action}</b>
-                    <span>{auditLabel(e.action)}</span>
-                    <time dateTime={e.created_at}>{fmtShortTs(e.created_at)}</time>
-                  </div>
-                </li>
+          <section className="cc-grid">
+            <article className="cc-card">
+              <div className="cc-card-head">
+                <h2>Autonomous Engine</h2>
+                <button className="cc-link" type="button" onClick={() => go('autonomous-engine')}>Open engine</button>
+              </div>
+              <p className="cc-muted">{words(data.system_status)} · step {data.workflow.step_of} of {data.workflow.step_count}</p>
+              <div className="cc-steps">
+                {data.workflow.steps.map((step) => (
+                  <div key={step.key} className={`cc-step is-${step.state}`}><i />{step.label}</div>
+                ))}
+              </div>
+              <div className="cc-bar" title={data.workflow.position_basis}><span style={{ width: `${data.workflow.position_pct}%` }} /></div>
+              <p className="cc-task">{data.workflow.operation ?? 'No current operation recorded.'}{data.workflow.focus_symbol ? ` · ${data.workflow.focus_symbol}` : ''}</p>
+              <p className="cc-muted">Next: {data.workflow.next_action ?? '—'}</p>
+              {data.workflow.blockers.length ? <p className="cc-muted">Blockers: {data.workflow.blockers.join(' · ')}</p> : null}
+              {data.workflow.errors ? <p className="cc-error">{data.workflow.errors} stage errors on this step</p> : null}
+              <p className="cc-muted">{data.workflow.position_basis}</p>
+            </article>
+
+            <article className="cc-card">
+              <div className="cc-card-head">
+                <h2>Market Scanner ({data.scanner.total})</h2>
+                <button className="cc-link" type="button" onClick={() => go('market-scanner')}>Open scanner</button>
+              </div>
+              <div className="cc-kpis">
+                <div><b>{data.scanner.actionable}</b><span className="cc-muted">Actionable</span></div>
+                <div><b>{data.scanner.watchlist}</b><span className="cc-muted">Watchlist</span></div>
+                <div><b>{data.scanner.no_setup}</b><span className="cc-muted">No setup</span></div>
+              </div>
+              <div className="cc-stack">
+                {GROUPS.map((g) => {
+                  const counts = data.scanner.groups[g.key] ?? {};
+                  const total = STACK.reduce((s, item) => s + (counts[item.key] ?? 0), 0) || 1;
+                  return (
+                    <span key={g.key} style={{ display: 'contents' }}>
+                      <span>{g.label}</span>
+                      <span className="cc-stack-bar">{STACK.map((item) => <i key={item.key} style={{ width: `${((counts[item.key] ?? 0) / total) * 100}%`, background: item.color }} />)}</span>
+                    </span>
+                  );
+                })}
+              </div>
+              <div className="cc-legend">{STACK.map((item) => <span key={item.key}><i style={{ background: item.color }} />{item.label}</span>)}</div>
+              <p className="cc-muted" style={{ marginTop: 8 }}>TIT {data.tit.count}{Object.entries(data.tit.levels).map(([k, v]) => ` · ${k} ${v}`).join('')}</p>
+              {data.scanner.excluded_reasons.slice(0, 2).map((r) => <p key={r.symbol} className="cc-muted">{r.symbol}: {r.reason}</p>)}
+            </article>
+
+            <article className="cc-card">
+              <div className="cc-card-head">
+                <h2>Open Positions ({data.positions.broker_open})</h2>
+                <button className="cc-link" type="button" onClick={() => go('execution-positions')}>View all</button>
+              </div>
+              <p className="cc-muted">{data.execution_note}</p>
+              <p className="cc-muted">Broker orders submitted: {data.positions.orders_submitted}. Floating account P/L {money(data.account.floating_pnl, data.account.currency)}{data.account.stale ? ' · account snapshot stale' : ''}.</p>
+              {data.shadow_plans.length === 0 ? <p className="cc-muted">No shadow plans are open.</p> : data.shadow_plans.map((p) => (
+                <div className="cc-row" key={`${p.symbol}-${p.entry_reference}`} style={{ gridTemplateColumns: '1fr auto' }}>
+                  <span><b>{p.symbol}</b> <span className="cc-muted">{words(p.direction)} · {p.type_label} · shadow</span></span>
+                  <span>{p.unrealized_r != null ? `${p.unrealized_r.toFixed(2)} R` : '—'} · {words(p.order_status)}</span>
+                </div>
               ))}
-            </ul>
-          )}
-        </article>
+            </article>
+          </section>
 
-        <article className="ov-panel">
-          <div className="ov-panel-head">
-            <h2 className="ov-panel-heading">Portfolio risk</h2>
-            <button type="button" className="ov-link-foot" style={{ padding: 0, margin: 0 }} onClick={() => go('risk-portfolio')}>
-              View details
-            </button>
-          </div>
-          <div className="ov-risk-body">
-            <div className="ov-donut" style={{ '--pct': `${marginUsedPct * 3.6}deg` } as React.CSSProperties}>
-              <div className="ov-donut-label">
-                {marginUsedPct.toFixed(0)}%
-                <br />
-                Risk usage
+          <section className="cc-grid">
+            <article className="cc-card">
+              <div className="cc-card-head">
+                <h2>Recent Alerts</h2>
+                <button className="cc-link" type="button" onClick={() => go('h8-bos-btl')}>View H8</button>
               </div>
-            </div>
-            <div className="ov-risk-metrics">
-              <div>
-                <span>Current risk</span>
-                <b>0.00%</b>
-              </div>
-              <div>
-                <span>Daily P/L</span>
-                <b>0.00 {currency}</b>
-              </div>
-              <div>
-                <span>Open risk</span>
-                <b>0.00 {currency}</b>
-              </div>
-              <div>
-                <span>Margin usage</span>
-                <b>{marginUsedPct.toFixed(2)}%</b>
-              </div>
-            </div>
-          </div>
-        </article>
-      </div>
+              {data.alerts.length === 0 ? <p className="cc-muted">No structural or notification alerts on the latest records.</p> : data.alerts.map((a, i) => (
+                <div className="cc-alert" key={`${a.source}-${a.symbol}-${a.at}-${i}`}>
+                  <i style={{ width: 8, height: 8, borderRadius: 99, background: a.source === 'h8' ? '#2563eb' : '#f59e0b', marginTop: 5 }} />
+                  <span><b>{a.symbol} · {a.label}</b><span className="cc-muted">{a.timeframe ?? '—'}{a.direction ? ` · ${words(a.direction)}` : ''}</span></span>
+                  <time className="cc-muted">{when(a.at)}</time>
+                </div>
+              ))}
+              {data.warnings.map((w) => <p key={w} className="cc-muted">{w}</p>)}
+            </article>
 
-      <section className="ov-platform" aria-label="Platform health">
-        <div className="ov-platform-head">
-          <h2>Platform health</h2>
-          <button type="button" className="ov-link-foot" style={{ padding: 0, margin: 0 }} onClick={() => go('system-control')}>
-            View system control <ChevronRight size={14} aria-hidden />
-          </button>
-        </div>
-        <div className="ov-pills">
-          <span className={`ov-pill ${apiOk ? 'green' : 'red'}`}>
-            <i aria-hidden /> API · {apiOk ? 'Healthy' : 'Degraded'}
-          </span>
-          <span className={`ov-pill ${dbOk ? 'green' : 'red'}`}>
-            <i aria-hidden /> SQLite · {dbOk ? 'Healthy' : 'Degraded'}
-          </span>
-          <span className={`ov-pill ${miReady ? 'green' : 'orange'}`}>
-            <i aria-hidden /> Market data · {miReady ? 'Ready' : 'Pending'}
-          </span>
-          <span className={`ov-pill ${mt5Connected ? 'green' : 'orange'}`}>
-            <i aria-hidden /> MT5 · {mt5Connected ? 'Connected' : 'Disconnected'}
-          </span>
-          <span className="ov-pill orange">
-            <i aria-hidden /> Workers · Paused
-          </span>
-          <span className="ov-pill orange">
-            <i aria-hidden /> AI engine · Paused
-          </span>
-          <span className="ov-pill orange">
-            <i aria-hidden /> Risk engine · Paused
-          </span>
-          <span className="ov-pill red">
-            <i aria-hidden /> Execution · Disabled
-          </span>
-        </div>
-      </section>
+            <article className="cc-card">
+              <div className="cc-card-head">
+                <h2>System Health</h2>
+                <button className="cc-link" type="button" onClick={() => go('system-control')}>System control</button>
+              </div>
+              <div className="cc-health">
+                <div><span>API</span><b>{health?.api ?? '—'}</b></div>
+                <div><span>Database</span><b>{health?.database ?? '—'}</b></div>
+                <div><span>MT5</span><b>{health?.mt5?.status ?? '—'}</b></div>
+                <div><span>Provider</span><b>{data.provider_connection ?? data.provider ?? '—'}</b></div>
+                <div><span>Market data</span><b>{data.data_as_of ? when(data.data_as_of) : '—'}</b></div>
+                <div><span>AI outlook</span><b>{words(data.outlook.state)}</b></div>
+                <div><span>Workflow</span><b>{words(data.system_status)}</b></div>
+                <div><span>Workers</span><b>{data.workers_online ?? '—'}/{data.workers_total ?? '—'}</b></div>
+                <div><span>Execution</span><b>Blocked</b></div>
+                <div><span>Safety</span><b>{words(data.safety_status)}</b></div>
+              </div>
+            </article>
+
+            <Performance data={data} period={period} onPeriod={setPeriod} />
+          </section>
+        </>
+      ) : null}
     </div>
   );
 }
 
-function hasFinancialActivity(balance: number, equity: number) {
-  return balance !== 0 || equity !== 0;
-}
-
-function auditDotClass(action: string) {
-  if (/CONNECT|AUTO_LINK|CREATED/i.test(action)) return 'green';
-  if (/DISCONNECT|ERROR|REMOVED/i.test(action)) return 'orange';
-  return 'blue';
-}
-
-const CHART_X_LABELS = ['00:00', '04:00', '08:00', '12:00', '16:00', '20:00'];
-const CHART_Y_LABELS = ['1.0', '0.5', '0.0'];
-
-function BalanceEquityChart({
-  balance,
-  equity,
-  currency,
-  active,
-}: {
-  balance: number;
-  equity: number;
-  currency: string;
-  active: boolean;
-}) {
-  const max = Math.max(balance, equity, 1);
-  const bY = 88 - (balance / max) * 72;
-  const eY = 88 - (equity / max) * 72;
+function Performance({ data, period, onPeriod }: { data: CommandCentre; period: 'today' | 'week' | 'month' | 'all'; onPeriod: (p: 'today' | 'week' | 'month' | 'all') => void }) {
+  const daily = data.performance.daily;
+  const today = daily.at(-1)?.day;
+  const sliced = period === 'today' ? daily.filter((d) => d.day === today) : period === 'week' ? daily.slice(-7) : daily;
+  const blocked = sliced.reduce((s, d) => s + (d.blocked || 0), 0);
+  const resolved = sliced.reduce((s, d) => s + (d.resolved || 0), 0);
   return (
-    <div className="ov-chart-frame">
-      <svg className="ov-chart-svg" viewBox="0 0 400 110" preserveAspectRatio="none" aria-hidden>
-        {CHART_Y_LABELS.map((label, i) => {
-          const y = 14 + i * 37;
-          return (
-            <g key={label}>
-              <text x="4" y={y + 3} className="ov-chart-axis">
-                {label}
-              </text>
-              <line x1="28" x2="392" y1={y} y2={y} stroke="#e8edf3" strokeWidth="1" />
-            </g>
-          );
-        })}
-        <line x1="28" y1="88" x2="392" y2="88" stroke="#cbd5e1" strokeWidth="1" />
-        {CHART_X_LABELS.map((label, i) => {
-          const x = 28 + (364 / (CHART_X_LABELS.length - 1)) * i;
-          return (
-            <text key={label} x={x} y="106" textAnchor="middle" className="ov-chart-axis">
-              {label}
-            </text>
-          );
-        })}
-        {active ? (
-          <>
-            <polyline
-              fill="none"
-              stroke="#2563eb"
-              strokeWidth="2"
-              points={`28,88 100,${bY} 200,${bY + 6} 300,${bY - 3} 392,${bY}`}
-            />
-            <polyline
-              fill="none"
-              stroke="#67e8f9"
-              strokeWidth="2"
-              points={`28,88 100,${eY} 200,${eY - 5} 300,${eY + 2} 392,${eY}`}
-            />
-          </>
-        ) : null}
-      </svg>
-      {!active ? (
-        <div className="ov-chart-empty-state">
-          <div className="ov-chart-empty-icon" aria-hidden>
-            <BarChart3 />
-          </div>
-          <b>No trading activity yet</b>
-          <span>Account balance data will appear here once trading is active.</span>
+    <article className="cc-card">
+      <div className="cc-card-head">
+        <h2>Trading Performance</h2>
+        <div className="cc-period">
+          {(['today', 'week', 'month', 'all'] as const).map((p) => (
+            <button key={p} type="button" className={period === p ? 'is-on' : ''} onClick={() => onPeriod(p)}>{p === 'today' ? 'Today' : p === 'week' ? 'Week' : p === 'month' ? 'Month' : 'All'}</button>
+          ))}
         </div>
-      ) : (
-        <p className="ov-chart-live-hint">
-          Live {balance.toFixed(2)} {currency} · Equity {equity.toFixed(2)} {currency}
-        </p>
-      )}
-    </div>
+      </div>
+      <p className="cc-muted">{data.performance.basis ?? 'Shadow outcomes only. Not broker-account performance.'}</p>
+      <div className="cc-metrics">
+        <div><span className="cc-muted">Floating P/L</span><b>{money(data.account.floating_pnl, data.account.currency)}</b></div>
+        <div><span className="cc-muted">30-day hit rate</span><b>{data.performance.hit_rate != null ? `${data.performance.hit_rate}%` : '—'}</b></div>
+        <div><span className="cc-muted">Average R</span><b>{data.performance.avg_r != null ? data.performance.avg_r.toFixed(2) : '—'}</b></div>
+        <div><span className="cc-muted">Profit factor</span><b>{data.performance.profit_factor != null ? data.performance.profit_factor : '—'}</b></div>
+        <div><span className="cc-muted">Max drawdown</span><b>{data.performance.max_drawdown_pct != null ? `${data.performance.max_drawdown_pct}%` : '—'}</b></div>
+        <div><span className="cc-muted">Shadow in view</span><b>{blocked} blocked · {resolved} resolved</b></div>
+      </div>
+      <p className="cc-muted" style={{ marginTop: 8 }}>{data.performance.closed_30d ?? 0} closed shadow plans in 30 days. Margin used {data.account.margin_used_pct != null ? `${data.account.margin_used_pct}%` : '—'}.</p>
+    </article>
   );
 }
