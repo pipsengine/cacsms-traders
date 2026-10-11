@@ -209,7 +209,7 @@ class OutlookService:
         return {"analysis_date": day.isoformat(), "state": run["state"], "run_id": run["id"]}  # type: ignore[index]
 
     def _ordered_cycle(self, conn, store: OutlookRepository, now: datetime, s: OutlookSettings) -> dict:
-        """Monthly → Weekly → Daily → H8. Coincident closes share one frozen snapshot."""
+        """Quarterly → Monthly → Weekly → Daily → H8. Coincident closes share one frozen snapshot."""
         from .horizons import coincident, due_closes, freeze_at, ordered, repack, run_key
 
         extra: dict = {}
@@ -338,19 +338,20 @@ class OutlookService:
                                  log=_entry("INSUFFICIENT_DATA", "Closed bars not yet available for most instruments; retrying in 10 minutes"))
                 return store.run_by_id(rid)  # type: ignore[return-value]
 
+            analysis_key = run["analysis_date"] if horizon != "DAILY" else day.isoformat()
             outs: list[dict] = []
             cores: dict[str, dict] = {}
             for sym in universe:
                 if sym not in ok:
                     bad = [c["note"] for c in quality[sym]["checks"] if not (c["complete"] and c["fresh"])]
-                    outs.append(insufficient(sym, quality[sym], day.isoformat(), sid, cutoff, "; ".join(bad) or "Data quality below threshold"))
+                    outs.append(insufficient(sym, quality[sym], analysis_key, sid, cutoff, "; ".join(bad) or "Data quality below threshold"))
                     counts["insufficient"] += 1
                     continue
                 try:
                     cores[sym] = analysis_cores(bars[sym], h8bb=horizon == "H8")
                 except Exception as exc:
                     log.exception("AI outlook analysis failed for %s", sym)
-                    outs.append(insufficient(sym, quality[sym], day.isoformat(), sid, cutoff, f"Engine error: {exc}", status="FAILED"))
+                    outs.append(insufficient(sym, quality[sym], analysis_key, sid, cutoff, f"Engine error: {exc}", status="FAILED"))
                     counts["failed"] += 1
             store.update_run(rid, state="GENERATING_HYPOTHESES", log=_entry("ANALYSING", f"Specialist engines evaluated {len(cores)} instruments"))
 
@@ -358,9 +359,21 @@ class OutlookService:
             calibrated = 0
             for sym, a in cores.items():
                 try:
-                    hist = bars[sym].get(price_tf) or bars[sym]["D1"]
-                    o = build_outlook(sym, a, hist[-1].c, cutoff, strength_for(sym, ref, cutoff), quality[sym], table, s,
-                                      analysis_date=day.isoformat(), snapshot_id=sid)
+                    if horizon == "QUARTERLY":
+                        from .horizons import quarter_reference_price
+
+                        q_ref = quarter_reference_price(bars[sym])
+                        if q_ref:
+                            q_price, _q_t = q_ref
+                        else:
+                            q_price = (bars[sym].get("MN") or bars[sym]["D1"])[-1].c
+                        hist = bars[sym].get(price_tf) or bars[sym]["D1"]
+                        ref_price = q_price
+                    else:
+                        hist = bars[sym].get(price_tf) or bars[sym]["D1"]
+                        ref_price = hist[-1].c
+                    o = build_outlook(sym, a, ref_price, cutoff, strength_for(sym, ref, cutoff), quality[sym], table, s,
+                                      analysis_date=analysis_key, snapshot_id=sid, horizon=horizon)
                     o["horizon"] = horizon
                     o["candle_close"] = cutoff.isoformat()
                     if horizon != "DAILY":
@@ -371,7 +384,7 @@ class OutlookService:
                     counts["published"] += 1
                 except Exception as exc:
                     log.exception("AI outlook hypothesis generation failed for %s", sym)
-                    outs.append(insufficient(sym, quality[sym], day.isoformat(), sid, cutoff, f"Engine error: {exc}", status="FAILED"))
+                    outs.append(insufficient(sym, quality[sym], analysis_key, sid, cutoff, f"Engine error: {exc}", status="FAILED"))
                     counts["failed"] += 1
             n_hyp = max((len(o.get("hypotheses") or []) for o in outs), default=0)
             store.update_run(rid, state="SCORING", log=_entry("GENERATING_HYPOTHESES", f"{n_hyp} competing hypotheses evaluated per instrument ({counts['published']} instruments)"))
@@ -478,7 +491,7 @@ class OutlookService:
         repo = MarketRepository(conn)
         if repo is None:
             return 0
-        for horizon in ("MONTHLY", "WEEKLY", "H8"):
+        for horizon in ("QUARTERLY", "MONTHLY", "WEEKLY", "H8"):
             for run in store.runs(states=("PUBLISHED", "MONITORING", "EVALUATING"), limit=20, horizon=horizon):
                 close = datetime.fromisoformat(run["close_at"])
                 if close.tzinfo is None:
@@ -684,10 +697,13 @@ def schedule_payload(now: datetime | None = None, horizon: str = "DAILY", conn=N
                "sessions": cal.session_windows(cal.close_time(day)), "timezone": "America/New_York 17:00 rollover", "horizon": horizon}
     if horizon == "DAILY":
         return payload
-    from .horizons import CLOCK, TIMEFRAME, project_next_close, recent_closes
+    from .horizons import CLOCK, TIMEFRAME, project_next_close, recent_closes, recent_quarter_closes
 
     def apply(c):
-        closes = recent_closes(c, TIMEFRAME[horizon], CLOCK[horizon], now, 48)
+        if horizon == "QUARTERLY":
+            closes = recent_quarter_closes(c, CLOCK[horizon], now, 48)
+        else:
+            closes = recent_closes(c, TIMEFRAME[horizon], CLOCK[horizon], now, 48)
         return project_next_close(closes, horizon, now)
 
     if conn is not None:
@@ -700,7 +716,7 @@ def schedule_payload(now: datetime | None = None, horizon: str = "DAILY", conn=N
     run_at = projected + timedelta(minutes=s.close_grace_minutes)
     payload.update(next_close_at=projected.isoformat(), next_run_at=run_at.isoformat(),
                    seconds_to_next_run=max(0, int((run_at - now).total_seconds())),
-                   timezone={"WEEKLY": "W1 broker close", "MONTHLY": "MN broker close", "H8": "XAUUSD H8 broker close"}.get(horizon, payload["timezone"]))
+                   timezone={"QUARTERLY": "Calendar quarter (MN close)", "WEEKLY": "W1 broker close", "MONTHLY": "MN broker close", "H8": "XAUUSD H8 broker close"}.get(horizon, payload["timezone"]))
     return payload
 
 

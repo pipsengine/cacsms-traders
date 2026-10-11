@@ -52,7 +52,7 @@ def validate(bars: dict[str, list[Bar]], cutoff: datetime, expected_d1_open: dat
     checks, score = [], 0.0
     weights = {"MN": 10, "W1": 15, "D1": 35, "H8": 20, "H1": 20}
     stale_after = dict(STALE_AFTER)
-    if horizon in ("WEEKLY", "MONTHLY"):
+    if horizon in ("WEEKLY", "MONTHLY", "QUARTERLY"):
         stale_after["H8"] = timedelta(days=3)
         stale_after["H1"] = timedelta(days=3)
     for tf in REQUIRED_TIMEFRAMES:
@@ -240,13 +240,14 @@ def _system_action(qualified: bool, erz: dict, d: int) -> dict:
 
 
 def build_outlook(symbol: str, a: dict, price: float, anchor: datetime, strength: dict | None, quality: dict,
-                  calibration: dict | None, s: OutlookSettings, *, analysis_date: str, snapshot_id: str) -> dict:
+                  calibration: dict | None, s: OutlookSettings, *, analysis_date: str, snapshot_id: str,
+                  horizon: str = "DAILY") -> dict:
     dp = digits_for(symbol)
-    facts = aggregate(symbol, a, price, anchor, _strength_label(symbol, strength))
+    facts = aggregate(symbol, a, price, anchor, _strength_label(symbol, strength), horizon=horizon)
     if facts.get("fractals"):
         facts["fractals"]["marks"] = {tf: frac.fractal_marks(a["fractal"], tf, 24) for tf in frac.FRACTAL_TIMEFRAMES}
     evidence = facts["evidence"]
-    b = rz.biases(evidence)
+    b = rz.biases(evidence, horizon=horizon)
     regime = rz.classify_regime(facts, b, quality["score"], s)
     scored = rz.score(facts, b, s)
     hyps = scored["hypotheses"]

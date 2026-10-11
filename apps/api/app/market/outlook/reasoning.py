@@ -38,9 +38,15 @@ def _bias(items: list[dict], tfs: tuple[str, ...] | None = None) -> float:
     return sum(e["sign"] * e["weight"] for e in pool) / total if total else 0.0
 
 
-def biases(items: list[dict]) -> dict:
+def biases(items: list[dict], *, horizon: str = "DAILY") -> dict:
     htf, mtf = _bias(items, HTF_TFS), _bias(items, MTF_TFS + ("H8",))
-    ltf, overall = _bias(items, ("H8", "H1")), _bias(items)
+    ltf = _bias(items, ("H8", "H1"))
+    if horizon == "QUARTERLY":
+        overall = _bias(items, HTF_TFS)
+    elif horizon == "MONTHLY":
+        overall = _bias(items, ("Y", "HY", "Q", "MN", "W"))
+    else:
+        overall = _bias(items)
     return {"htf": round(htf, 3), "mtf": round(mtf, 3), "ltf": round(ltf, 3), "overall": round(overall, 3),
             "htf_dir": 1 if htf >= 0.3 else -1 if htf <= -0.3 else 0,
             "mtf_dir": 1 if mtf >= 0.3 else -1 if mtf <= -0.3 else 0}

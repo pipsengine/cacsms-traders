@@ -20,7 +20,7 @@ from ..market.strength_intel_store import active_scope
 
 router = APIRouter(prefix="/api/ai-outlook", tags=["AI Market Outlook"])
 log = logging.getLogger("cacsms.ai_outlook")
-HORIZONS = {"DAILY", "WEEKLY", "MONTHLY", "H8"}
+HORIZONS = {"DAILY", "WEEKLY", "MONTHLY", "QUARTERLY", "H8"}
 ROW_FIELDS = ("symbol", "status", "qualified", "opportunity_rank", "opportunity_score", "expected_direction", "regime", "confidence", "reason",
               "system_action", "price", "digits", "late")
 MTF_CHART = ("Y", "YTD", "HY", "Q", "MN", "W", "D1", "H8", "H1", "M30")

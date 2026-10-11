@@ -239,7 +239,7 @@ class OutlookRepository:
         if horizon == "DAILY":
             sql += " AND analysis_date NOT LIKE '%|%'"
         else:
-            prefix = {"WEEKLY": "W1|", "MONTHLY": "MN|", "H8": "H8|"}[horizon]
+            prefix = {"QUARTERLY": "Q|", "WEEKLY": "W1|", "MONTHLY": "MN|", "H8": "H8|"}[horizon]
             sql += " AND analysis_date LIKE ?"
             params.append(prefix + "%")
         if symbol:

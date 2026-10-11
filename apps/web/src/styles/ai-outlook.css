@@ -1,5 +1,6 @@
 /* AI Market Outlook (Daily) — light design system, scoped to .mao-page */
-.mao-page { display: flex; flex-direction: column; gap: 10px; }
+.mao-page { display: flex; flex-direction: column; gap: 10px; min-width: 0; max-width: 100%; }
+.mao-page .mst-blocking { padding: 24px 14px; }
 .mao-page :is(span, b, td, em, strong, small).is-bull { color: var(--mst-green); }
 .mao-page :is(span, b, td, em, strong, small).is-bear { color: var(--mst-red); }
 .mao-page :is(span, b, td, em, strong, small).is-range { color: var(--mst-blue); }
@@ -9,31 +10,34 @@
 .mao-foot { display: block; margin-top: 8px; color: #8794aa; font-size: 10.5px; line-height: 1.45; }
 .mao-foot svg { width: 11px !important; height: 11px !important; vertical-align: -1px; }
 
-/* ---------- Header ---------- */
-.mao-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; }
-.mao-head h1 { font-size: 24px; margin: 4px 0 2px; font-weight: 760; letter-spacing: -0.02em; }
-.mao-head p { margin: 0; color: var(--mst-muted); font-size: 13px; }
-.mao-head-right { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
-.mao-status { display: flex; align-items: stretch; gap: 8px; }
-.mao-status-card { display: flex; align-items: center; gap: 10px; background: #fff; border: 1px solid var(--mst-line); border-radius: 9px; padding: 7px 12px; }
+/* ---------- Header + control deck ---------- */
+.mao-head { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.mao-head-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; min-width: 0; }
+.mao-head h1 { font-size: 22px; margin: 0; font-weight: 760; letter-spacing: -0.02em; flex: 0 0 auto; }
+.mao-blurb { margin: 0; color: var(--mst-muted); font-size: 12px; line-height: 1.4; flex: 1 1 220px; min-width: 0; }
+.mao-deck { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; background: linear-gradient(180deg, #f9fbfd, #f4f7fb); border: 1px solid var(--mst-line); border-radius: 12px; min-width: 0; }
+.mao-deck-nav { display: flex; flex-direction: column; gap: 8px; padding-top: 2px; border-top: 1px solid #e3e9f2; }
+.mao-stale-banner { margin: 0; font-size: 11.5px; line-height: 1.35; color: #b45309; background: #fff7e6; border: 1px solid #fcd9a3; border-radius: 8px; padding: 6px 10px; }
+.mao-status { display: grid; grid-template-columns: minmax(0, 1.5fr) repeat(3, auto); gap: 8px; align-items: stretch; width: 100%; min-width: 0; }
+.mao-status-card { display: flex; align-items: center; gap: 10px; background: #fff; border: 1px solid var(--mst-line); border-radius: 9px; padding: 7px 12px; min-width: 0; }
 .mao-status-card > svg { color: #3b4a63; }
 .mao-status-card div { display: flex; flex-direction: column; }
 .mao-status-card b { font-size: 12.5px; color: #1d2b45; }
 .mao-status-card small { font-size: 11px; color: #6a7890; }
 .mao-status-card.is-next { flex-direction: column; align-items: flex-start; justify-content: center; gap: 1px; min-width: 168px; }
 .mao-status-card.is-next b { font-size: 15px; font-variant-numeric: tabular-nums; color: #14223b; white-space: nowrap; }
-.mao-run-btn { border: 1px solid #c9d4e6; border-radius: 9px; background: #eef3fb; color: #1d3a66; font-size: 12px; font-weight: 600; padding: 0 12px; cursor: pointer; white-space: nowrap; }
+.mao-run-btn { border: 1px solid #c9d4e6; border-radius: 9px; background: #eef3fb; color: #1d3a66; font-size: 12px; font-weight: 600; padding: 0 12px; cursor: pointer; white-space: nowrap; min-height: 40px; align-self: stretch; }
 .mao-run-btn:disabled { opacity: 0.65; cursor: wait; }
-.mao-icon-btn { width: 40px; border: 1px solid #d9e2ef; border-radius: 9px; background: #fff; display: grid; place-items: center; color: #42506a; cursor: pointer; }
+.mao-icon-btn { width: 40px; min-height: 40px; border: 1px solid #d9e2ef; border-radius: 9px; background: #fff; display: grid; place-items: center; color: #42506a; cursor: pointer; align-self: stretch; }
 .mao-icon-btn svg { width: 16px !important; height: 16px !important; }
 .mao-icon-btn .is-spin { animation: mst-spin 0.9s linear infinite; }
 
-.mao-sessions { display: flex; gap: 8px; }
-.mao-session { display: flex; flex-direction: column; gap: 3px; min-width: 132px; padding: 6px 10px; background: #fff; border: 1px solid var(--mst-line); border-radius: 8px; font-size: 11px; }
-.mao-session b { display: inline-flex; align-items: center; gap: 5px; color: #24334d; font-weight: 650; }
-.mao-session b svg { width: 13px !important; height: 13px !important; color: #6a7890; }
-.mao-session > span { display: flex; align-items: center; gap: 6px; color: #6a7890; }
-.mao-session > span svg { width: 12px !important; height: 12px !important; margin-left: auto; color: var(--mst-blue); }
+.mao-sessions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; width: 100%; min-width: 0; }
+.mao-session { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; row-gap: 2px; min-width: 0; padding: 7px 10px; background: #fff; border: 1px solid var(--mst-line); border-radius: 8px; font-size: 11px; }
+.mao-session b { display: inline-flex; align-items: center; gap: 5px; color: #24334d; font-weight: 650; flex: 1 1 auto; min-width: 0; }
+.mao-session b svg { width: 13px !important; height: 13px !important; color: #6a7890; flex: none; }
+.mao-session > span { display: inline-flex; align-items: center; gap: 6px; color: #6a7890; flex: none; margin-left: auto; }
+.mao-session > span svg { width: 12px !important; height: 12px !important; margin-left: 0; color: var(--mst-blue); flex: none; }
 .mao-session em { font-style: normal; font-weight: 700; }
 .mao-session.is-first { background: #effcf5; border-color: #bdeed5; }
 .mao-session.is-first b { color: #047a4c; }
@@ -41,11 +45,12 @@
 .mao-session.is-live b::after { content: 'LIVE'; font-size: 8.5px; font-weight: 800; color: #fff; background: var(--mst-blue); border-radius: 3px; padding: 1px 4px; margin-left: 4px; }
 
 /* ---------- Tabs + toolbar ---------- */
-.mao-tabs { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.mao-tabs button { border: 1px solid transparent; background: #f2f5f9; border-radius: 8px; padding: 8px 16px; min-width: 128px; color: #42506a; font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.mao-tabs { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; max-width: 100%; min-width: 0; }
+.mao-tabs-horizon { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; width: 100%; }
+.mao-tabs button { border: 1px solid transparent; background: #f2f5f9; border-radius: 8px; padding: 8px 12px; min-width: 0; color: #42506a; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; text-align: center; line-height: 1.25; }
 .mao-tabs button.is-on { background: var(--mst-blue); color: #fff; box-shadow: 0 4px 10px rgba(23, 101, 239, 0.22); }
-.mao-tabs.is-sub { gap: 6px; }
-.mao-tabs.is-sub button { min-width: 0; background: transparent; border-color: transparent; padding: 6px 12px; font-weight: 600; color: #607089; }
+.mao-tabs.is-sub { gap: 4px; flex-wrap: wrap; }
+.mao-tabs.is-sub button { min-width: 0; background: transparent; border-color: transparent; padding: 5px 10px; font-weight: 600; font-size: 11.5px; color: #607089; }
 .mao-tabs.is-sub button.is-on { background: #e8f0fe; color: #174ea6; box-shadow: none; }
 .mao-horizon-note { margin: 0; padding: 8px 12px; background: #f7f9fc; border: 1px solid var(--mst-line); border-radius: 8px; color: #3b4a63; font-size: 12.5px; }
 .mao-sch { margin: 8px 0 0; padding: 8px 10px 4px; background: #fff; border: 1px solid var(--mst-line); border-radius: 10px; }
@@ -56,10 +61,10 @@
 .mao-sch-grid { stroke: #e1e7f0; stroke-dasharray: 3 3; }
 .mao-sch-fast { fill: none; stroke: #1765ef; stroke-width: 1.6; }
 .mao-sch-signal { fill: none; stroke: #d97706; stroke-width: 1.3; }
-.mao-stale { margin-left: auto; font-size: 11.5px; color: #b45309; background: #fff7e6; border: 1px solid #fcd9a3; border-radius: 6px; padding: 4px 9px; }
-.mao-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.mao-toolbar .mao-sessions { margin-left: auto; }
-.mao-date { display: flex; flex-direction: column; background: #fff; border: 1px solid var(--mst-line); border-radius: 8px; padding: 6px 14px; min-width: 200px; }
+.mao-deck .mao-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 10px; align-items: center; min-width: 0; padding-top: 2px; border-top: 1px solid #e3e9f2; }
+.mao-deck .mao-tf { grid-column: 1 / -1; width: 100%; }
+.mao-deck .mao-picker { max-width: 340px; }
+.mao-date { display: flex; flex-direction: column; background: #fff; border: 1px solid var(--mst-line); border-radius: 8px; padding: 5px 12px; min-width: 0; justify-self: end; white-space: nowrap; }
 .mao-date small { color: #6a7890; font-size: 11px; }
 .mao-date b { font-size: 13px; color: #14223b; }
 
@@ -81,8 +86,8 @@
 .mao-dir.is-bear { background: var(--mst-red-bg); color: var(--mst-red) !important; }
 .mao-dir.is-range { background: #eaf2ff; color: #1d63df !important; }
 
-.mao-tf { display: flex; background: #fff; border: 1px solid #e1e7f0; border-radius: 9px; padding: 3px; }
-.mao-tf button { border: 0; background: transparent; border-radius: 6px; padding: 7px 12px; color: #42506a; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.mao-tf { display: flex; flex-wrap: nowrap; background: #fff; border: 1px solid #e1e7f0; border-radius: 9px; padding: 3px; min-width: 0; max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: thin; }
+.mao-tf button { border: 0; background: transparent; border-radius: 6px; padding: 7px 12px; color: #42506a; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; flex: 0 0 auto; }
 .mao-tf button.is-on { background: var(--mst-blue); color: #fff; }
 .mao-tf.is-full { justify-content: space-between; margin-bottom: 8px; }
 .mao-tf.is-full button { padding: 6px 8px; flex: 1; }
@@ -288,7 +293,7 @@
 .mao-insights ul { margin: 0; padding-left: 16px; font-size: 11.3px; color: #4b5a73; line-height: 1.55; }
 
 /* ---------- Empty / no-opportunity ---------- */
-.mao-empty-state { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 40px 20px; text-align: center; }
+.mao-empty-state { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 22px 16px; text-align: center; }
 .mao-empty-state svg { width: 28px !important; height: 28px !important; color: var(--mst-blue); }
 .mao-empty-state strong { font-size: 16px; color: #14223b; }
 .mao-empty-state p { margin: 0; max-width: 620px; color: #4b5a73; font-size: 12.5px; line-height: 1.5; }
@@ -298,7 +303,32 @@
   .mao-kpis, .mao-kpis.is-daily { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .mao-kpis.is-six { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .mao-main, .mao-main.is-wide-side, .mao-row3, .mao-row3.is-even, .mao-row3.is-chart, .mao-row2 { grid-template-columns: minmax(0, 1fr); }
-  .mao-toolbar .mao-sessions { margin-left: 0; }
+}
+
+/* Laptop / narrow main column (sidebar + viewport) */
+@container page (max-width: 1400px) {
+  .mao-blurb { flex-basis: 100%; max-width: 42rem; }
+  .mao-kpis.is-daily { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@container page (max-width: 1100px) {
+  .mao-status { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .mao-status-card:first-child { grid-column: 1 / -1; }
+  .mao-status-card.is-next { min-width: 0; }
+  .mao-tabs-horizon { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mao-tabs-horizon button { font-size: 11px; padding: 7px 8px; }
+  .mao-deck .mao-toolbar { grid-template-columns: minmax(0, 1fr); }
+  .mao-deck .mao-picker { max-width: none; }
+  .mao-deck .mao-picker-btn { width: 100%; }
+  .mao-date { justify-self: stretch; }
+}
+
+@container page (max-width: 720px) {
+  .mao-blurb { display: none; }
+  .mao-sessions { grid-template-columns: minmax(0, 1fr); }
+  .mao-kpis, .mao-kpis.is-daily, .mao-kpis.is-six { grid-template-columns: minmax(0, 1fr); }
+  .mao-status { grid-template-columns: minmax(0, 1fr); }
+  .mao-status-card:first-child { flex-wrap: wrap; }
 }
 
 /* live tick indicator in chart headings */

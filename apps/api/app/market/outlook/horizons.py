@@ -2,7 +2,7 @@
 
 Closes come from stored broker bars (`is_closed=1`, `close_time`), not from the browser and not from a fixed local clock.
 Daily keeps its New York 17:00 trading-day identity so existing published outlooks stay addressable.
-When several horizons close together, the caller freezes one snapshot and processes Monthly → Weekly → Daily → H8.
+When several horizons close together, the caller freezes one snapshot and processes Quarterly → Monthly → Weekly → Daily → H8.
 """
 from __future__ import annotations
 
@@ -18,13 +18,14 @@ from ..scanner_config import GOLD
 from .lifecycle import lifecycle_for
 from .store import DONE_STATES, now_iso
 
-HORIZON_ORDER = ("MONTHLY", "WEEKLY", "DAILY", "H8")
-PREFIX = {"WEEKLY": "W1", "MONTHLY": "MN", "H8": "H8"}
-TIMEFRAME = {"MONTHLY": "MN", "WEEKLY": "W1", "DAILY": "D1", "H8": "H8"}
-SPAN = {"MONTHLY": timedelta(days=31), "WEEKLY": timedelta(days=7), "DAILY": timedelta(days=1), "H8": timedelta(hours=8)}
-CLOCK = {"MONTHLY": "EURUSD", "WEEKLY": "EURUSD", "DAILY": "EURUSD", "H8": GOLD}
-LOOKBACK = {"MONTHLY": 6, "WEEKLY": 12, "H8": 48}
-CATCHUP = {"MONTHLY": 2, "WEEKLY": 2, "H8": 3}
+HORIZON_ORDER = ("QUARTERLY", "MONTHLY", "WEEKLY", "DAILY", "H8")
+PREFIX = {"QUARTERLY": "Q", "WEEKLY": "W1", "MONTHLY": "MN", "H8": "H8"}
+TIMEFRAME = {"QUARTERLY": "MN", "MONTHLY": "MN", "WEEKLY": "W1", "DAILY": "D1", "H8": "H8"}
+SPAN = {"QUARTERLY": timedelta(days=93), "MONTHLY": timedelta(days=31), "WEEKLY": timedelta(days=7), "DAILY": timedelta(days=1), "H8": timedelta(hours=8)}
+CLOCK = {"QUARTERLY": "EURUSD", "MONTHLY": "EURUSD", "WEEKLY": "EURUSD", "DAILY": "EURUSD", "H8": GOLD}
+LOOKBACK = {"QUARTERLY": 4, "MONTHLY": 6, "WEEKLY": 12, "H8": 48}
+CATCHUP = {"QUARTERLY": 1, "MONTHLY": 2, "WEEKLY": 2, "H8": 3}
+QUARTER_END_MONTHS = (3, 6, 9, 12)
 
 
 def ordered(names: list[str] | tuple[str, ...]) -> list[str]:
@@ -53,6 +54,13 @@ def project_next_close(closes: list[datetime], horizon: str, now: datetime) -> d
             if nxt > now:
                 return nxt
             nxt = _add_months(nxt, 1)
+        return nxt
+    if horizon == "QUARTERLY":
+        nxt = _add_months(latest, 3)
+        for _ in range(8):
+            if nxt > now:
+                return nxt
+            nxt = _add_months(nxt, 3)
         return nxt
     if horizon == "WEEKLY":
         nxt = latest + timedelta(days=7)
@@ -119,6 +127,46 @@ def recent_closes(conn, timeframe: str, symbol: str, until: datetime, limit: int
     return out
 
 
+def recent_quarter_closes(conn, symbol: str, until: datetime, limit: int) -> list[datetime]:
+    """Calendar quarter ends: MN bar whose *open* month is Mar/Jun/Sep/Dec, using its broker ``close_time``."""
+    try:
+        from ..repository import MarketRepository
+        from .service import _scope_sql
+
+        repo = MarketRepository(conn)
+        if repo is None or not getattr(repo, "conn", None):
+            return []
+        table, scope, sp = _scope_sql(repo)
+        sql = (
+            f"SELECT open_time, close_time FROM {table} WHERE {scope}symbol=? AND timeframe='MN' AND is_closed=1 "
+            "AND close_time<=? ORDER BY close_time DESC LIMIT ?"
+        )
+        rows = repo.conn.execute(sql, (*sp, symbol, until.isoformat(), max(limit * 6, 24))).fetchall()
+    except Exception:
+        return []
+    out: list[datetime] = []
+    for row in rows:
+        try:
+            open_t = _as_utc(values(row)[0])
+            close_t = _as_utc(values(row)[1])
+            if open_t.month in QUARTER_END_MONTHS:
+                out.append(close_t)
+        except (TypeError, ValueError):
+            continue
+    return sorted(set(out), reverse=True)[:limit]
+
+
+def quarter_reference_price(bars: dict[str, list[Bar]]) -> tuple[float, datetime] | None:
+    """Closed quarterly aggregate close aligned with Channel Intelligence (3× MN)."""
+    from .. import channel_intelligence as chan
+
+    q = chan.channel_bars(bars).get("Q") or []
+    if not q:
+        return None
+    last = q[-1]
+    return last.c, last.t
+
+
 def pending_closes(conn, store, horizon: str, now: datetime, grace_minutes: float) -> list[datetime]:
     """Missed finalized closes, newest first, bounded so a restart cannot replay the whole history.
 
@@ -127,7 +175,10 @@ def pending_closes(conn, store, horizon: str, now: datetime, grace_minutes: floa
     if horizon not in PREFIX:
         return []
     until = now - timedelta(minutes=grace_minutes)
-    found = recent_closes(conn, TIMEFRAME[horizon], CLOCK[horizon], until, LOOKBACK[horizon])
+    if horizon == "QUARTERLY":
+        found = recent_quarter_closes(conn, CLOCK[horizon], until, LOOKBACK[horizon])
+    else:
+        found = recent_closes(conn, TIMEFRAME[horizon], CLOCK[horizon], until, LOOKBACK[horizon])
     pending = []
     for close in found:
         key = run_key(horizon, close)
@@ -148,7 +199,7 @@ def pending_closes(conn, store, horizon: str, now: datetime, grace_minutes: floa
 def due_closes(conn, store, now: datetime, grace_minutes: float) -> dict[str, datetime]:
     """The newest outstanding close per non-daily horizon."""
     out = {}
-    for horizon in ("MONTHLY", "WEEKLY", "H8"):
+    for horizon in ("QUARTERLY", "MONTHLY", "WEEKLY", "H8"):
         pending = pending_closes(conn, store, horizon, now, grace_minutes)
         if pending:
             out[horizon] = pending[0]
@@ -211,6 +262,29 @@ def decorate(outlook: dict, horizon: str, bars: dict[str, list[Bar]]) -> dict:
     outlook["horizon"] = horizon
     if horizon == "WEEKLY":
         _attach_weekly(outlook, bars.get("W1") or [])
+    elif horizon == "QUARTERLY":
+        outlook["timeframe_focus"] = ["Y", "YTD", "HY", "Q", "MN", "W"]
+        outlook["strategic"] = {
+            "overrides_shorter": False,
+            "role": "Strategic context for the next three months. Monthly and shorter horizons still stand on their own when they qualify.",
+        }
+        outlook["session_plan"] = []
+        inv = outlook.get("invalidation") or {}
+        d = (outlook.get("expected_direction") or "").upper()
+        word = "bullish" if d == "BULLISH" else "bearish" if d == "BEARISH" else "neutral"
+        inv_px = inv.get("price")
+        inv_txt = f" while price holds {'above' if d == 'BULLISH' else 'below' if d == 'BEARISH' else 'inside'} {inv_px}" if inv_px else ""
+        outlook["conclusion"] = (
+            f"Quarterly {word} bias from Y/HY/Q/MN channel and structure alignment{inv_txt}. "
+            "Watch weekly and monthly closes for continuation or transition — this is macro context, not an intraday trigger."
+        )
+        ps = outlook.get("primary_scenario") or {}
+        if ps.get("summary") and "H1" in ps["summary"]:
+            ps = dict(ps)
+            ps["summary"] = ps["summary"].split(" Expect H1")[0].split(" Monitor H1")[0] + (
+                " Expect moves to unfold over weeks, confirmed on W1/MN structure."
+            )
+            outlook["primary_scenario"] = ps
     elif horizon == "MONTHLY":
         outlook["timeframe_focus"] = ["YTD", "Q", "MN", "W"]
         outlook["strategic"] = {

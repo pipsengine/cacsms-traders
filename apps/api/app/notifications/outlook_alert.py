@@ -14,8 +14,8 @@ from .engine import AlertEngine
 EVENT_TYPE = "AI_OUTLOOK_PUBLISHED"
 LIFECYCLE_EVENT = "AI_OUTLOOK_EVENT"
 ALL_SYMBOLS = "ALL"
-_SPAN = {"WEEKLY": timedelta(days=7), "MONTHLY": timedelta(days=31), "H8": timedelta(hours=8)}
-_TF = {"DAILY": "D1", "WEEKLY": "W1", "MONTHLY": "MN", "H8": "H8"}
+_SPAN = {"WEEKLY": timedelta(days=7), "MONTHLY": timedelta(days=31), "QUARTERLY": timedelta(days=93), "H8": timedelta(hours=8)}
+_TF = {"DAILY": "D1", "WEEKLY": "W1", "MONTHLY": "MN", "QUARTERLY": "Q", "H8": "H8"}
 TOP_OPPORTUNITIES = 5
 
 

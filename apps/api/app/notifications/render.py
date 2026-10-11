@@ -271,7 +271,7 @@ def outlook_sections(e: dict) -> tuple[str, list[tuple[str, list[tuple[str, str]
     timing = (f"Late — completed after market open (Asian session opened {asian})" if m.get("late")
               else f"On time — ready before market open (Asian session opens {asian})")
     summary = [
-        ("Analysis", f"{ {'DAILY': 'D1', 'WEEKLY': 'W1', 'MONTHLY': 'MN', 'H8': 'H8'}.get(m.get('horizon') or '', 'D1') } close of {_day(m.get('analysis_date'))}"),
+        ("Analysis", f"{ {'DAILY': 'D1', 'WEEKLY': 'W1', 'MONTHLY': 'MN', 'QUARTERLY': 'Q', 'H8': 'H8'}.get(m.get('horizon') or '', 'D1') } close of {_day(m.get('analysis_date'))}"),
         ("Outlook for", _day(m.get("outlook_for"))),
         ("Completed", _time(m.get("published_at"))),
         ("Timing", timing),

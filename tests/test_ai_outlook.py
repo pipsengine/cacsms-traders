@@ -566,4 +566,4 @@ def test_latest_horizon_endpoint_rejects_unknown_and_serves_weekly(service_env, 
         body = missing.json()
         assert body["horizon"] == "WEEKLY" and body["run"] is None
         assert client.get("/api/ai-outlook/latest?horizon=NOPE").status_code == 400
-        assert set(client.get("/api/ai-outlook/status").json()["horizons"]) == {"DAILY", "WEEKLY", "MONTHLY", "H8"}
+        assert set(client.get("/api/ai-outlook/status").json()["horizons"]) == {"DAILY", "WEEKLY", "MONTHLY", "QUARTERLY", "H8"}

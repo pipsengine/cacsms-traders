@@ -28,6 +28,8 @@ SOURCES = {
     "MOMENTUM": "Momentum",
 }
 CHANNEL_WEIGHT = {"Y": 0.35, "YTD": 0.25, "HY": 0.35, "Q": 0.45, "MN": 0.6, "W": 0.85, "D1": 0.85, "H8": 0.55, "H1": 0.3}
+QUARTERLY_CHANNEL_SCALE = {"Y": 1.35, "YTD": 1.2, "HY": 1.25, "Q": 1.45, "MN": 1.2, "W": 1.0, "D1": 0.55, "H8": 0.35, "H1": 0.2}
+MONTHLY_CHANNEL_SCALE = {"Y": 1.1, "YTD": 1.15, "HY": 1.1, "Q": 1.25, "MN": 1.35, "W": 1.0, "D1": 0.65, "H8": 0.4, "H1": 0.25}
 HTF = ("Y", "HY", "Q", "MN", "W")
 REGIME_WEIGHT = {"W": 1.0, "D1": 0.9, "H8": 0.6, "H1": 0.35}
 EVENT_WEIGHT = {"W": 0.9, "D1": 0.65, "H8": 0.45, "H1": 0.3}
@@ -75,9 +77,10 @@ def _recent(at: str, anchor: datetime, tf: str) -> bool:
     return datetime.fromisoformat(at) >= anchor - timedelta(hours=TF_HOURS[tf] * EVENT_WINDOW_BARS[tf])
 
 
-def aggregate(symbol: str, a: dict, price: float, anchor: datetime, strength: dict | None) -> dict:
+def aggregate(symbol: str, a: dict, price: float, anchor: datetime, strength: dict | None, *, horizon: str = "DAILY") -> dict:
     """Facts (structured engine outputs at ``price``) plus the weighted evidence list."""
     dp = digits_for(symbol)
+    ch_scale = QUARTERLY_CHANNEL_SCALE if horizon == "QUARTERLY" else MONTHLY_CHANNEL_SCALE if horizon == "MONTHLY" else None
     cs, ts, ovs, fs, bs, rs = (chan.channel_settings(), trend_settings(), overview_settings(), frac.fractal_settings(),
                                bos.bos_settings(), range_settings())
     ev = _Collector()
@@ -90,7 +93,7 @@ def aggregate(symbol: str, a: dict, price: float, anchor: datetime, strength: di
         if not v.get("available"):
             continue
         d = {"UPTREND": 1, "DOWNTREND": -1}.get(v["direction"]["key"], 0)
-        w = CHANNEL_WEIGHT[tf] * SLOPE.get(v["slope_strength"], 0.7) * VALIDITY.get(v["validity"]["key"], 0.7)
+        w = CHANNEL_WEIGHT[tf] * (ch_scale.get(tf, 1.0) if ch_scale else 1.0) * SLOPE.get(v["slope_strength"], 0.7) * VALIDITY.get(v["validity"]["key"], 0.7)
         if d:
             ev.add("CHANNEL", tf, "trend", d, w, f"{tf} channel {v['direction']['label'].lower()}",
                    f"{v['slope_strength']} slope, {v['validity']['label'].lower()}, price at {v['position']:.0f}% of the channel.",

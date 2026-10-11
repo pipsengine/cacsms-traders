@@ -182,6 +182,10 @@ body {
   box-sizing: border-box;
 }
 
+.page:has(.mao-page) {
+  padding: clamp(10px, 1.6vw, 18px) clamp(12px, 2vw, 22px);
+}
+
 .card,
 .section-card,
 .notice,

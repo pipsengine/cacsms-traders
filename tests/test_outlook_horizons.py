@@ -39,8 +39,8 @@ def _outlook(**extra):
     return base
 
 
-def test_coincident_closes_run_monthly_then_weekly_then_daily_then_h8():
-    assert ordered(["H8", "DAILY", "MONTHLY", "WEEKLY"]) == ["MONTHLY", "WEEKLY", "DAILY", "H8"]
+def test_coincident_closes_run_quarterly_then_monthly_then_weekly_then_daily_then_h8():
+    assert ordered(["H8", "DAILY", "MONTHLY", "WEEKLY", "QUARTERLY"]) == ["QUARTERLY", "MONTHLY", "WEEKLY", "DAILY", "H8"]
     same = CUTOFF
     closes = {"H8": same, "DAILY": same + timedelta(minutes=2), "WEEKLY": same + timedelta(minutes=1)}
     assert coincident(closes, timedelta(minutes=5))
@@ -98,6 +98,12 @@ def test_weekly_sch_stays_off_the_price_pane():
     monthly = {"conclusion": "Higher-timeframe bias holds.", "evidence_for": [], "evidence_against": [], "data_quality": {"checks": []}}
     decorate(monthly, "MONTHLY", {})
     assert monthly["strategic"]["overrides_shorter"] is False
+    quarterly = {"conclusion": "Macro bias holds.", "evidence_for": [], "evidence_against": [], "data_quality": {"checks": []}}
+    decorate(quarterly, "QUARTERLY", {})
+    assert quarterly["strategic"]["overrides_shorter"] is False
+    assert "Q" in quarterly["timeframe_focus"]
+    assert quarterly["session_plan"] == []
+    assert "Quarterly" in quarterly["conclusion"]
 
 
 def test_next_analysis_follows_each_horizon_clock():
@@ -108,12 +114,15 @@ def test_next_analysis_follows_each_horizon_clock():
         [datetime(2026, 10, 4, tzinfo=timezone.utc), datetime(2026, 9, 27, tzinfo=timezone.utc)], "WEEKLY", now)
     monthly = project_next_close(
         [datetime(2026, 10, 1, tzinfo=timezone.utc), datetime(2026, 9, 1, tzinfo=timezone.utc)], "MONTHLY", now)
+    quarterly = project_next_close(
+        [datetime(2026, 9, 30, tzinfo=timezone.utc), datetime(2026, 6, 30, tzinfo=timezone.utc)], "QUARTERLY", now)
     h8 = [datetime(2026, 10, 9, hour, tzinfo=timezone.utc) for hour in (0, 8, 16)]
     h8 += [datetime(2026, 10, 8, hour, tzinfo=timezone.utc) for hour in (0, 8, 16)]
     h8.append(datetime(2026, 10, 5, 8, tzinfo=timezone.utc))
     gold = project_next_close(h8, "H8", now)
     assert weekly == datetime(2026, 10, 11, tzinfo=timezone.utc)
     assert monthly == datetime(2026, 11, 1, tzinfo=timezone.utc)
+    assert quarterly == datetime(2026, 12, 30, tzinfo=timezone.utc)
     assert gold == datetime(2026, 10, 12, 8, tzinfo=timezone.utc)
     assert weekly != monthly != gold
 

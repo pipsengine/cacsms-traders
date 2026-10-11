@@ -16,6 +16,7 @@ const HORIZONS = [
   { id: 'daily', api: 'DAILY', label: 'Daily Outlook', tf: 'D1' as OutlookTf, title: 'Daily Analysis (D1 Close)', close: 'Daily Close', blurb: 'Next trading day and Asian, London and New York session outlook for every instrument.' },
   { id: 'weekly', api: 'WEEKLY', label: 'Weekly Outlook', tf: 'W' as OutlookTf, title: 'Weekly Analysis (W1 Close)', close: 'Weekly Close', blurb: 'Upcoming week direction, confirmed weekly fractals and SCH beneath the weekly chart.' },
   { id: 'monthly', api: 'MONTHLY', label: 'Monthly Outlook', tf: 'MN' as OutlookTf, title: 'Monthly Analysis (MN Close)', close: 'Monthly Close', blurb: 'Strategic outlook for the next trading month. It does not cancel a valid shorter-term opportunity.' },
+  { id: 'quarterly', api: 'QUARTERLY', label: 'Q Analysis', tf: 'Q' as OutlookTf, title: 'Quarterly Analysis (Q Close)', close: 'Quarterly Close', blurb: 'Three-month strategic overview after each calendar quarter close. Shorter horizons still qualify on their own.' },
   { id: 'gold', api: 'H8', label: 'Gold H8 Session Outlook', tf: 'H8' as OutlookTf, title: 'Gold H8 Session (XAUUSD)', close: 'H8 Close', blurb: 'XAUUSD operational direction after each closed H8 candle, with H1 validation and M15 confirmation.' },
 ] as const;
 type HorizonId = (typeof HORIZONS)[number]['id'];
@@ -39,7 +40,7 @@ function forHorizon(payloadHorizon: string | undefined, apiHorizon: string) {
 }
 
 function parseTab(tab?: string): { horizon: HorizonId; section: SectionId } {
-  if (tab === 'weekly' || tab === 'monthly' || tab === 'gold') return { horizon: tab, section: 'overview' };
+  if (tab === 'weekly' || tab === 'monthly' || tab === 'quarterly' || tab === 'gold') return { horizon: tab, section: 'overview' };
   if (tab === 'scenarios' || tab === 'levels' || tab === 'chart' || tab === 'history') return { horizon: 'daily', section: tab };
   return { horizon: 'daily', section: 'overview' };
 }
@@ -167,7 +168,7 @@ export function AiMarketOutlook({ initialTab, onTab }: { initialTab?: string; on
   const run = latestData?.run ?? null;
   const schedule = latestData?.schedule ?? null;
   const st = runState(latestData?.current?.state);
-  const waiting = horizon === 'weekly' ? 'W1' : horizon === 'monthly' ? 'MN' : horizon === 'gold' ? 'H8' : 'D1';
+  const waiting = horizon === 'weekly' ? 'W1' : horizon === 'monthly' ? 'MN' : horizon === 'quarterly' ? 'Q' : horizon === 'gold' ? 'H8' : 'D1';
 
   const body = () => {
     if (!latestData) return latest.error ? <Blocking title="AI Market Outlook unavailable" error={latest.error} /> : <Blocking loading="Loading the latest published outlook…" />;
@@ -211,64 +212,71 @@ export function AiMarketOutlook({ initialTab, onTab }: { initialTab?: string; on
   return (
     <div className="mst-page mao-page">
       <header className="mao-head">
-        <div>
-          <nav className="mst-crumb" aria-label="Breadcrumb">
-            Market Vision <span aria-hidden>›</span> <span>AI Market Outlook</span>
-          </nav>
+        <nav className="mst-crumb" aria-label="Breadcrumb">
+          Market Vision <span aria-hidden>›</span> <span>AI Market Outlook</span>
+        </nav>
+        <div className="mao-head-line">
           <h1>{spec.label}</h1>
-          <p>{spec.blurb}</p>
-        </div>
-        <div className="mao-head-right">
-          <StatusCluster
-            title={spec.title}
-            run={run}
-            current={latestData?.current ?? null}
-            schedule={schedule}
-            withDays={horizon === 'weekly' || horizon === 'monthly'}
-            onReload={() => setTick((t) => t + 1)}
-            busy={latest.refreshing || detail.refreshing}
-            runBusy={runBusy}
-            onRunNow={
-              horizon === 'daily'
-                ? () => {
-                    setRunBusy(true);
-                    outlookApi
-                      .runNow()
-                      .then(() => setTick((t) => t + 1))
-                      .finally(() => setRunBusy(false));
-                  }
-                : undefined
-            }
-          />
-          {horizon === 'daily' && section !== 'overview' ? <SessionCards plans={sessions} schedule={schedule} captions={CAPTIONS[section]} /> : null}
+          <p className="mao-blurb">{spec.blurb}</p>
         </div>
       </header>
 
-      <div className="mao-tabs" role="tablist" aria-label="Outlook horizon">
-        {HORIZONS.map((item) => (
-          <button key={item.id} role="tab" aria-selected={horizon === item.id} className={horizon === item.id ? 'is-on' : ''} onClick={() => chooseHorizon(item.id)}>
-            {item.label}
-          </button>
-        ))}
-        {latestData?.stale ? <span className="mao-stale">Showing the last published outlook — the current cycle is {st.label.toLowerCase()}.</span> : null}
-      </div>
-      <div className="mao-tabs is-sub" role="tablist" aria-label="Outlook section">
-        {SECTIONS.map((item) => (
-          <button key={item.id} role="tab" aria-selected={section === item.id} className={section === item.id ? 'is-on' : ''} onClick={() => chooseSection(item.id)}>
-            {item.label}
-          </button>
-        ))}
-      </div>
-
-      <div className="mao-toolbar">
-        <SymbolPicker key={apiHorizon} label={`${spec.label} opportunities`} symbol={active} rows={isGold ? rows.filter((r) => r.symbol === 'XAUUSD') : rows} onSelect={setSymbol} allowAll={isHistory && !isGold} />
-        <TfBar value={chartTf} tfs={isGold ? GOLD_TFS : undefined} onChange={(t) => !isHistory && setTf(t)} />
-        <div className="mao-date">
-          <small>Analysis close</small>
-          <b>{run ? `${dayLabel(run.close_at || run.analysis_date)} (${spec.close})` : '—'}</b>
+      <section className="mao-deck" aria-label="Outlook controls">
+        {latestData?.stale ? (
+          <p className="mao-stale mao-stale-banner" role="status">
+            Showing the last published outlook — the current cycle is {st.label.toLowerCase()}.
+          </p>
+        ) : null}
+        <StatusCluster
+          title={spec.title}
+          run={run}
+          current={latestData?.current ?? null}
+          schedule={schedule}
+          withDays={horizon === 'weekly' || horizon === 'monthly' || horizon === 'quarterly'}
+          onReload={() => setTick((t) => t + 1)}
+          busy={latest.refreshing || detail.refreshing}
+          runBusy={runBusy}
+          onRunNow={
+            horizon === 'daily'
+              ? () => {
+                  setRunBusy(true);
+                  outlookApi
+                    .runNow()
+                    .then(() => setTick((t) => t + 1))
+                    .finally(() => setRunBusy(false));
+                }
+              : undefined
+          }
+        />
+        {horizon === 'daily' ? (
+          <SessionCards plans={sessions} schedule={schedule} captions={section !== 'overview' ? CAPTIONS[section] : undefined} />
+        ) : null}
+        <div className="mao-deck-nav">
+          <div className="mao-tabs mao-tabs-horizon" role="tablist" aria-label="Outlook horizon">
+            {HORIZONS.map((item) => (
+              <button key={item.id} role="tab" aria-selected={horizon === item.id} className={horizon === item.id ? 'is-on' : ''} onClick={() => chooseHorizon(item.id)}>
+                {item.label}
+              </button>
+            ))}
+          </div>
+          <div className="mao-tabs is-sub" role="tablist" aria-label="Outlook section">
+            {SECTIONS.map((item) => (
+              <button key={item.id} role="tab" aria-selected={section === item.id} className={section === item.id ? 'is-on' : ''} onClick={() => chooseSection(item.id)}>
+                {item.label}
+              </button>
+            ))}
+          </div>
         </div>
-        {horizon === 'daily' && section === 'overview' ? <SessionCards plans={sessions} schedule={schedule} /> : null}
-      </div>
+        <div className="mao-toolbar">
+          <SymbolPicker key={apiHorizon} label={`${spec.label} opportunities`} symbol={active} rows={isGold ? rows.filter((r) => r.symbol === 'XAUUSD') : rows} onSelect={setSymbol} allowAll={isHistory && !isGold} />
+          <div className="mao-date">
+            <small>Analysis close</small>
+            <b>{run ? `${dayLabel(run.close_at || run.analysis_date)} (${spec.close})` : '—'}</b>
+          </div>
+          <TfBar value={chartTf} tfs={isGold ? GOLD_TFS : undefined} onChange={(t) => !isHistory && setTf(t)} />
+        </div>
+      </section>
+
       {context && section === 'overview' ? <p className="mao-horizon-note">{context}</p> : null}
 
       {body()}
