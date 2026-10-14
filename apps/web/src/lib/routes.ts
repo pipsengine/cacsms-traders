@@ -35,7 +35,7 @@ export const LEGACY_ROUTE: Record<
 
 export const PAGE_CRUMB: Record<Page, string> = {
   overview: 'Overview',
-  'autonomous-engine': 'Autonomous Engine',
+  'autonomous-engine': 'Cacsms Engine',
   'strength-intelligence': 'Strength Intelligence',
   'market-scanner': 'Market Scanner',
   'market-structure': 'Market Structure',

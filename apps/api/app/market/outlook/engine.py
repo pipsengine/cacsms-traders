@@ -18,6 +18,8 @@ MIN_BARS = {"MN": 24, "W1": 52, "D1": 120, "H8": 90, "H1": 120}
 TF_SPAN = {"W1": timedelta(days=7), "D1": timedelta(days=1), "H8": timedelta(hours=8), "H1": timedelta(hours=1)}
 STALE_AFTER = {"D1": timedelta(hours=6), "H8": timedelta(hours=12), "H1": timedelta(hours=4)}
 # MT5 stores D1 at UTC midnight; outlook calendar uses New York 17:00 rollover.
+# A weekday's own broker bar closes at the next UTC midnight (see calendar.d1_broker_cutoff).
+# Until that bar exists, the previous UTC-midnight bar is still fresh for up to 27 hours — enough for Tue–Fri, not for Monday after the weekend gap.
 D1_UTC_MIDNIGHT_MAX_LAG = timedelta(hours=27)
 MTF_ROWS = ("Y", "YTD", "HY", "Q", "MN", "W", "D1", "H8", "H1")
 WORD = {1: "Bullish", -1: "Bearish", 0: "Range"}

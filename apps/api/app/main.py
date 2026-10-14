@@ -276,3 +276,6 @@ app.include_router(notifications.router)
 
 from .routers import autonomous
 app.include_router(autonomous.router)
+
+from .routers import cacsms_engine
+app.include_router(cacsms_engine.router)

@@ -328,24 +328,40 @@ def currencies(symbol: str) -> tuple[str, str]:
     return symbol[:3], symbol[3:6]
 
 
-def risk_decision(o: dict, portfolio: list[dict], ae: AESettings) -> tuple[str, str, dict]:
+def risk_decision(o: dict, portfolio: list[dict], ae: AESettings, *, position_cap: int | None = None) -> tuple[str, str, dict]:
     """Risk & portfolio gate for a confirmed opportunity: (state, reason_code, metrics).
 
-    ``portfolio`` holds the analysis-only plans already authorised (stage EXECUTION, still being tracked)."""
+    ``portfolio`` holds the analysis-only plans already authorised (stage EXECUTION, still being tracked).
+    ``position_cap`` is the account profile limit. The stricter of that limit and the engine cap wins.
+    An outlook horizon stamped on the evidence is also held to its per-horizon ceiling.
+    """
+    from ..cacsms_engine.policy import budget_open, global_position_limit, horizon_slot_cap, ui_horizon
+
     d = SIGN[o["direction"]]
     ev = o.get("evidence") or {}
     entry = (ev.get("confirmation") or {}).get("close") or (o["entry_lo"] + o["entry_hi"]) / 2
     rr = _rr(d, entry, o["invalidation"], o["target_1"])
+    limit, limit_rule = global_position_limit(ae.max_concurrent, position_cap)
     metrics: dict = {"entry_reference": entry, "reward_risk": rr, "confidence": o.get("confidence"),
-                     "open_plans": len(portfolio), "max_concurrent": ae.max_concurrent}
+                     "open_plans": len(portfolio), "max_concurrent": ae.max_concurrent, "position_cap": limit,
+                     "position_rule": limit_rule}
     if rr is None or rr < ae.min_reward_risk:
         return "RISK_REJECTED", "RISK_REJECTED", {**metrics, "rule": "MIN_REWARD_RISK", "required": ae.min_reward_risk}
     if (o.get("confidence") or 0) < ae.min_confidence:
         return "RISK_REJECTED", "RISK_REJECTED", {**metrics, "rule": "MIN_CONFIDENCE", "required": ae.min_confidence}
     if any(p["symbol"] == o["symbol"] for p in portfolio):
         return "RISK_DEFERRED", "RISK_DEFERRED", {**metrics, "rule": "SYMBOL_EXPOSURE"}
-    if len(portfolio) >= ae.max_concurrent:
-        return "RISK_DEFERRED", "RISK_DEFERRED", {**metrics, "rule": "MAX_CONCURRENT"}
+    if len(portfolio) >= limit:
+        return "RISK_DEFERRED", "RISK_DEFERRED", {**metrics, "rule": limit_rule}
+    horizon = ev.get("outlook_horizon")
+    if horizon:
+        name = ui_horizon(str(horizon))
+        cap = horizon_slot_cap(name, engine_cap=ae.max_concurrent, account_cap=position_cap)
+        used = ev.get("horizon_slots_used")
+        if cap is not None and used is not None and int(used) >= cap:
+            return "RISK_DEFERRED", "RISK_DEFERRED", {**metrics, "rule": "HORIZON_SLOT_CEILING", "horizon_cap": cap}
+        if name == "GOLD_H8" and not budget_open(ev.get("exposure_percent"), ev.get("max_exposure_percent")):
+            return "RISK_DEFERRED", "RISK_DEFERRED", {**metrics, "rule": "GOLD_RISK_BUDGET"}
     base, quote = currencies(o["symbol"])
     exposure: dict[str, int] = {}
     for p in portfolio:

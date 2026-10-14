@@ -23,6 +23,23 @@ def close_time(d: date) -> datetime:
     return datetime.combine(d, ROLLOVER, tzinfo=NEW_YORK).astimezone(timezone.utc)
 
 
+def d1_broker_cutoff(ny_close: datetime, now: datetime | None = None) -> datetime:
+    """UTC midnight when the broker D1 bar for this New York trading day finishes.
+
+    MT5 daily bars are stamped at 00:00 UTC, so Monday's bar closes up to three hours after the 17:00 New York rollover.
+    Before that midnight the bar is still forming and must not be read. After it, the cutoff stops on that midnight
+    and does not take the next trading day's bar.
+    """
+    close = ny_close if ny_close.tzinfo else ny_close.replace(tzinfo=timezone.utc)
+    close = close.astimezone(timezone.utc)
+    midnight = datetime.combine(close.date() + timedelta(days=1), time.min, tzinfo=timezone.utc)
+    if now is None:
+        return midnight
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return min(midnight, now.astimezone(timezone.utc))
+
+
 def last_closed_day(now: datetime) -> date:
     """Most recent trading day whose close is at or before ``now``."""
     d = now.astimezone(NEW_YORK).date()

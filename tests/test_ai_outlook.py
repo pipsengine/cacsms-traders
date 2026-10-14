@@ -10,7 +10,7 @@ import pytest
 
 from apps.api.app.market.outlook import calendar as cal
 from apps.api.app.market.outlook.config import outlook_settings
-from apps.api.app.market.outlook.engine import build_outlook, validate
+from apps.api.app.market.outlook.engine import build_outlook, d1_bar_fresh, validate
 from apps.api.app.market.outlook.evaluation import calibration_table, evaluate, monitor, performance
 from apps.api.app.market.scanner_analytics import Bar
 
@@ -83,6 +83,22 @@ def test_trading_day_closes_at_new_york_rollover_across_dst():
     assert cal.close_time(date(2026, 12, 2)) == datetime(2026, 12, 2, 22, tzinfo=timezone.utc)
     assert cal.d1_open_for(date(2026, 7, 13)) == datetime(2026, 7, 12, 21, tzinfo=timezone.utc)  # Monday bar opens Sunday
     assert cal.next_trading_day(date(2026, 7, 17)) == date(2026, 7, 20)
+
+
+def test_monday_broker_daily_bar_is_included_once_utc_midnight_has_passed():
+    monday = date(2026, 10, 12)
+    cutoff = cal.close_time(monday)
+    assert cutoff == datetime(2026, 10, 12, 21, tzinfo=timezone.utc)
+    # At the New York close the broker bar is still forming (it closes at the next UTC midnight).
+    assert cal.d1_broker_cutoff(cutoff, datetime(2026, 10, 12, 21, 5, tzinfo=timezone.utc)) == datetime(2026, 10, 12, 21, 5, tzinfo=timezone.utc)
+    # Tuesday morning the Monday bar has closed and the next day's bar has not.
+    assert cal.d1_broker_cutoff(cutoff, datetime(2026, 10, 13, 7, tzinfo=timezone.utc)) == datetime(2026, 10, 13, 0, tzinfo=timezone.utc)
+    winter = cal.close_time(date(2026, 12, 2))
+    assert cal.d1_broker_cutoff(winter, datetime(2026, 12, 3, 8, tzinfo=timezone.utc)) == datetime(2026, 12, 3, 0, tzinfo=timezone.utc)
+    monday_bar = [_bar(datetime(2026, 10, 12, tzinfo=timezone.utc) - timedelta(days=i), timedelta(days=1)) for i in range(4)][::-1]
+    assert d1_bar_fresh(monday_bar, cutoff, cal.d1_open_for(monday))
+    friday_only = [_bar(datetime(2026, 10, 9, tzinfo=timezone.utc), timedelta(days=1))]
+    assert not d1_bar_fresh(friday_only, cutoff, cal.d1_open_for(monday))
 
 
 def test_last_closed_day_skips_weekends_and_waits_for_close():

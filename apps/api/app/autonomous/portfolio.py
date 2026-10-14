@@ -134,6 +134,17 @@ def _account_row(conn, tenant_id: str, account_id: str) -> dict | None:
     return (connected or rows)[0]
 
 
+def open_position_cap(conn, tenant_id: str, account_id: str) -> int | None:
+    """Account profile cap. None when the account has no stored limit."""
+    account = _account_row(conn, tenant_id, account_id)
+    profile = _profile(conn, account["id"] if account else None)
+    raw = None if not profile else profile.get("max_open_positions")
+    try:
+        return None if raw is None else int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def _profile(conn, account_pk: str | None) -> dict | None:
     if not account_pk:
         return None

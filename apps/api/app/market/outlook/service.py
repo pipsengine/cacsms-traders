@@ -87,10 +87,15 @@ def candles_between(repo: MarketRepository, tf: str, symbols, start: datetime, e
     return _bars(repo.conn.execute(sql, params).fetchall())
 
 
-def freeze_snapshot(repo: MarketRepository, analysis_date: date, origin: str) -> tuple[dict, dict[str, dict[str, list[Bar]]]]:
-    """Closed-bar snapshot as of the trading day's close plus its manifest; the id is a content hash (reproducible)."""
+def freeze_snapshot(repo: MarketRepository, analysis_date: date, origin: str, now: datetime | None = None) -> tuple[dict, dict[str, dict[str, list[Bar]]]]:
+    """Closed-bar snapshot as of the trading day's close plus its manifest; the id is a content hash (reproducible).
+
+    Intraday bars stop at the New York 17:00 rollover. D1 uses the broker's UTC-midnight close, which lands a few
+    hours later, so a Monday bar that finished after the weekend is included once it has actually closed.
+    """
     cutoff = cal.close_time(analysis_date)
-    by_tf = {tf: candles_until(repo, tf, n, SCANNER_UNIVERSE, cutoff) for tf, n in BARS.items()}
+    d1_cutoff = cal.d1_broker_cutoff(cutoff, now)
+    by_tf = {tf: candles_until(repo, tf, n, SCANNER_UNIVERSE, d1_cutoff if tf == "D1" else cutoff) for tf, n in BARS.items()}
     bars = {sym: {tf: by_tf[tf].get(sym, []) for tf in BARS} for sym in SCANNER_UNIVERSE}
     symbols = {}
     for sym, tfs in bars.items():
@@ -313,10 +318,10 @@ class OutlookService:
         counts = {"published": 0, "failed": 0, "insufficient": 0, "qualified": 0}
         try:
             repo = MarketRepository(conn)
-            if prepared is not None:
+            if horizon == "DAILY":
+                manifest, bars = freeze_snapshot(repo, day, origin, now)
+            elif prepared is not None:
                 manifest, bars = prepared
-            elif horizon == "DAILY":
-                manifest, bars = freeze_snapshot(repo, day, origin)
             else:
                 from .horizons import freeze_at
                 manifest, bars = freeze_at(conn, cutoff, origin, universe, horizon, run["analysis_date"])

@@ -2,7 +2,7 @@ import React from 'react';
 import { AppShell } from './components/AppShell';
 import { Overview } from './pages/Overview';
 import { Login } from './pages/Login';
-import { AutonomousEngine } from './pages/AutonomousEngine';
+import { CacsmsEngine } from './pages/CacsmsEngine';
 import { MarketScanner } from './pages/MarketScanner';
 import { MarketStructure } from './pages/MarketStructure';
 import { ChannelIntelligence } from './pages/ChannelIntelligence';
@@ -139,7 +139,7 @@ export function App() {
   let body: React.ReactNode;
   switch (route.page) {
     case 'autonomous-engine':
-      body = <AutonomousEngine />;
+      body = <CacsmsEngine />;
       break;
     case 'strength-intelligence':
       body = <StrengthIntelligence initialTab={tab} health={health} />;

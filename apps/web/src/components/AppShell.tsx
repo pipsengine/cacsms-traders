@@ -16,7 +16,7 @@ import {
   Shield,
   Target,
   TrendingUp,
-  Workflow,
+  Layers3,
   Zap,
 } from 'lucide-react';
 import type { AuthUser, Health, Tenant } from '../types';
@@ -30,7 +30,7 @@ const nav: [string, { page: Page; label: string; icon: React.ReactNode }[]][] = 
     'AUTONOMOUS TRADER',
     [
       { page: 'overview', label: 'Overview', icon: <LayoutDashboard /> },
-      { page: 'autonomous-engine', label: 'Autonomous Engine', icon: <Workflow /> },
+      { page: 'autonomous-engine', label: 'Cacsms Engine', icon: <Layers3 /> },
     ],
   ],
   [
@@ -121,14 +121,14 @@ export function AppShell({
     return () => mq.removeEventListener('change', onChange);
   }, []);
 
-  const fitEngine = page === 'autonomous-engine';
+  const enginePage = page === 'autonomous-engine';
 
   return (
     <div
       className={[
         collapsed ? 'shell shell--collapsed' : 'shell',
         page === 'overview' ? 'shell--overview' : '',
-        fitEngine ? 'shell--ae' : '',
+        enginePage ? 'shell--ce' : '',
       ]
         .filter(Boolean)
         .join(' ')}
@@ -215,7 +215,7 @@ export function AppShell({
         </div>
       </aside>
       <main className="workspace">
-        <header className={page === 'overview' ? 'top top--overview' : fitEngine ? 'top top--ae' : 'top'}>
+        <header className={page === 'overview' ? 'top top--overview' : 'top'}>
           <div className="top-left-cluster">
             {page !== 'overview' && (
               <div className="crumb">
@@ -259,7 +259,7 @@ export function AppShell({
         </header>
         <div
           className={
-            page === 'overview' ? 'page overview-page' : page === 'system-control' ? 'page sc-hub-page' : fitEngine ? 'page ae-shell-page' : 'page'
+            page === 'overview' ? 'page overview-page' : page === 'system-control' ? 'page sc-hub-page' : enginePage ? 'page ce-shell-page' : 'page'
           }
         >
           <div className="page-inner">{children}</div>

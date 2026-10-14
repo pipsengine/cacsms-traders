@@ -444,7 +444,12 @@ class AutonomousEngine:
 
         def risk(o: dict, at: str) -> tuple[bool, list[dict]]:
             """Risk gate; authorised plans continue into execution, which is always blocked (shadow tracking only)."""
-            state, _, metrics = opps.risk_decision(o, [p for p in portfolio if p["id"] != o["id"]], ae)
+            from .portfolio import open_position_cap
+
+            state, _, metrics = opps.risk_decision(
+                o, [p for p in portfolio if p["id"] != o["id"]], ae,
+                position_cap=open_position_cap(conn, repo.tenant, repo.account),
+            )
             o["evidence"] = {**(o.get("evidence") or {}), "risk": {**metrics, "decided_at": at}}
             if state == "RISK_APPROVED":
                 applied = apply(o, [gate(o, "RISK", "RISK_APPROVED", "RISK_APPROVED", at, metrics)])

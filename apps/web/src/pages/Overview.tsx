@@ -179,7 +179,7 @@ export function Overview({ health, summary }: { health: Health | null; summary: 
           <section className="cc-grid">
             <article className="cc-card">
               <div className="cc-card-head">
-                <h2>Autonomous Engine</h2>
+                <h2>Cacsms Engine</h2>
                 <button className="cc-link" type="button" onClick={() => go('autonomous-engine')}>Open engine</button>
               </div>
               <p className="cc-muted">{words(data.system_status)} · step {data.workflow.step_of} of {data.workflow.step_count}</p>
