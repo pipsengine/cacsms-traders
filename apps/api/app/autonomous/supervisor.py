@@ -56,7 +56,7 @@ def assess(*, now: datetime, mode: str, ctx: dict, analysis: dict, scanner_meta:
     elif mode == "SHADOW":
         check("OPERATING_MODE", "Operating mode", "OK", "Shadow — stages run and broker execution stays blocked")
     else:
-        check("OPERATING_MODE", "Operating mode", "WARN", f"{mode.replace('_', ' ').title()} still blocks broker execution")
+        check("OPERATING_MODE", "Operating mode", "OK", f"{mode.replace('_', ' ').title()} — risk-approved plans can be sent to the matching terminal")
 
     # Database
     if not db_ok:

@@ -41,6 +41,13 @@ function money(value: number | null | undefined, currency = 'USD') {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency, maximumFractionDigits: 2 }).format(value);
 }
 
+function modeHint(mode: string | null | undefined) {
+  if (mode === 'DEMO_AUTONOMOUS') return 'Demo orders enabled';
+  if (mode === 'LIVE_AUTONOMOUS') return 'Live orders enabled';
+  if (mode === 'PAUSED' || mode === 'EMERGENCY_STOP') return 'Orders halted';
+  return 'Analysis only';
+}
+
 function side(direction: string | null) {
   if (direction === 'BULLISH') return { label: 'Buy', tone: 'buy' };
   if (direction === 'BEARISH') return { label: 'Sell', tone: 'sell' };
@@ -81,7 +88,7 @@ export function ExecutionPositions() {
         <div className="exm-status">
           <Chip k="Execution Engine" v={ribbon?.system_status === 'RUNNING' ? 'RUNNING' : pretty(ribbon?.system_status)} s={ribbon?.engine_version || 'Stage 9'} ok={ribbon?.system_status === 'RUNNING'} />
           <Chip k="Safety Supervisor" v={safety?.status === 'NORMAL' ? 'OPERATIONAL' : pretty(safety?.status)} s={safety?.status === 'NORMAL' ? 'All limits enforced' : 'Check supervisor'} ok={safety?.status === 'NORMAL'} />
-          <Chip k="Operating Mode" v={(ribbon?.operating_mode || 'SHADOW').replaceAll('_', ' ')} s="Analysis only" shield />
+          <Chip k="Operating Mode" v={(ribbon?.operating_mode || 'SHADOW').replaceAll('_', ' ')} s={modeHint(ribbon?.operating_mode)} shield />
           <Chip k="Active Broker" v={ribbon?.provider_label === 'MT5' ? 'MetaTrader 5' : (ribbon?.provider_label || '—')} s={account?.environment ? `${account.environment} account` : 'Market data'} />
           <Chip k="Connection" v={ribbon?.provider_connection === 'CONNECTED' ? 'CONNECTED' : pretty(ribbon?.provider_connection)} s="Latency not measured" ok={ribbon?.provider_connection === 'CONNECTED'} />
           <Chip k="Last Reconciliation" v={when(view?.last_cycle_at, true)} s="Engine cycle" clock />
@@ -115,7 +122,7 @@ function Monitor({ view, plans, query, onQuery, focus, onFocus }: { view: Execut
       <section className="exm-kpis">
         <Kpi icon={<CheckCircle2 size={16} />} tone="green" label="Authorized for Execution" value={String(view.shadow.open_plans)} hint="Ready (Stage 8)" />
         <Kpi icon={<Clock3 size={16} />} tone="blue" label="Pending Orders" value={String(view.broker.pending_orders)} hint="Awaiting broker response" />
-        <Kpi icon={<Zap size={16} />} tone="green" label="Orders Executed (Today)" value={String(view.broker.fills)} hint="No broker fills" />
+        <Kpi icon={<Zap size={16} />} tone="green" label="Orders Executed (Today)" value={String(view.broker.fills)} hint={view.broker.fills ? 'Broker fills today' : 'No broker fills'} />
         <Kpi icon={<XCircle size={16} />} tone="red" label="Rejected / Failed" value={String(view.shadow.stopped)} hint={view.shadow.stopped ? 'Shadow stops' : 'No rejections'} />
         <Kpi icon={<Crosshair size={16} />} tone="violet" label="Execution Success Rate" value={rate == null ? '—' : `${rate.toFixed(0)}%`} hint="Shadow targets / attempts" />
         <Kpi icon={<Timer size={16} />} tone="blue" label="Avg. Execution Time" value="—" hint="Not recorded" />

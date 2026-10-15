@@ -46,6 +46,7 @@ def read_terminal_account() -> dict[str, Any] | None:
             "leverage": int(getattr(ai, "leverage", 0) or 0),
             "balance": float(getattr(ai, "balance", 0) or 0),
             "equity": float(getattr(ai, "equity", 0) or 0),
+            "profit": float(getattr(ai, "profit", 0) or 0),
             "margin": float(getattr(ai, "margin", 0) or 0),
             "free_margin": float(getattr(ai, "margin_free", 0) or 0),
         }

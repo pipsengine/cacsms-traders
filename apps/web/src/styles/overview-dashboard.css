@@ -48,7 +48,7 @@ body:has(.shell--overview),
   flex: 1 1 auto;
   min-height: 0;
   max-height: none;
-  overflow: auto;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }
@@ -58,7 +58,7 @@ body:has(.shell--overview),
   min-height: 0;
   display: flex;
   flex-direction: column;
-  overflow: auto;
+  overflow: hidden;
 }
 
 .shell--overview .ov-dashboard {
@@ -1433,3 +1433,294 @@ body:has(.shell--overview),
 .cc-metrics b { display: block; font-size: 16px; }
 .cc-error { color: #b91c1c; font-size: 13px; }
 @media (max-width: 1100px) { .cc-grid { grid-template-columns: 1fr; } }
+
+/* Overview dashboard — Figma layout */
+.page.overview-page { background: #f4f7fb; }
+.ovx { display: flex; flex-direction: column; gap: 14px; min-width: 0; padding-bottom: 8px; }
+.ovx-error { margin: 0; color: #b91c1c; font-size: 13px; }
+.ovx-empty, .ovx-quiet { margin: 0; color: #7b879c; font-size: 12.5px; line-height: 1.45; }
+.ovx-kpis { display: grid; grid-template-columns: 1.2fr 1.15fr 0.95fr 0.9fr 1.15fr 132px 128px 118px; gap: 10px; }
+.ovx-kpi, .ovx-control, .ovx-card {
+  background: #fff; border: 1px solid #e7eef6; border-radius: 16px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, .04), 0 8px 20px rgba(16, 24, 40, .03);
+}
+.ovx-kpi { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; min-width: 0; }
+.ovx-kpi small, .ovx-control small { display: block; color: #7b879c; font-size: 11px; font-weight: 600; }
+.ovx-kpi b { display: block; margin-top: 2px; color: #122033; font-size: 13.5px; letter-spacing: -0.01em; line-height: 1.25; }
+.ovx-kpi b.ovx-num { font-size: 20px; font-weight: 750; }
+.ovx-kpi em { display: block; margin-top: 2px; font-style: normal; color: #8b97a8; font-size: 11.5px; }
+.ovx .is-up { color: #15803d; }
+.ovx .is-down { color: #dc2626; }
+.ovx-kpi-icon { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; flex: 0 0 auto; }
+.ovx-kpi-icon.is-green { background: #ecfdf3; color: #16a34a; }
+.ovx-kpi-icon.is-blue { background: #eff6ff; color: #2563eb; }
+.ovx-kpi-icon.is-rose { background: #fff1f2; color: #e11d48; }
+.ovx-control { padding: 10px 12px; display: flex; flex-direction: column; justify-content: center; gap: 8px; min-width: 0; }
+.ovx-control-row { display: flex; align-items: center; gap: 8px; }
+.ovx-control-row b { font-size: 13px; color: #15803d; }
+.ovx-switch { width: 36px; height: 20px; border-radius: 99px; background: #e2e8f0; position: relative; display: inline-block; }
+.ovx-switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(15, 23, 42, .2); transition: transform .15s ease; }
+.ovx-switch[data-on='1'] { background: #22c55e; }
+.ovx-switch[data-on='1']::after { transform: translateX(16px); }
+.ovx-select { height: 32px; border: 1px solid #e6edf5; border-radius: 8px; display: flex; align-items: center; padding: 0 28px 0 10px; font-size: 13px; font-weight: 650; color: #122033; background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E") right 8px center no-repeat; }
+.ovx-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.ovx-card { padding: 14px 16px 16px; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.ovx-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ovx-head h2 { margin: 0; font-size: 15px; letter-spacing: -0.02em; color: #122033; }
+.ovx-link { border: 0; background: none; padding: 0; color: #2563eb; font-size: 12.5px; font-weight: 650; cursor: pointer; }
+.ovx-link:hover { text-decoration: underline; }
+.ovx-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.ovx-pills button { border: 0; background: #f1f5f9; color: #64748b; border-radius: 999px; padding: 5px 10px; font-size: 12px; font-weight: 650; cursor: pointer; }
+.ovx-pills button.is-on { background: #2563eb; color: #fff; }
+.ovx-pills-tight { gap: 4px; }
+.ovx-pills-tight button { padding: 4px 8px; }
+.ovx-bias { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 4px; }
+.ovx-bias-name { display: flex; align-items: center; gap: 8px; }
+.ovx-bias-name b { font-size: 28px; letter-spacing: -0.03em; color: #122033; }
+.ovx-bias-name.is-bear b, .ovx-score.is-bear b { color: #dc2626; }
+.ovx-bias-name.is-bull b, .ovx-score.is-bull b { color: #15803d; }
+.ovx-bias-mark { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; background: #fef2f2; color: #dc2626; }
+.ovx-bias-name.is-bull .ovx-bias-mark { background: #ecfdf3; color: #15803d; }
+.ovx-score { text-align: right; }
+.ovx-score b { display: block; font-size: 28px; letter-spacing: -0.03em; line-height: 1; }
+.ovx-score span { color: #94a3b8; font-size: 11px; }
+.ovx-copy { margin: 0; color: #475569; font-size: 13px; line-height: 1.5; }
+.ovx-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.ovx-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid #e7eef6; background: #f8fafc; border-radius: 999px; padding: 4px 8px; cursor: pointer; }
+.ovx-chip b { font-size: 12px; color: #122033; }
+.ovx-chip em { font-style: normal; font-size: 12px; font-weight: 700; }
+.ovx-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.ovx-table th { text-align: left; color: #94a3b8; font-size: 11px; font-weight: 650; padding: 4px 6px 8px 0; }
+.ovx-table td { padding: 7px 6px 7px 0; border-top: 1px solid #f1f5f9; color: #122033; vertical-align: middle; }
+.ovx-sym { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0; }
+.ovx-sym b { overflow: hidden; text-overflow: ellipsis; }
+.ovx-signal { display: block; height: 8px; width: 72px; border-radius: 99px; background: #f1f5f9; overflow: hidden; }
+.ovx-signal i { display: block; height: 100%; border-radius: 99px; }
+.ovx-trend { display: inline-flex; border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 700; background: #f1f5f9; color: #64748b; }
+.ovx-trend.is-positive { background: #ecfdf3; color: #15803d; }
+.ovx-trend.is-negative { background: #fef2f2; color: #dc2626; }
+.ovx-opps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.ovx-opps button { width: 100%; display: grid; grid-template-columns: 36px minmax(0, 1fr) 108px; gap: 8px; align-items: center; border: 0; border-top: 1px solid #f1f5f9; background: transparent; text-align: left; padding: 8px 0; cursor: pointer; }
+.ovx-opp-copy { min-width: 0; }
+.ovx-opp-copy b { display: block; color: #122033; font-size: 13px; }
+.ovx-opp-copy em { font-style: normal; font-weight: 650; }
+.ovx-opp-copy small { display: block; color: #94a3b8; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ovx-conf { display: flex; align-items: center; gap: 8px; }
+.ovx-conf i { flex: 1; height: 6px; border-radius: 99px; background: #f1f5f9; overflow: hidden; display: block; }
+.ovx-conf b { display: block; height: 100%; border-radius: 99px; }
+.ovx-conf b.is-up { background: #22c55e; }
+.ovx-conf b.is-down { background: #ef4444; }
+.ovx-conf b.is-mid { background: #eab308; }
+.ovx-conf strong { font-size: 12px; color: #334155; min-width: 32px; text-align: right; }
+.ovx-steps { list-style: none; margin: 6px 0 0; padding: 0 0 8px; display: flex; }
+.ovx-steps li { flex: 1; text-align: center; position: relative; color: #94a3b8; }
+.ovx-steps li span { width: 28px; height: 28px; border-radius: 50%; display: inline-grid; place-items: center; background: #e8eef6; color: #64748b; font-size: 12px; font-weight: 750; position: relative; z-index: 1; }
+.ovx-steps li small { display: block; margin-top: 6px; font-size: 11px; }
+.ovx-steps li.is-done span, .ovx-steps li.is-current span { background: #2563eb; color: #fff; }
+.ovx-steps li.is-current small { color: #1d4ed8; font-weight: 700; }
+.ovx-steps li:not(:last-child)::before { content: ''; position: absolute; top: 14px; left: calc(50% + 16px); right: calc(-50% + 16px); height: 2px; background: #e2e8f0; }
+.ovx-steps li.is-done:not(:last-child)::before { background: #93c5fd; }
+.ovx-activity { display: flex; align-items: center; gap: 10px; background: #f8fbff; border: 1px solid #e6f0ff; border-radius: 12px; padding: 12px; }
+.ovx-spin { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: #eff6ff; color: #2563eb; }
+.ovx-activity small { display: block; color: #64748b; font-size: 11px; }
+.ovx-activity b { color: #122033; font-size: 13.5px; }
+.ovx-activity-pct { margin-left: auto; text-align: right; }
+.ovx-activity-pct b { display: block; color: #2563eb; font-size: 22px; letter-spacing: -0.03em; }
+.ovx-scan-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.ovx-scan-kpis div { background: #f8fafc; border-radius: 10px; padding: 8px; }
+.ovx-scan-kpis b { display: block; font-size: 18px; }
+.ovx-scan-kpis span { color: #64748b; font-size: 11px; }
+.ovx-scan-kpis .is-up b { color: #15803d; }
+.ovx-scan-kpis .is-mid b { color: #d97706; }
+.ovx-scan-kpis .is-down b { color: #dc2626; }
+.ovx-bars { display: flex; flex-direction: column; gap: 8px; }
+.ovx-bars > div { display: grid; grid-template-columns: 76px minmax(0, 1fr) 18px; gap: 6px; align-items: center; font-size: 11.5px; color: #64748b; }
+.ovx-bars b { color: #334155; text-align: right; }
+.ovx-bar { display: flex; height: 10px; border-radius: 99px; overflow: hidden; background: #f1f5f9; }
+.ovx-bar i { display: block; height: 100%; }
+.ovx-legend { display: flex; flex-wrap: wrap; gap: 10px; color: #64748b; font-size: 11px; }
+.ovx-legend i { display: inline-block; width: 8px; height: 8px; border-radius: 99px; margin-right: 4px; }
+.ovx-pos-scroll { overflow: auto; }
+.ovx-pos td, .ovx-pos th { white-space: nowrap; }
+.ovx-side { display: inline-flex; border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 750; }
+.ovx-side.is-sell { background: #fef2f2; color: #dc2626; }
+.ovx-side.is-buy { background: #ecfdf3; color: #15803d; }
+.ovx-pos-foot { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: auto; padding-top: 8px; border-top: 1px solid #f1f5f9; }
+.ovx-pos-foot span { display: block; color: #94a3b8; font-size: 11px; }
+.ovx-pos-foot b { font-size: 14px; }
+.ovx-alerts { list-style: none; margin: 0; padding: 0; }
+.ovx-alerts li { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; gap: 8px; align-items: start; padding: 8px 0; border-top: 1px solid #f1f5f9; }
+.ovx-alerts i { width: 8px; height: 8px; border-radius: 99px; margin-top: 5px; background: #94a3b8; }
+.ovx-alerts i.is-execution { background: #2563eb; }
+.ovx-alerts i.is-risk { background: #f59e0b; }
+.ovx-alerts i.is-market { background: #f97316; }
+.ovx-alerts i.is-system { background: #64748b; }
+.ovx-alerts b { display: block; font-size: 13px; color: #122033; }
+.ovx-alerts small, .ovx-alerts time { color: #94a3b8; font-size: 11.5px; }
+.ovx-pill { display: inline-flex; border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 750; background: #f1f5f9; color: #64748b; }
+.ovx-pill.is-good { background: #ecfdf3; color: #15803d; }
+.ovx-pill.is-bad { background: #fef2f2; color: #dc2626; }
+.ovx-pill.is-wait { background: #fff7ed; color: #c2410c; }
+.ovx-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.ovx-metrics div { background: #f8fafc; border-radius: 12px; padding: 10px 12px; }
+.ovx-metrics .is-green { background: #f0fdf4; }
+.ovx-metrics span { display: block; color: #64748b; font-size: 11px; }
+.ovx-metrics b { display: block; margin-top: 2px; font-size: 18px; letter-spacing: -0.02em; }
+.ovx-chart { height: 84px; border-radius: 12px; background: linear-gradient(#f8fafc, #fff); border: 1px solid #f1f5f9; display: grid; place-items: center; overflow: hidden; }
+.ovx-chart svg { width: 100%; height: 72px; }
+.ovx-chart span { color: #94a3b8; font-size: 12px; padding: 0 12px; text-align: center; }
+.side-status-card { width: 100%; }
+.side-status-card-head { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 10px; }
+.side-status-card-head i { width: 8px; height: 8px; border-radius: 99px; margin-top: 4px; background: #94a3b8; box-shadow: 0 0 0 4px #eef2f7; }
+.side-status-card-head i.is-ok { background: #16a34a; box-shadow: 0 0 0 4px #dcfce7; }
+.side-status-card-head i.is-wait { background: #d97706; box-shadow: 0 0 0 4px #ffedd5; }
+.side-status-card-head span { display: block; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: #64748b; }
+.side-status-card-head b { display: block; margin-top: 2px; font-size: 12.5px; color: #14532d; }
+.side-status-card ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.side-status-card li { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; }
+.side-status-card li span { color: #64748b; }
+.side-status-card li b { font-weight: 700; }
+.side-status-card li b.is-ok { color: #15803d; }
+.side-status-card li b.is-wait { color: #c2410c; }
+.side-status-card li b.is-bad { color: #dc2626; }
+@media (max-width: 860px) {
+  .ovx-kpis, .ovx-grid { grid-template-columns: 1fr; }
+}
+
+/* Laptop: one screen. Cards share the height and scroll inside. */
+.shell--overview .ovx {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  gap: 8px;
+  padding-bottom: 0;
+}
+.shell--overview .ovx-kpis {
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1.2fr) minmax(0, 0.85fr) minmax(0, 0.8fr) minmax(0, 1.15fr) 108px 112px 96px;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.shell--overview .ovx-kpi,
+.shell--overview .ovx-control,
+.shell--overview .ovx-card { border-radius: 12px; }
+.shell--overview .ovx-kpi { padding: 7px 8px; gap: 7px; align-items: center; }
+.shell--overview .ovx-kpi-icon { width: 26px; height: 26px; border-radius: 8px; }
+.shell--overview .ovx-kpi-icon svg { width: 14px; height: 14px; }
+.shell--overview .ovx-kpi small,
+.shell--overview .ovx-control small { font-size: 10px; }
+.shell--overview .ovx-kpi > div { min-width: 0; }
+.shell--overview .ovx-kpi small,
+.shell--overview .ovx-kpi b,
+.shell--overview .ovx-kpi em { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.shell--overview .ovx-kpi b { font-size: 12px; }
+.shell--overview .ovx-kpi b.ovx-num { font-size: 15px; }
+.shell--overview .ovx-kpi em { font-size: 10.5px; }
+.shell--overview .ovx-control { padding: 6px 8px; gap: 4px; }
+.shell--overview .ovx-select { height: 26px; font-size: 12px; }
+.shell--overview .ovx-grid {
+  flex: 1 1 0;
+  min-height: 0;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  overflow: hidden;
+}
+.shell--overview .ovx-card {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  padding: 8px 10px;
+  gap: 6px;
+}
+.shell--overview .ovx-head h2 { font-size: 13px; }
+.shell--overview .ovx-link { font-size: 11.5px; }
+.shell--overview .ovx-pills { gap: 4px; flex-wrap: wrap; overflow: visible; }
+.shell--overview .ovx-pills button { padding: 2px 6px; font-size: 10.5px; }
+.shell--overview .ovx-bias { margin-top: 0; }
+.shell--overview .ovx-bias-name b,
+.shell--overview .ovx-score b { font-size: 18px; }
+.shell--overview .ovx-bias-mark { width: 22px; height: 22px; }
+.shell--overview .ovx-copy {
+  font-size: 11.5px;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.shell--overview .ovx-outlook { gap: 4px; }
+.shell--overview .ovx-outlook .ovx-pills { flex-wrap: nowrap; }
+.shell--overview .ovx-outlook .ovx-bias-name b,
+.shell--overview .ovx-outlook .ovx-score b { font-size: 16px; }
+.shell--overview .ovx-outlook .ovx-copy {
+  flex: 0 0 auto;
+  -webkit-line-clamp: 2;
+  line-height: 1.3;
+}
+.shell--overview .ovx-outlook .ovx-chips {
+  gap: 4px;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  max-height: none;
+  margin-top: auto;
+  overflow: visible;
+}
+.shell--overview .ovx-chip { padding: 2px 6px; }
+.shell--overview .ovx-table { font-size: 11.5px; }
+.shell--overview .ovx-table th { padding: 0 4px 4px 0; }
+.shell--overview .ovx-table td { padding: 3px 4px 3px 0; }
+.shell--overview .ovx-opp-copy b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.shell--overview .ovx-opps,
+.shell--overview .ovx-alerts,
+.shell--overview .ovx-pos-scroll,
+.shell--overview .ovx-fill,
+.shell--overview .ovx-bars {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+.shell--overview .ovx-table { table-layout: fixed; width: 100%; }
+.shell--overview .ovx-table th,
+.shell--overview .ovx-table td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shell--overview .ovx-signal { width: 100%; max-width: 56px; }
+.shell--overview .ovx-pos th:nth-child(1),
+.shell--overview .ovx-pos td:nth-child(1) { width: 28%; }
+.shell--overview .ovx-pos th:nth-child(2),
+.shell--overview .ovx-pos td:nth-child(2) { width: 16%; }
+.shell--overview .ovx-pos th:nth-child(3),
+.shell--overview .ovx-pos td:nth-child(3) { width: 16%; }
+.shell--overview .ovx-pos th:nth-child(4),
+.shell--overview .ovx-pos td:nth-child(4) { width: 22%; }
+.shell--overview .ovx-health th:nth-child(1) { width: 46%; }
+.shell--overview .ovx-opps button { padding: 4px 0; grid-template-columns: 26px minmax(0, 1fr) 78px; }
+.shell--overview .ovx-opps .ms-inst-icon { max-width: 26px; overflow: hidden; }
+.shell--overview .ovx-opp-copy b { font-size: 12px; }
+.shell--overview .ovx-steps { margin: 0; padding: 0; }
+.shell--overview .ovx-steps li span { width: 22px; height: 22px; font-size: 11px; }
+.shell--overview .ovx-steps li small { margin-top: 3px; font-size: 10px; }
+.shell--overview .ovx-steps li:not(:last-child)::before { top: 11px; }
+.shell--overview .ovx-activity { padding: 7px 8px; border-radius: 10px; min-width: 0; }
+.shell--overview .ovx-activity > div:nth-child(2) { min-width: 0; }
+.shell--overview .ovx-activity b { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 12px; }
+.shell--overview .ovx-activity-pct b { font-size: 16px; }
+.shell--overview .ovx-scan-kpis { gap: 4px; }
+.shell--overview .ovx-scan-kpis div { padding: 4px 6px; }
+.shell--overview .ovx-scan-kpis b { font-size: 14px; }
+.shell--overview .ovx-bars { gap: 4px; }
+.shell--overview .ovx-bar { height: 7px; }
+.shell--overview .ovx-legend { gap: 6px; font-size: 10px; }
+.shell--overview .ovx-alerts li { padding: 4px 0; }
+.shell--overview .ovx-alerts b { font-size: 12px; }
+.shell--overview .ovx-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
+.shell--overview .ovx-metrics div { padding: 5px 6px; border-radius: 8px; }
+.shell--overview .ovx-metrics b { font-size: 13px; }
+.shell--overview .ovx-chart { flex: 0 0 36px; height: 36px; min-height: 0; border-radius: 8px; }
+.shell--overview .ovx-chart svg { height: 36px; }
+.shell--overview .ovx-pos-foot { gap: 4px; padding-top: 4px; }
+.shell--overview .ovx-pos-foot b { font-size: 12px; }
+.shell--overview .side-status-card-head { margin-bottom: 6px; }
+.shell--overview .side-status-card-head b { font-size: 11px; white-space: nowrap; }
+.shell--overview .side-status-card ul { gap: 3px; }
+.shell--overview .side-status-card li { font-size: 10.5px; }
+.shell--overview .side-status-card li span,
+.shell--overview .side-status-card li b { white-space: nowrap; }

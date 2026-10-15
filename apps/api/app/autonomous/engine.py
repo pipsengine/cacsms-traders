@@ -101,6 +101,121 @@ def _next_h1_close(now: datetime) -> datetime:
     return now.replace(minute=0, second=0, microsecond=0) + H1
 
 
+def _canon_symbol(symbol: str) -> str:
+    text = str(symbol or "").upper().replace("/", "").split(".")[0]
+    if text.endswith("M") and len(text) > 6:
+        text = text[:-1]
+    return "".join(ch for ch in text if ch.isalnum())
+
+
+def _broker_order(opportunity: dict, mode: str, conn, repo) -> dict | None:
+    """One market order when the system mode and the terminal environment match. None keeps the plan in shadow."""
+    from ..domain.mt5_execution import execution_allowed, open_market_position, terminal_trade_mode
+    from .portfolio import _account_row, _profile
+
+    if not execution_allowed(mode, terminal_trade_mode()):
+        return None
+    from ..cacsms_engine.project import outlook_blocks, qualified_outlook_directions
+
+    directions = qualified_outlook_directions(conn, repo.tenant, repo.account)
+    if outlook_blocks(directions, str(opportunity["symbol"]), str(opportunity["direction"])):
+        return {"ok": False, "error": "AI Market Outlook direction disagrees"}
+    account = _account_row(conn, repo.tenant, repo.account)
+    profile = _profile(conn, account["id"] if account else None)
+    risk_pct = 1.0
+    if profile and profile.get("max_trade_risk_pct") is not None:
+        risk_pct = float(profile["max_trade_risk_pct"])
+    return open_market_position(
+        symbol=str(opportunity["symbol"]),
+        direction=str(opportunity["direction"]),
+        stop=float(opportunity["invalidation"]),
+        target=float(opportunity["target_1"]),
+        risk_pct=risk_pct,
+    )
+
+
+def _release_authorised(repo, active, mode, now, ae, conn, apply, gate, counts, portfolio) -> None:
+    """Send authorised strategy plans. Each symbol may hold two strategy positions. Risk budget is the account limit."""
+    from ..cacsms_engine.policy import STRATEGY_LIMIT
+    from ..cacsms_engine.reconcile import accepted_ticket
+    from ..domain.mt5_execution import execution_allowed, terminal_trade_mode
+    from ..domain.mt5_terminal_positions import read_terminal_positions
+    from .portfolio import _account_row, _profile
+
+    if not execution_allowed(mode, terminal_trade_mode()):
+        return
+    positions, _basis = read_terminal_positions()
+    positions = positions or []
+    open_ids = {str(item.get("ticket")) for item in positions if item.get("ticket") is not None}
+    account = _account_row(conn, repo.tenant, repo.account)
+    profile = _profile(conn, account["id"] if account else None)
+    risk_pct = 1.0
+    max_exposure = None
+    if profile:
+        if profile.get("max_trade_risk_pct") is not None:
+            risk_pct = float(profile["max_trade_risk_pct"])
+        if profile.get("max_total_risk_pct") is not None:
+            max_exposure = float(profile["max_total_risk_pct"])
+    strategy_open: dict[str, int] = {}
+    strategy_tickets: set[str] = set()
+    for row in active:
+        if str(row.get("state") or "") != "ORDER_ACCEPTED":
+            continue
+        ticket = accepted_ticket(row)
+        if not ticket or ticket not in open_ids:
+            continue
+        strategy_tickets.add(ticket)
+        symbol = _canon_symbol(row.get("symbol"))
+        strategy_open[symbol] = strategy_open.get(symbol, 0) + 1
+    blocked = [row for row in active if row.get("status") == "ACTIVE" and row.get("state") == "EXECUTION_BLOCKED_ANALYSIS_ONLY"]
+    blocked.sort(key=lambda row: (str(row.get("updated_at") or ""), float(row.get("confidence") or 0)), reverse=True)
+    for opportunity in blocked:
+        open_risk = len(positions) * risk_pct
+        if max_exposure is not None and open_risk + risk_pct > max_exposure:
+            break
+        symbol = _canon_symbol(opportunity.get("symbol"))
+        if not symbol or strategy_open.get(symbol, 0) >= STRATEGY_LIMIT:
+            continue
+        evidence = dict(opportunity.get("evidence") or {})
+        evidence.update(trade_risk_pct=risk_pct, open_risk_pct=open_risk, max_exposure_percent=max_exposure)
+        opportunity["evidence"] = evidence
+        live = []
+        for item in positions:
+            ticket = str(item.get("ticket") or "")
+            plan = {
+                "id": f"mt5-{ticket}", "ticket": ticket, "symbol": _canon_symbol(item["symbol"]),
+                "direction": "BULLISH" if item.get("direction") == "BUY" else "BEARISH", "state": "ORDER_ACCEPTED",
+            }
+            if ticket not in strategy_tickets:
+                plan["evidence"] = {"outlook_horizon": "OPEN"}
+            live.append(plan)
+        state, _reason, _metrics = opps.risk_decision(opportunity, live, ae, position_cap=None)
+        if state != "RISK_APPROVED":
+            continue
+        sent = _broker_order(opportunity, mode, conn, repo)
+        if not sent or not sent.get("ok"):
+            if sent and sent.get("error"):
+                opportunity["evidence"] = {**(opportunity.get("evidence") or {}), "broker_error": sent["error"]}
+                repo.update_opportunity(
+                    opportunity["id"], evidence_json=opportunity.get("evidence") or {},
+                    next_condition=f"Broker did not accept the order: {sent['error']}", updated_at=now.isoformat(),
+                )
+            continue
+        at = now.isoformat()
+        opportunity["evidence"] = {**(opportunity.get("evidence") or {}), "broker_order": sent}
+        apply(opportunity, [gate(opportunity, "EXECUTION", "ORDER_ACCEPTED", "ORDER_ACCEPTED", at, sent)])
+        repo.update_opportunity(
+            opportunity["id"], stage=opportunity["stage"], state=opportunity["state"], evidence_json=opportunity.get("evidence") or {},
+            next_condition=opps.next_condition(opportunity), updated_at=at, reason_code="ORDER_ACCEPTED", stage_entered_at=at,
+        )
+        portfolio.append(opportunity)
+        ticket = str(sent.get("ticket") or "")
+        positions.append({"ticket": ticket, "symbol": symbol, "direction": "BUY" if opportunity["direction"] == "BULLISH" else "SELL"})
+        strategy_tickets.add(ticket)
+        strategy_open[symbol] = strategy_open.get(symbol, 0) + 1
+        counts["orders_submitted"] = counts.get("orders_submitted", 0) + 1
+
+
 class AutonomousEngine:
     def __init__(self) -> None:
         self.owner = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:6]}"
@@ -353,6 +468,14 @@ class AutonomousEngine:
         # Stages 6–11: opportunities
         report = self._opportunities(conn, repo, ok, rows, st, safety, now, ae, cs, ts, ovs, record, provider, snapshot_id, mode)
         counts.update(report["counts"])
+        if report.get("progress") and not report.get("halted"):
+            try:
+                from ..cacsms_engine.advance import advance_authorised_outlooks
+
+                outlook_orders = advance_authorised_outlooks(conn, repo.tenant, repo.account, mode, now)
+                counts["outlook_orders"] = outlook_orders.get("sent", 0)
+            except Exception:
+                log.exception("Outlook campaign advance failed")
         stages.update(self._stage_pipeline(repo, report, safety, now, mode, ae))
 
         # Persist stage states
@@ -392,6 +515,15 @@ class AutonomousEngine:
         progress = safety["progress_opportunities"]
         halted = safety["status"] == "HALTED"
         active = repo.active_opportunities()
+        try:
+            from ..cacsms_engine.reconcile import close_absent_tickets
+            from ..domain.mt5_terminal_positions import read_terminal_positions
+
+            live_positions, _basis = read_terminal_positions()
+            if live_positions is not None:
+                counts["terminal_closed"] = len(close_absent_tickets(conn, repo.tenant, repo.account, active, live_positions, now))
+        except Exception:
+            log.exception("Terminal reconciliation failed")
         portfolio = [o for o in active if o["stage"] == "EXECUTION"]
         blockers_global = safety["blockers"] if not progress else []
         tenant = repo.tenant or None
@@ -443,7 +575,7 @@ class AutonomousEngine:
                     "detail": opps.REASONS[reason], "evidence_at": at, "evidence": evidence, "close": close, "outcome": outcome}
 
         def risk(o: dict, at: str) -> tuple[bool, list[dict]]:
-            """Risk gate; authorised plans continue into execution, which is always blocked (shadow tracking only)."""
+            """Risk gate. SHADOW and analysis-only stop here. Demo and live modes send one broker order."""
             from .portfolio import open_position_cap
 
             state, _, metrics = opps.risk_decision(
@@ -453,8 +585,14 @@ class AutonomousEngine:
             o["evidence"] = {**(o.get("evidence") or {}), "risk": {**metrics, "decided_at": at}}
             if state == "RISK_APPROVED":
                 applied = apply(o, [gate(o, "RISK", "RISK_APPROVED", "RISK_APPROVED", at, metrics)])
-                applied += apply(o, [gate(o, "EXECUTION", "EXECUTION_BLOCKED_ANALYSIS_ONLY", "EXECUTION_BLOCKED_ANALYSIS_ONLY", at,
-                                          {"mode": mode, "broker_order": None})])
+                sent = _broker_order(o, mode, conn, repo)
+                if sent and sent.get("ok"):
+                    o["evidence"] = {**(o.get("evidence") or {}), "broker_order": sent}
+                    applied += apply(o, [gate(o, "EXECUTION", "ORDER_ACCEPTED", "ORDER_ACCEPTED", at, sent)])
+                    counts["orders_submitted"] = counts.get("orders_submitted", 0) + 1
+                else:
+                    applied += apply(o, [gate(o, "EXECUTION", "EXECUTION_BLOCKED_ANALYSIS_ONLY", "EXECUTION_BLOCKED_ANALYSIS_ONLY", at,
+                                              {"mode": mode, "broker_order": None, "broker_error": None if not sent else sent.get("error")})])
                 portfolio.append(o)
                 counts["risk_approved"] += 1
                 return True, applied
@@ -502,6 +640,8 @@ class AutonomousEngine:
 
         for o in active:
             progress_one(o)
+        if progress and not halted:
+            _release_authorised(repo, active, mode, now, ae, conn, apply, gate, counts, portfolio)
 
         # Detection (Stage 6): only from trustworthy data and while not halted
         families = {o["family_key"] for o in active if o["status"] == "ACTIVE"}

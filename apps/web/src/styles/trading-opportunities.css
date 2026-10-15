@@ -30,6 +30,8 @@
 .topp-grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(320px,.82fr);gap:14px;align-items:start}
 .topp-card{background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);min-width:0}
 .topp-filters{display:flex;gap:8px;align-items:center;padding:12px;flex-wrap:wrap;border-bottom:1px solid var(--line)}
+.topp-filters button{width:auto;height:34px;border:1px solid var(--line);border-radius:8px;background:#fff;padding:0 10px;font-size:12px;font-weight:700}
+.topp-filters button.is-on{background:#2563eb;border-color:#2563eb;color:#fff}
 .topp-filters select,.topp-search{height:34px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--text);padding:0 8px}
 .topp-filters select{max-width:150px}
 .topp-search{margin-left:auto;display:flex;align-items:center;gap:6px;padding:0 10px;min-width:180px;color:var(--muted)}

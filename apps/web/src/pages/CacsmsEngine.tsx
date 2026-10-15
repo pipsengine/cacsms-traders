@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowRight,
@@ -31,9 +31,9 @@ import type { Campaign, CampaignDetail, EngineResponse, Horizon, Stage } from '.
 const steps = [
   {
     id: 'QUALIFICATION' as const,
-    name: 'AI Qualification',
-    sub: 'From Market Outlook',
-    desc: 'Consume Daily, Weekly, Monthly, Quarterly and Gold H8 outlooks. Qualify scenarios with Evidence Score ≥ 70.',
+    name: 'Opportunity Qualification',
+    sub: 'Strategy and outlook',
+    desc: 'Strategy setups keep their own rules. AI outlooks qualify at Evidence Score 70 or above.',
     icon: BrainCircuit,
     foot: 'Qualified Opportunities',
   },
@@ -72,7 +72,7 @@ const steps = [
 ];
 
 const sources: { key: string; label: string }[] = [
-  { key: 'ALL', label: 'All Campaigns' },
+  { key: 'ALL', label: 'All horizons' },
   { key: 'DAILY', label: 'Daily' },
   { key: 'WEEKLY', label: 'Weekly' },
   { key: 'MONTHLY', label: 'Monthly' },
@@ -203,6 +203,7 @@ export function CacsmsEngine() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [source, setSource] = useState('ALL');
+  const [mode, setMode] = useState<'ALL' | 'STRATEGY' | 'OUTLOOK'>('ALL');
   const [stage, setStage] = useState('ALL');
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<CampaignDetail | null>(null);
@@ -216,17 +217,20 @@ export function CacsmsEngine() {
   const [menuId, setMenuId] = useState<string | null>(null);
   const [page, setPage] = useState(0);
 
-  const reload = async (initial = false) => {
+  const inflight = useRef(false);
+  const reload = async (initial = false, quiet = false) => {
+    if (inflight.current) return;
+    inflight.current = true;
     if (initial) setLoading(true);
-    else setBusy(true);
+    else if (!quiet) setBusy(true);
     try {
       const result = await engineApi.overview();
       setData(result);
       setError('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to load engine');
-      setData(null);
     } finally {
+      inflight.current = false;
       setLoading(false);
       setBusy(false);
     }
@@ -235,8 +239,8 @@ export function CacsmsEngine() {
   useEffect(() => {
     void reload(true);
     const id = window.setInterval(() => {
-      if (document.visibilityState === 'visible') void reload();
-    }, 30000);
+      if (document.visibilityState === 'visible') void reload(false, true);
+    }, 1000);
     return () => window.clearInterval(id);
   }, []);
 
@@ -256,29 +260,34 @@ export function CacsmsEngine() {
     () =>
       (data?.campaigns.filter((campaign) => {
         const haystack = `${campaign.symbol} ${campaign.horizon} ${campaign.status} ${campaign.nextAction}`.toLowerCase();
-        return (
-          (source === 'ALL' || campaign.horizon === source) &&
-          (stage === 'ALL' || campaign.stage === stage) &&
-          haystack.includes(search.toLowerCase())
-        );
+        const modeOk = mode === 'ALL'
+          || (mode === 'STRATEGY' && campaign.sourceMode !== 'OUTLOOK')
+          || (mode === 'OUTLOOK' && campaign.sourceMode !== 'STRATEGY');
+        const horizonOk = mode === 'STRATEGY' || source === 'ALL' || (campaign.sourceMode !== 'STRATEGY' && campaign.horizon === source);
+        return modeOk && horizonOk && (stage === 'ALL' || campaign.stage === stage) && haystack.includes(search.toLowerCase());
       }) ?? []).slice().sort((a, b) => stageRank[a.stage] - stageRank[b.stage] || b.evidenceScore - a.evidenceScore),
-    [data, source, stage, search],
+    [data, source, stage, search, mode],
   );
 
   useEffect(() => {
     setPage(0);
-  }, [source, stage, search]);
+  }, [source, stage, search, mode]);
 
-  const counts = useMemo(
-    () =>
-      Object.fromEntries(
-        sources.map((item) => [
-          item.key,
-          item.key === 'ALL' ? data?.campaigns.length ?? 0 : data?.campaigns.filter((campaign) => campaign.horizon === item.key).length ?? 0,
-        ]),
-      ),
-    [data],
-  );
+  const counts = useMemo(() => {
+    const rows = (data?.campaigns ?? []).filter((campaign) => (
+      mode === 'ALL'
+      || (mode === 'STRATEGY' && campaign.sourceMode !== 'OUTLOOK')
+      || (mode === 'OUTLOOK' && campaign.sourceMode !== 'STRATEGY')
+    ));
+    return Object.fromEntries(
+      sources.map((item) => [
+        item.key,
+        item.key === 'ALL'
+          ? rows.length
+          : rows.filter((campaign) => campaign.sourceMode !== 'STRATEGY' && campaign.horizon === item.key).length,
+      ]),
+    );
+  }, [data, mode]);
 
   const view = async (campaign: Campaign) => {
     setMenuId(null);
@@ -313,11 +322,14 @@ export function CacsmsEngine() {
   const watching = book.filter((campaign) => campaign.stage === 'MONITORING' || campaign.stage === 'QUALIFICATION').length;
   const confirmed = book.filter((campaign) => ['CONFIRMATION', 'RISK', 'EXECUTION', 'MANAGEMENT'].includes(campaign.stage)).length;
   const rejected = book.filter((campaign) => campaign.stage === 'BLOCKED').length;
-  const totalOpportunities = watching + confirmed + rejected;
+  const closed = book.filter((campaign) => campaign.stage === 'CLOSED').length;
+  const totalOpportunities = book.length;
+  const strategyActive = book.filter((campaign) => campaign.sourceMode === 'STRATEGY' && campaign.stage !== 'CLOSED').length;
   const fxOpen = summary?.fxPositions ?? book.reduce((sum, campaign) => sum + (campaign.symbol === 'XAUUSD' ? 0 : campaign.positionsOpen), 0);
   const goldOpen = summary?.goldPositions ?? book.reduce((sum, campaign) => sum + (campaign.symbol === 'XAUUSD' ? campaign.positionsOpen : 0), 0);
-  const horizonTotal = horizonMeta.reduce((sum, item) => sum + (summary?.horizonCounts?.[item.key] ?? 0), 0) || 1;
-  const live = summary?.tradingMode === 'LIVE';
+  const horizonActive = (key: Horizon) => book.filter((campaign) => campaign.stage !== 'CLOSED' && campaign.sourceMode !== 'STRATEGY' && campaign.horizon === key).length;
+  const horizonTotal = (horizonMeta.reduce((sum, item) => sum + horizonActive(item.key), 0) + strategyActive) || 1;
+  const live = summary?.tradingMode === 'LIVE' || summary?.tradingMode === 'DEMO';
   const visibleColumns = columnDefs.filter((column) => columns[column.key]).length + 2;
   const pageCount = Math.max(1, Math.ceil(campaigns.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
@@ -352,7 +364,7 @@ export function CacsmsEngine() {
             title={summary ? `Server mode ${summary.tradingMode}. This control does not change it.` : 'Waiting for the server mode'}
             onClick={(event) => event.preventDefault()}
           >
-            Live Trading
+            {summary?.tradingMode === 'DEMO' ? 'Demo Trading' : 'Live Trading'}
             <i />
           </button>
           <button type="button" onClick={() => setShowFilters((open) => !open)}>
@@ -393,7 +405,7 @@ export function CacsmsEngine() {
                 className={`ce-step ce-step-${index}${count === 0 ? ' is-idle' : ' is-live'}${stage === item.id ? ' is-on' : ''}`}
                 onClick={() => setStage(stage === item.id ? 'ALL' : item.id)}
                 aria-pressed={stage === item.id}
-                title={item.id === 'QUALIFICATION' ? 'Only scenarios still in qualification with an evidence score of 70 or above. Campaigns that have moved on are counted in the later stages.' : undefined}
+                title={item.desc}
               >
                 <div className="ce-step-title">
                   <span className="ce-num">{index + 1}</span>
@@ -423,8 +435,9 @@ export function CacsmsEngine() {
             <strong>{data ? totalOpportunities : '—'}</strong>
             <ul className="ce-dots">
               <li className="is-watch">{watching} Watching</li>
-              <li className="is-ok">{confirmed} Confirmed</li>
-              <li className="is-bad">{rejected} Rejected</li>
+              <li className="is-ok">{confirmed} In progress</li>
+              <li className="is-wait">{closed} Closed</li>
+              {rejected > 0 ? <li className="is-bad">{rejected} Rejected</li> : null}
             </ul>
           </div>
         </article>
@@ -435,13 +448,15 @@ export function CacsmsEngine() {
             <strong>{summary?.campaigns ?? '—'}</strong>
             <div className="ce-mix" aria-hidden>
               {horizonMeta.map((item) => (
-                <i key={item.key} style={{ width: `${((summary?.horizonCounts?.[item.key] ?? 0) / horizonTotal) * 100}%`, background: item.color }} />
+                <i key={item.key} style={{ width: `${(horizonActive(item.key) / horizonTotal) * 100}%`, background: item.color }} />
               ))}
+              <i style={{ width: `${(strategyActive / horizonTotal) * 100}%`, background: '#64748b' }} />
             </div>
             <ul className="ce-legend">
               {horizonMeta.map((item) => (
-                <li key={item.key}><i style={{ background: item.color }} />{item.label} {summary?.horizonCounts?.[item.key] ?? 0}</li>
+                <li key={item.key}><i style={{ background: item.color }} />{item.label} {horizonActive(item.key)}</li>
               ))}
+              <li><i style={{ background: '#64748b' }} />Strategy {strategyActive}</li>
             </ul>
           </div>
         </article>
@@ -478,6 +493,23 @@ export function CacsmsEngine() {
 
       <section className="ce-card">
         <div className="ce-toolbar">
+          <div className="ce-tabs" role="tablist" aria-label="Opportunity source">
+            {([
+              ['ALL', 'All Opportunities'],
+              ['STRATEGY', 'Strategy-Based'],
+              ['OUTLOOK', 'AI Market Outlook'],
+            ] as const).map(([key, label]) => (
+              <button key={key} type="button" className={mode === key ? 'is-on' : ''} onClick={() => setMode(key)}>
+                {label}
+                {key === 'STRATEGY' ? <span>({summary?.sourceCounts?.strategy ?? 0})</span> : null}
+                {key === 'OUTLOOK' ? <span>({(summary?.sourceCounts?.outlook ?? 0) + (summary?.sourceCounts?.combined ?? 0)})</span> : null}
+                {key === 'ALL' ? <span>({data?.campaigns.length ?? 0})</span> : null}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="ce-toolbar">
+          {mode !== 'STRATEGY' && (
           <div className="ce-tabs" role="tablist" aria-label="Outlook horizon">
             {sources.map((item) => (
               <button key={item.key} type="button" className={source === item.key ? 'is-on' : ''} onClick={() => setSource(item.key)}>
@@ -485,6 +517,7 @@ export function CacsmsEngine() {
               </button>
             ))}
           </div>
+          )}
           <div className="ce-tools">
             <label className="ce-search">
               <Search size={15} />
@@ -574,7 +607,17 @@ export function CacsmsEngine() {
                           </span>
                         </td>
                       )}
-                      {columns.source && <td><span className={`ce-source is-${campaign.horizon.toLowerCase()}`}>{human(campaign.horizon)}</span></td>}
+                      {columns.source && (
+                        <td>
+                          <span className={`ce-source is-${campaign.sourceMode === 'STRATEGY' ? 'weekly' : campaign.horizon.toLowerCase()}`}>
+                            {campaign.sourceMode === 'STRATEGY'
+                              ? campaign.strategyType
+                              : campaign.sourceMode === 'COMBINED'
+                                ? `${human(campaign.horizon)} · ${campaign.strategyType ?? 'Strategy'}`
+                                : human(campaign.horizon)}
+                          </span>
+                        </td>
+                      )}
                       {columns.bias && (
                         <td>
                           <span className={`ce-bias ${campaign.direction === 'SELL' ? 'is-bear' : campaign.direction === 'BUY' ? 'is-bull' : 'is-neutral'}`}>
@@ -583,7 +626,16 @@ export function CacsmsEngine() {
                           </span>
                         </td>
                       )}
-                      {columns.score && <td><span className={`ce-score ${passing ? 'is-pass' : 'is-fail'}`}>{Math.round(campaign.evidenceScore)}%</span></td>}
+                      {columns.score && (
+                    <td>
+                      <span
+                        className={`ce-score ${campaign.sourceMode === 'STRATEGY' ? '' : passing ? 'is-pass' : 'is-fail'}`}
+                        title={campaign.sourceMode === 'STRATEGY' ? 'Strategy qualification uses its own rules. The 70-point outlook gate does not apply.' : 'Evidence score. Outlook qualification starts at 70.'}
+                      >
+                        {Math.round(campaign.evidenceScore)}{campaign.sourceMode === 'STRATEGY' ? '' : '%'}
+                      </span>
+                    </td>
+                  )}
                       {columns.status && (
                         <td>
                           <b className="ce-setup">{campaign.status}</b>
@@ -667,7 +719,7 @@ export function CacsmsEngine() {
               <ChevronRight size={15} />
             </button>
           </div>
-          <span>Last sync: {data ? when(data.generatedAt).day : '—'} {data ? when(data.generatedAt).time : ''}</span>
+          <span>Last sync: {data ? new Date(data.generatedAt).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—'}</span>
         </div>
       </section>
 

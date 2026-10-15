@@ -1,12 +1,15 @@
-"""Horizon ceilings, broker reconciliation and M15 entry allocation.
+"""Per-pair ceilings, broker reconciliation and M15 entry allocation.
 
-The stricter of the horizon ceiling and the existing account/engine cap wins.
-Gold H8 has no position-count ceiling; a missing or exhausted risk budget fails closed.
+Outlook ceilings are per symbol: Daily 5, Weekly 3, Monthly 1, Quarterly 1.
+Strategy setups have their own ceiling of 2 per symbol.
+Gold H8 has no position-count ceiling. A missing or exhausted risk budget fails closed.
+The account-wide count of open positions does not shrink these ceilings.
 Nothing here submits an order.
 """
 from __future__ import annotations
 
-HORIZON_LIMITS = {"DAILY": 5, "WEEKLY": 2, "MONTHLY": 1, "QUARTERLY": 1}
+HORIZON_LIMITS = {"DAILY": 5, "WEEKLY": 3, "MONTHLY": 1, "QUARTERLY": 1}
+STRATEGY_LIMIT = 2
 UI_HORIZON = {
     "DAILY": "DAILY",
     "WEEKLY": "WEEKLY",
@@ -32,15 +35,16 @@ def global_position_limit(engine_cap: int, account_cap: int | None) -> tuple[int
 
 
 def horizon_slot_cap(horizon: str | None, *, engine_cap: int, account_cap: int | None) -> int | None:
-    """Count ceiling for one symbol and horizon. Gold H8 returns None."""
+    """Count ceiling for one symbol and horizon. Gold H8 returns None.
+
+    ``engine_cap`` and ``account_cap`` stay in the signature so callers can pass the
+    account profile. They do not reduce the per-pair outlook ceiling.
+    """
+    del engine_cap, account_cap
     name = ui_horizon(horizon)
-    global_cap, _rule = global_position_limit(engine_cap, account_cap)
     if name == "GOLD_H8":
         return None
-    per_horizon = HORIZON_LIMITS.get(name)
-    if per_horizon is None:
-        return global_cap
-    return min(per_horizon, global_cap)
+    return HORIZON_LIMITS.get(name)
 
 
 def budget_open(used_pct: float | None, max_pct: float | None) -> bool:

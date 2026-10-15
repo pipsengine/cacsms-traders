@@ -32,6 +32,8 @@ REASONS = {
     "RISK_REJECTED": "Risk rules reject this opportunity",
     "RISK_DEFER_TIMEOUT": "Deferred beyond the risk window",
     "EXECUTION_BLOCKED_ANALYSIS_ONLY": "Operating mode is ANALYSIS ONLY — no broker order is submitted",
+    "ORDER_ACCEPTED": "Broker accepted the market order",
+    "BROKER_REJECTED": "Broker rejected the order",
     "TARGET_1_REACHED": "Shadow plan reached objective 1",
     "INVALIDATED_AFTER_CONFIRMATION": "Shadow plan hit its invalidation level",
     "NO_RESOLUTION": "Shadow plan unresolved within the tracking window",
@@ -219,6 +221,9 @@ def next_condition(o: dict) -> str:
         return f"H1 close beyond the reaction candle or H1 {('bullish' if d == 1 else 'bearish')} BOS"
     if st in ("RISK_REVIEW", "RISK_DEFERRED"):
         return "Portfolio capacity (concurrency / currency exposure)"
+    if st == "ORDER_ACCEPTED":
+        ticket = ((o.get("evidence") or {}).get("broker_order") or {}).get("ticket")
+        return f"Broker order {ticket} is open. Monitor the stop, target and exposure." if ticket else "Broker order is open."
     if st == "EXECUTION_BLOCKED_ANALYSIS_ONLY":
         return f"Shadow tracking: objective {o['target_1']:.5g} or invalidation {o['invalidation']:.5g}"
     return "—"
@@ -328,31 +333,43 @@ def currencies(symbol: str) -> tuple[str, str]:
     return symbol[:3], symbol[3:6]
 
 
-def risk_decision(o: dict, portfolio: list[dict], ae: AESettings, *, position_cap: int | None = None) -> tuple[str, str, dict]:
-    """Risk & portfolio gate for a confirmed opportunity: (state, reason_code, metrics).
+def _num(value: object) -> float | None:
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if number != number:
+        return None
+    return number
 
-    ``portfolio`` holds the analysis-only plans already authorised (stage EXECUTION, still being tracked).
-    ``position_cap`` is the account profile limit. The stricter of that limit and the engine cap wins.
-    An outlook horizon stamped on the evidence is also held to its per-horizon ceiling.
+
+def _occupies_pair_slot(plan: dict) -> bool:
+    """A live ticket or an accepted order uses one of the symbol's strategy slots."""
+    if plan.get("ticket"):
+        return True
+    return str(plan.get("state") or "") == "ORDER_ACCEPTED"
+
+
+def risk_decision(o: dict, portfolio: list[dict], ae: AESettings, *, position_cap: int | None = None) -> tuple[str, str, dict]:
+    """Risk and portfolio gate for a confirmed opportunity: (state, reason_code, metrics).
+
+    Open tickets are limited per pair, not by a single account-wide count.
+    A strategy symbol may hold two open plans. An outlook symbol may hold its horizon ceiling.
+    Currency exposure still counts each symbol once. The risk budget is checked by the sender.
     """
-    from ..cacsms_engine.policy import budget_open, global_position_limit, horizon_slot_cap, ui_horizon
+    from ..cacsms_engine.policy import STRATEGY_LIMIT, budget_open, horizon_slot_cap, ui_horizon
 
     d = SIGN[o["direction"]]
     ev = o.get("evidence") or {}
     entry = (ev.get("confirmation") or {}).get("close") or (o["entry_lo"] + o["entry_hi"]) / 2
     rr = _rr(d, entry, o["invalidation"], o["target_1"])
-    limit, limit_rule = global_position_limit(ae.max_concurrent, position_cap)
     metrics: dict = {"entry_reference": entry, "reward_risk": rr, "confidence": o.get("confidence"),
-                     "open_plans": len(portfolio), "max_concurrent": ae.max_concurrent, "position_cap": limit,
-                     "position_rule": limit_rule}
+                     "open_plans": len(portfolio), "max_concurrent": ae.max_concurrent, "position_cap": position_cap,
+                     "position_rule": "PER_PAIR"}
     if rr is None or rr < ae.min_reward_risk:
         return "RISK_REJECTED", "RISK_REJECTED", {**metrics, "rule": "MIN_REWARD_RISK", "required": ae.min_reward_risk}
     if (o.get("confidence") or 0) < ae.min_confidence:
         return "RISK_REJECTED", "RISK_REJECTED", {**metrics, "rule": "MIN_CONFIDENCE", "required": ae.min_confidence}
-    if any(p["symbol"] == o["symbol"] for p in portfolio):
-        return "RISK_DEFERRED", "RISK_DEFERRED", {**metrics, "rule": "SYMBOL_EXPOSURE"}
-    if len(portfolio) >= limit:
-        return "RISK_DEFERRED", "RISK_DEFERRED", {**metrics, "rule": limit_rule}
     horizon = ev.get("outlook_horizon")
     if horizon:
         name = ui_horizon(str(horizon))
@@ -362,15 +379,34 @@ def risk_decision(o: dict, portfolio: list[dict], ae: AESettings, *, position_ca
             return "RISK_DEFERRED", "RISK_DEFERRED", {**metrics, "rule": "HORIZON_SLOT_CEILING", "horizon_cap": cap}
         if name == "GOLD_H8" and not budget_open(ev.get("exposure_percent"), ev.get("max_exposure_percent")):
             return "RISK_DEFERRED", "RISK_DEFERRED", {**metrics, "rule": "GOLD_RISK_BUDGET"}
+    else:
+        same = [
+            p for p in portfolio
+            if p.get("symbol") == o.get("symbol") and _occupies_pair_slot(p) and not (p.get("evidence") or {}).get("outlook_horizon")
+        ]
+        if len(same) >= STRATEGY_LIMIT:
+            return "RISK_DEFERRED", "RISK_DEFERRED", {**metrics, "rule": "STRATEGY_PAIR_CAP", "strategy_cap": STRATEGY_LIMIT}
     base, quote = currencies(o["symbol"])
     exposure: dict[str, int] = {}
+    seen_symbols: set[str] = set()
     for p in portfolio:
-        pd = SIGN[p["direction"]]
-        pb, pq = currencies(p["symbol"])
+        symbol = str(p.get("symbol") or "")
+        if not symbol or symbol in seen_symbols:
+            continue
+        seen_symbols.add(symbol)
+        pd = SIGN.get(p.get("direction"))
+        if not pd:
+            continue
+        pb, pq = currencies(symbol)
         exposure[pb] = exposure.get(pb, 0) + pd
         exposure[pq] = exposure.get(pq, 0) - pd
     for ccy, sign in ((base, d), (quote, -d)):
         if abs(exposure.get(ccy, 0) + sign) > ae.max_currency_exposure:
             return "RISK_DEFERRED", "RISK_DEFERRED", {**metrics, "rule": "CURRENCY_EXPOSURE", "currency": ccy,
                                                       "exposure": exposure.get(ccy, 0)}
+    trade_risk = _num(ev.get("trade_risk_pct"))
+    open_risk = _num(ev.get("open_risk_pct"))
+    max_risk = _num(ev.get("max_exposure_percent"))
+    if trade_risk is not None and open_risk is not None and max_risk is not None and open_risk + trade_risk > max_risk:
+        return "RISK_DEFERRED", "RISK_DEFERRED", {**metrics, "rule": "RISK_BUDGET", "open_risk_pct": open_risk, "max_risk_pct": max_risk}
     return "RISK_APPROVED", "RISK_APPROVED", {**metrics, "rule": None}

@@ -55,11 +55,13 @@ def test_h8_only_gold_and_has_no_count_ceiling():
 
 
 def test_horizon_caps_and_stricter_account_limit():
-    assert qualify(signal(horizon="WEEKLY")).max_positions == 2
+    assert qualify(signal(horizon="DAILY")).max_positions == 5
+    assert qualify(signal(horizon="WEEKLY")).max_positions == 3
     assert qualify(signal(horizon="MONTHLY")).max_positions == 1
     assert qualify(signal(horizon="QUARTERLY")).max_positions == 1
-    assert horizon_slot_cap("DAILY", engine_cap=6, account_cap=3) == 3
-    assert horizon_slot_cap("WEEKLY", engine_cap=6, account_cap=3) == 2
+    assert horizon_slot_cap("DAILY", engine_cap=6, account_cap=3) == 5
+    assert horizon_slot_cap("WEEKLY", engine_cap=6, account_cap=3) == 3
+    assert horizon_slot_cap("MONTHLY", engine_cap=6, account_cap=3) == 1
     assert horizon_slot_cap("H8", engine_cap=6, account_cap=3) is None
     assert global_position_limit(6, 3) == (3, "ACCOUNT_POSITION_CAP")
     assert global_position_limit(6, None) == (6, "MAX_CONCURRENT")
@@ -72,10 +74,18 @@ def test_risk_gate_uses_stricter_cap_and_horizon_budget():
         "target_1": 1.13, "confidence": 80, "evidence": {"confirmation": {"close": 1.104}},
     }
     assert opps.risk_decision(confirmed, [], ae)[0] == "RISK_APPROVED"
-    full_account = [{"symbol": f"PAIR{i}USD", "direction": "BULLISH"} for i in range(3)]
-    assert opps.risk_decision(confirmed, full_account, ae, position_cap=3)[2]["rule"] == "ACCOUNT_POSITION_CAP"
-    held = {**confirmed, "evidence": {**confirmed["evidence"], "outlook_horizon": "DAILY", "horizon_slots_used": 3}}
+    many_pairs = [{"symbol": f"PAIR{i}USD", "direction": "BULLISH"} for i in range(3)]
+    assert opps.risk_decision(confirmed, many_pairs, ae, position_cap=3)[0] == "RISK_APPROVED"
+    pair = [{"symbol": "EURUSD", "direction": "BULLISH", "state": "ORDER_ACCEPTED"}]
+    assert opps.risk_decision(confirmed, pair, ae)[0] == "RISK_APPROVED"
+    full_pair = pair + [{"symbol": "EURUSD", "direction": "BULLISH", "state": "ORDER_ACCEPTED"}]
+    assert opps.risk_decision(confirmed, full_pair, ae)[2]["rule"] == "STRATEGY_PAIR_CAP"
+    held = {**confirmed, "evidence": {**confirmed["evidence"], "outlook_horizon": "DAILY", "horizon_slots_used": 5}}
     assert opps.risk_decision(held, [], ae, position_cap=3)[2]["rule"] == "HORIZON_SLOT_CEILING"
+    weekly = {**confirmed, "evidence": {**confirmed["evidence"], "outlook_horizon": "WEEKLY", "horizon_slots_used": 3}}
+    assert opps.risk_decision(weekly, [], ae)[2]["rule"] == "HORIZON_SLOT_CEILING"
+    priced = {**confirmed, "evidence": {**confirmed["evidence"], "trade_risk_pct": 1, "open_risk_pct": 3, "max_exposure_percent": 3}}
+    assert opps.risk_decision(priced, [], ae)[2]["rule"] == "RISK_BUDGET"
     gold = {
         **confirmed, "symbol": "XAUUSD",
         "evidence": {**confirmed["evidence"], "outlook_horizon": "H8"},
@@ -98,6 +108,7 @@ def _row(outlook_id, symbol, score, horizon="DAILY", **extra):
         "erz": {"mid": 177.5},
         "invalidation": {"price": 178.2},
         "targets": [{"price": 176.4}],
+        "qualified": extra.pop("qualified", True),
         "primary_scenario": {"key": "BEAR_CONT"},
         "current_status": {"title": extra.pop("title", "Waiting for pullback"), "detail": "From the published outlook"},
         "data_quality": {"status": extra.pop("quality", "OK"), "checks": [{"fresh": extra.pop("fresh", True)}]},
@@ -144,7 +155,7 @@ def test_projection_threshold_stale_and_duplicate_collapse():
     assert len(book["campaigns"]) == 4
     assert by_id["o-low"]["stage"] == "MONITORING"
     assert by_id["o-ok"]["stage"] == "QUALIFICATION"
-    assert by_id["o-ok"]["maxPositions"] == 3
+    assert by_id["o-ok"]["maxPositions"] == 5
     assert by_id["o-stale"]["stage"] == "MONITORING"
     assert by_id["o-dead"]["stage"] == "CLOSED"
     assert book["summary"]["tradingMode"] == "SHADOW"
@@ -192,6 +203,113 @@ def test_stage_progression_does_not_invent_a_fill():
     assert weekly["campaigns"][0]["stage"] == "QUALIFICATION"
     assert weekly["campaigns"][0]["updatedAt"] == "2026-10-14T16:00:00+00:00"
     assert weekly["campaigns"][0]["positionsOpen"] == 0
+
+
+def test_outlook_confirmation_reaches_risk_and_execution_without_inventing_a_fill():
+    from apps.api.app.cacsms_engine.advance import decide_outlook_order
+
+    confirmed = _book([_row("o", "EURJPY", 82, lifecycle="BOS")])
+    assert confirmed["campaigns"][0]["stage"] == "CONFIRMATION"
+    pending = _book([_row("o", "EURJPY", 82, lifecycle="AUTHORIZATION_PENDING")])
+    assert pending["campaigns"][0]["stage"] == "RISK"
+    submitted = _book([_row("o", "EURJPY", 82, lifecycle="ORDER_SUBMITTED", execution_ref="88421")])
+    campaign = submitted["campaigns"][0]
+    assert campaign["stage"] == "EXECUTION"
+    assert campaign["positionsOpen"] == 0
+    assert "88421" in campaign["nextAction"]
+    payload = {
+        "symbol": "EURJPY", "qualified": True, "expected_direction": "BEARISH",
+        "evidence_score": {"value": 80}, "erz": {"mid": 176.8}, "invalidation": {"price": 177.4},
+        "targets": [{"price": 175.2}],
+    }
+    common = dict(open_symbols=set(), engine_cap=6, account_cap=3, exposure_percent=0.4, max_exposure_percent=3.0, slots_remaining=2)
+    assert decide_outlook_order(payload, horizon="DAILY", horizon_used=0, **common)["action"] == "send"
+    assert decide_outlook_order(payload, horizon="DAILY", horizon_used=0, **common)["order"]["direction"] == "BEARISH"
+    assert decide_outlook_order(payload, horizon="WEEKLY", horizon_used=2, **common)["action"] == "send"
+    assert decide_outlook_order(payload, horizon="WEEKLY", horizon_used=3, **common)["action"] == "hold"
+    tight = {**payload, "targets": [{"price": 176.7}]}
+    assert decide_outlook_order(tight, horizon="DAILY", horizon_used=0, **common)["action"] == "hold"
+    assert decide_outlook_order(payload, horizon="DAILY", horizon_used=0, open_symbols={"EURJPY"}, **{k: v for k, v in common.items() if k != "open_symbols"})["action"] == "send"
+
+
+def test_strategy_and_outlook_share_one_order_and_keep_conflicts():
+    from apps.api.app.cacsms_engine.registry import unify
+
+    outlook = _book([
+        _row("daily", "EURJPY", 82, direction="BEARISH"),
+        _row("weekly", "GBPUSD", 74, horizon="WEEKLY", direction="BULLISH"),
+    ])["campaigns"]
+    strategy = {
+        "id": "strat-1", "symbol": "EURJPY", "direction": "BEARISH", "opp_type": "TIT", "status": "ACTIVE",
+        "stage": "CONFIRMATION", "state": "AWAITING_REACTION", "entry_lo": 176.7, "entry_hi": 176.9,
+        "invalidation": 177.4, "target_1": 175.2, "confidence": 61, "family_key": "eurjpy-tit",
+        "next_condition": "Wait for the H1 rejection", "updated_at": "2026-10-15T09:00:00+00:00",
+    }
+    opposite = {
+        "id": "strat-2", "symbol": "GBPUSD", "direction": "BEARISH", "opp_type": "P2_BREAKOUT_RETEST", "status": "ACTIVE",
+        "stage": "OPPORTUNITY", "state": "WAITING_FOR_ZONE", "entry_lo": 1.30, "entry_hi": 1.301,
+        "invalidation": 1.32, "target_1": 1.28, "confidence": 55, "family_key": "gbpusd-p2",
+        "next_condition": "Wait for the retest", "updated_at": "2026-10-15T09:00:00+00:00",
+    }
+    low_score = {
+        "id": "strat-3", "symbol": "AUDUSD", "direction": "BULLISH", "opp_type": "CONTINUATION", "status": "ACTIVE",
+        "stage": "OPPORTUNITY", "state": "WAITING_FOR_ZONE", "entry_lo": 0.65, "entry_hi": 0.651,
+        "invalidation": 0.64, "target_1": 0.67, "confidence": 42, "family_key": "audusd-ch",
+        "next_condition": "Channel touch", "updated_at": "2026-10-15T09:00:00+00:00",
+    }
+    # Outlook entry is the zone mid, so the strategy zone must contain  the published entry.
+    outlook[0]["entry"] = 176.8
+    outlook[0]["entryLo"] = 176.8
+    outlook[0]["entryHi"] = 176.8
+    book = unify(outlook, [strategy, opposite, low_score], account_cap=3)
+    by_symbol = {}
+    for row in book:
+        by_symbol.setdefault(row["symbol"], []).append(row)
+    assert len(by_symbol["EURJPY"]) == 1
+    assert by_symbol["EURJPY"][0]["sourceMode"] == "COMBINED"
+    assert {by_symbol["EURJPY"][0]["id"], *by_symbol["EURJPY"][0]["linkedIds"]} == {"daily", "strat-1"}
+    assert by_symbol["AUDUSD"][0]["sourceMode"] == "STRATEGY"
+    assert by_symbol["AUDUSD"][0]["evidenceScore"] == 42
+    gbpusd = {row["direction"]: row for row in by_symbol["GBPUSD"]}
+    assert set(gbpusd) == {"BUY", "SELL"}
+    assert gbpusd["BUY"]["conflict"] == "OPPOSITE_DIRECTION"
+    assert gbpusd["SELL"]["conflict"] == "OPPOSITE_DIRECTION"
+
+
+def test_only_outlook_qualified_opportunities_are_listed():
+    book = _book([
+        _row("yes", "EURUSD", 80, qualified=True),
+        _row("no", "GBPUSD", 95, qualified=False),
+    ])
+    assert [row["symbol"] for row in book["campaigns"]] == ["EURUSD"]
+    assert book["summary"]["horizonCounts"]["DAILY"] == 1
+    assert book["summary"]["campaigns"] == 1
+
+
+def test_closed_terminal_ticket_leaves_execution():
+    accepted = {
+        "id": "strat-closed", "symbol": "EURUSD", "direction": "BEARISH", "status": "ACTIVE",
+        "stage": "EXECUTION", "state": "ORDER_ACCEPTED", "opp_type": "P2_BREAKOUT_RETEST",
+        "confidence": 67, "entry_lo": 1.119, "entry_hi": 1.12, "invalidation": 1.13, "target_1": 1.10,
+        "updated_at": "2026-10-15T10:00:33+00:00",
+        "evidence": {"broker_order": {"ticket": 2011034153}},
+        "next_condition": "Broker order 2011034153 is open.",
+    }
+    empty = _book([], opportunities=[accepted], broker_positions=[])
+    row = next(item for item in empty["campaigns"] if item["id"] == "strat-closed")
+    assert row["stage"] == "CLOSED"
+    assert row["positionsOpen"] == 0
+    assert "2011034153" in row["nextAction"]
+    assert empty["summary"]["executing"] == 0
+    still_open = _book([], opportunities=[accepted], broker_positions=[
+        {"ticket": "2011034153", "symbol": "EURUSD", "direction": "SELL", "volume": 0.03, "profit": 1.2},
+    ])
+    live = next(item for item in still_open["campaigns"] if item["symbol"] == "EURUSD")
+    assert live["stage"] == "MANAGEMENT"
+    assert live["positionsOpen"] == 1
+    unknown = _book([], opportunities=[accepted])
+    held = next(item for item in unknown["campaigns"] if item["id"] == "strat-closed")
+    assert held["stage"] == "EXECUTION"
 
 
 def test_terminal_position_is_shown_once_on_the_matching_campaign():
@@ -311,6 +429,7 @@ def test_overview_requires_auth_and_ignores_query_tenant(client):
             "erz": {"mid": 177.7},
             "invalidation": {"price": 178.2},
             "targets": [{"price": 176.8}],
+            "qualified": True,
             "primary_scenario": {"key": "BEAR_CONT"},
             "current_status": {"title": "Waiting for pullback", "detail": "Published snapshot"},
             "data_quality": {"status": "OK", "checks": [{"fresh": True}]},

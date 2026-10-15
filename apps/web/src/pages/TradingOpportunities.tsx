@@ -19,6 +19,8 @@ import { useLive, useLiveCandles } from '../features/market-structure/live';
 import { InstrumentIcon } from '../features/market-scanner/components/InstrumentIcon';
 import { usePollingAsync } from '../features/market-intelligence/hooks/useMarketIntelligence';
 import { autonomousApi } from '../features/autonomous/api';
+import { engineApi } from '../features/cacsms-engine/api';
+import type { Campaign } from '../features/cacsms-engine/types';
 import { useNow } from '../features/autonomous/components/DetailParts';
 import { price, pretty, until } from '../features/autonomous/format';
 import type { ChannelLines, Opportunity, OpportunitySummary, Transition } from '../features/autonomous/types';
@@ -123,6 +125,48 @@ function findings(evidence: Record<string, unknown>, opp: Opportunity): Finding[
   return rows;
 }
 
+function asOpportunity(campaign: Campaign): Opportunity {
+  const bull = campaign.direction === 'BUY';
+  return {
+    id: campaign.id,
+    symbol: campaign.symbol,
+    digits: campaign.symbol.startsWith('XAU') ? 2 : 5,
+    direction: bull ? 'BULLISH' : 'BEARISH',
+    type: campaign.sourceMode === 'COMBINED' ? 'COMBINED' : 'OUTLOOK',
+    type_label: campaign.sourceMode === 'COMBINED' ? `${campaign.horizon} · ${campaign.strategyType ?? 'Outlook'}` : `${campaign.horizon} outlook`,
+    tit_level: null,
+    stage: 'OPPORTUNITY',
+    stage_label: campaign.stage,
+    stage_number: null,
+    stage_color: null,
+    state: campaign.stage,
+    status: campaign.stage === 'CLOSED' ? 'CLOSED' : 'ACTIVE',
+    outcome: null,
+    parent_tf: campaign.horizon,
+    trigger_tf: 'H1',
+    entry_lo: campaign.entry ?? null,
+    entry_hi: campaign.entry ?? null,
+    invalidation: campaign.invalidation ?? campaign.stopLoss ?? null,
+    target_1: campaign.targets[0] ?? null,
+    target_2: campaign.targets[1] ?? null,
+    current_price: null,
+    price_at: null,
+    confidence: campaign.evidenceScore,
+    quality: null,
+    reward_risk: null,
+    next_condition: campaign.nextAction,
+    reason_code: campaign.conflict ?? null,
+    provider: null,
+    blockers: [],
+    origin_at: campaign.publishedAt ?? null,
+    stage_entered_at: null,
+    evaluated_through: null,
+    created_at: campaign.updatedAt,
+    updated_at: campaign.updatedAt,
+    closed_at: null,
+  };
+}
+
 export function TradingOpportunities() {
   const now = useNow();
   const [symbol, setSymbol] = useState('');
@@ -136,6 +180,7 @@ export function TradingOpportunities() {
   const [page, setPage] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [tab, setTab] = useState<InspTab>('overview');
+  const [book, setBook] = useState<'ALL' | 'STRATEGY' | 'OUTLOOK'>('ALL');
   const [tf, setTf] = useState<(typeof CHART_TFS)[number]>('H1');
 
   const overview = usePollingAsync(useCallback(() => autonomousApi.overview(), []), [], { intervalMs: LIVE_MS });
@@ -149,7 +194,10 @@ export function TradingOpportunities() {
     return () => { stop = true; window.clearInterval(id); };
   }, []);
 
-  const rows = opps.data?.rows ?? [];
+  const engine = usePollingAsync(useCallback(() => engineApi.overview(), []), [], { intervalMs: 30000 });
+  const outlookRows = useMemo(() => (engine.data?.campaigns ?? []).filter((row) => row.sourceMode !== 'STRATEGY').map(asOpportunity), [engine.data]);
+  const strategyRows = opps.data?.rows ?? [];
+  const rows = book === 'STRATEGY' ? strategyRows : book === 'OUTLOOK' ? outlookRows : [...strategyRows, ...outlookRows.filter((row) => !strategyRows.some((item) => item.symbol === row.symbol && item.direction === row.direction))];
   const summary: OpportunitySummary | undefined = opps.data?.summary;
   const symbols = useMemo(() => [...new Set(rows.map((r) => r.symbol))].sort(), [rows]);
   const types = opps.data?.types ?? {};
@@ -196,7 +244,7 @@ export function TradingOpportunities() {
   const shown = filtered.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
   const selected = filtered.find((r) => r.id === selectedId) ?? shown[0] ?? filtered[0] ?? null;
 
-  useEffect(() => { setPage(0); }, [symbol, type, direction, timeframe, stage, state, query, sort]);
+  useEffect(() => { setPage(0); }, [symbol, type, direction, timeframe, stage, state, query, sort, book]);
   useEffect(() => {
     if (selected && selected.trigger_tf && (CHART_TFS as readonly string[]).includes(selected.trigger_tf)) {
       setTf(selected.trigger_tf as (typeof CHART_TFS)[number]);
@@ -206,7 +254,7 @@ export function TradingOpportunities() {
   const history = usePollingAsync(
     useCallback(() => (selected ? autonomousApi.history(selected.id) : Promise.resolve(null)), [selected?.id]),
     [selected?.id],
-    { enabled: !!selected, intervalMs: LIVE_MS },
+    { enabled: !!selected && strategyRows.some((row) => row.id === selected.id), intervalMs: LIVE_MS },
   );
   const activity = usePollingAsync(
     useCallback(() => (selected ? autonomousApi.transitions('OPPORTUNITY', 8, selected.symbol) : Promise.resolve({ rows: [] as Transition[] })), [selected?.symbol]),
@@ -284,6 +332,15 @@ export function TradingOpportunities() {
 
       <div className="topp-grid">
         <section className="topp-card">
+          <div className="topp-filters" role="tablist" aria-label="Opportunity source">
+            {([
+              ['ALL', 'All Opportunities'],
+              ['STRATEGY', 'Strategy-Based'],
+              ['OUTLOOK', 'AI Market Outlook'],
+            ] as const).map(([key, label]) => (
+              <button type="button" key={key} className={book === key ? 'is-on' : ''} onClick={() => setBook(key)}>{label}</button>
+            ))}
+          </div>
           <div className="topp-filters">
             <Select value={symbol} onChange={setSymbol} label="All Symbols" options={symbols.map((s) => [s, s])} />
             <Select value={type} onChange={setType} label="All Opportunity Types" options={Object.entries(types)} />

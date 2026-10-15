@@ -12,6 +12,12 @@ from .qualify import OutlookSignal, qualify
 
 _DIRECTION = {"BULLISH": "BUY", "BUY": "BUY", "BEARISH": "SELL", "SELL": "SELL"}
 _CLOSED_LIFECYCLE = ("INVALIDATED", "EXPIRED", "COMPLETED")
+_ZONE_LIFECYCLE = {
+    "APPROACHING_ZONE", "ZONE_REACHED", "REACTION_PENDING", "CONFIRMATION_PENDING", "CONFIRMED",
+    "AWAITING_REACTION", "REACTION", "EXHAUSTION", "CHOCH", "BOS", "RETEST", "NEAR_ERZ",
+}
+_RISK_LIFECYCLE = {"AUTHORIZATION_PENDING", "AUTHORIZED", "RISK_REVIEW", "RISK_APPROVED", "RISK_DEFERRED"}
+_STAGE_RANK = {"QUALIFICATION": 1, "CONFIRMATION": 2, "RISK": 3, "EXECUTION": 4, "MANAGEMENT": 5}
 _PIPELINE = {
     "CONFIRMATION": "Stage 7 · Confirmation",
     "RISK": "Stage 8 · Risk authorization",
@@ -101,6 +107,14 @@ def _status_text(payload: dict, lifecycle: str | None) -> tuple[str, str]:
         "CONFIRMED": "Confirmed",
         "AUTHORIZATION_PENDING": "Pending authorization",
         "AUTHORIZED": "Risk authorised",
+        "AWAITING_REACTION": "Waiting for the reaction zone",
+        "REACTION": "Reaction at the zone",
+        "EXHAUSTION": "Exhaustion inside the zone",
+        "CHOCH": "Structure shift",
+        "BOS": "Break of structure",
+        "RETEST": "Retest of the zone",
+        "NEAR_ERZ": "Approaching reaction zone",
+        "ORDER_SUBMITTED": "Order submitted",
         "PUBLISHED": "Published outlook",
         "INVALIDATED": "Invalidated",
         "EXPIRED": "Expired",
@@ -162,7 +176,36 @@ def _linked_opportunity(outlook: dict, opportunities: list[dict], horizon: str) 
     return max(matches, key=lambda row: (rank.get(str(row.get("stage")), 0), str(row.get("updated_at") or "")))
 
 
-def campaign_stage(decision, *, lifecycle: str | None, invalidated: bool, opportunity: dict | None, orders: dict[str, int]) -> str:
+def _opportunity_stage(opportunity: dict) -> str | None:
+    stage = str(opportunity.get("stage") or "")
+    state = str(opportunity.get("state") or "")
+    if stage == "LEARNING":
+        return "CLOSED"
+    if stage == "MANAGEMENT":
+        return "MANAGEMENT"
+    if stage == "EXECUTION" and state == "ORDER_ACCEPTED":
+        return "EXECUTION"
+    if stage == "EXECUTION" or state == "EXECUTION_BLOCKED_ANALYSIS_ONLY":
+        return "RISK"
+    if stage == "RISK":
+        return "RISK"
+    if stage in ("CONFIRMATION", "OPPORTUNITY"):
+        return "CONFIRMATION"
+    return None
+
+
+def _lifecycle_stage(lifecycle: str | None) -> str | None:
+    if lifecycle in _RISK_LIFECYCLE or lifecycle == "ORDER_SUBMITTED":
+        return "EXECUTION" if lifecycle == "ORDER_SUBMITTED" else "RISK"
+    if lifecycle in _ZONE_LIFECYCLE:
+        return "CONFIRMATION"
+    return None
+
+
+def campaign_stage(
+    decision, *, lifecycle: str | None, invalidated: bool, opportunity: dict | None, orders: dict[str, int],
+    execution_ref: str | None = None,
+) -> str:
     if decision.stage == "BLOCKED":
         return "BLOCKED"
     if invalidated or lifecycle in _CLOSED_LIFECYCLE:
@@ -173,27 +216,27 @@ def campaign_stage(decision, *, lifecycle: str | None, invalidated: bool, opport
         return "MANAGEMENT"
     if orders.get("pending", 0) or orders.get("inflight", 0):
         return "EXECUTION"
+    reached = []
+    if execution_ref:
+        reached.append("EXECUTION")
     if opportunity:
-        stage = str(opportunity.get("stage") or "")
-        state = str(opportunity.get("state") or "")
-        if stage == "LEARNING":
+        mapped = _opportunity_stage(opportunity)
+        if mapped == "CLOSED":
             return "CLOSED"
-        if stage == "MANAGEMENT":
-            return "MANAGEMENT"
-        if stage == "EXECUTION" or state == "EXECUTION_BLOCKED_ANALYSIS_ONLY":
-            return "RISK"
-        if stage == "RISK":
-            return "RISK"
-        if stage in ("CONFIRMATION", "OPPORTUNITY"):
-            return "CONFIRMATION"
-    if lifecycle in ("AUTHORIZATION_PENDING", "AUTHORIZED"):
-        return "RISK"
-    if lifecycle in ("APPROACHING_ZONE", "ZONE_REACHED", "REACTION_PENDING", "CONFIRMATION_PENDING", "CONFIRMED"):
-        return "CONFIRMATION"
-    return "QUALIFICATION"
+        if mapped:
+            reached.append(mapped)
+    mapped_life = _lifecycle_stage(lifecycle)
+    if mapped_life:
+        reached.append(mapped_life)
+    if not reached:
+        return "QUALIFICATION"
+    return max(reached, key=lambda name: _STAGE_RANK.get(name, 0))
 
 
-def _next_action(stage: str, decision, opportunity: dict | None, *, horizon: str, ceiling: bool, budget_held: bool) -> str:
+def _next_action(
+    stage: str, decision, opportunity: dict | None, *, horizon: str, ceiling: bool, budget_held: bool,
+    note: str | None = None, execution_ref: str | None = None,
+) -> str:
     if budget_held:
         return "Risk budget unavailable or exhausted — authorisation held."
     if ceiling and stage in ("QUALIFICATION", "CONFIRMATION", "RISK"):
@@ -205,12 +248,19 @@ def _next_action(stage: str, decision, opportunity: dict | None, *, horizon: str
             return "Candidate. A new closed M15 confirmation and remaining risk budget are required before any entry."
         return "Candidate eligible for independent closed-bar confirmation."
     if stage == "CONFIRMATION":
-        return "Wait for a closed-bar ERZ reaction, BOS/CHoCH, breakout or retest."
+        return note or "Wait for a closed-bar ERZ reaction, BOS/CHoCH, breakout or retest."
     if stage == "RISK":
+        if note:
+            return note
         if opportunity and str(opportunity.get("state")) == "EXECUTION_BLOCKED_ANALYSIS_ONLY":
-            return "Authorised by risk. No broker order is submitted in the current operating mode."
+            error = (opportunity.get("evidence") or {}).get("broker_error")
+            if error:
+                return f"Broker did not accept the order: {error}"
+            return "Authorised by risk. No broker order is submitted while the operating mode blocks execution."
         return "Awaiting portfolio authorisation. A qualified outlook is not an order."
     if stage == "EXECUTION":
+        if execution_ref:
+            return f"Broker order {execution_ref} was submitted. The position appears here only after the terminal reports it."
         return "Reconcile the accepted broker order. No fill is assumed."
     if stage == "MANAGEMENT":
         return "Monitor broker-side invalidation, targets and exposure."
@@ -279,6 +329,8 @@ def project_campaign(
     updated_at: str,
     revisions: list[dict] | None = None,
     published_at: str | None = None,
+    execution_ref: str | None = None,
+    handoff_note: str | None = None,
 ) -> dict:
     payload = outlook.get("payload") or outlook
     signal = _signal(outlook, horizon, lifecycle, invalidated)
@@ -289,7 +341,10 @@ def project_campaign(
             invalidated=signal.invalidated,
         )
     decision = qualify(signal)
-    stage = campaign_stage(decision, lifecycle=lifecycle, invalidated=invalidated or signal.invalidated, opportunity=opportunity, orders=orders)
+    stage = campaign_stage(
+        decision, lifecycle=lifecycle, invalidated=invalidated or signal.invalidated, opportunity=opportunity, orders=orders,
+        execution_ref=execution_ref,
+    )
     cap = horizon_slot_cap(signal.horizon, engine_cap=engine_cap, account_cap=account_cap)
     used = int(orders.get("open", 0) + orders.get("pending", 0) + orders.get("inflight", 0))
     ceiling = cap is not None and used >= cap
@@ -315,6 +370,7 @@ def project_campaign(
         "analysisVersion": signal.version,
         "symbol": signal.symbol,
         "horizon": signal.horizon,
+        "outlookQualified": bool(payload.get("qualified")),
         "direction": signal.direction if signal.direction in ("BUY", "SELL") else "NEUTRAL",
         "evidenceScore": max(0.0, min(100.0, signal.score if _score(payload) is not None else 0.0)),
         "stage": stage,
@@ -328,11 +384,21 @@ def project_campaign(
         "positionsUsed": used,
         "brokerPositions": [],
         "maxPositions": cap,
-        "nextAction": _next_action(stage, decision, opportunity, horizon=signal.horizon, ceiling=ceiling, budget_held=held),
+        "nextAction": _next_action(
+            stage, decision, opportunity, horizon=signal.horizon, ceiling=ceiling, budget_held=held,
+            note=handoff_note, execution_ref=execution_ref,
+        ),
+        "executionRef": execution_ref,
         "updatedAt": checked,
         "publishedAt": published_at,
         "reason": detail or decision.reason,
         "isStale": signal.stale,
+        "sourceMode": "OUTLOOK",
+        "strategyType": None,
+        "conflict": None,
+        "linkedIds": [],
+        "entryLo": entry,
+        "entryHi": entry,
         "pipelineStage": pipeline,
         "evidence": _evidence(payload),
         "events": _events(revisions or [], published_at),
@@ -394,16 +460,24 @@ def build_overview(
             updated_at=str(row.get("updated_at") or when.isoformat()),
             revisions=row.get("revisions") or [],
             published_at=row.get("published_at"),
+            execution_ref=row.get("execution_ref"),
+            handoff_note=row.get("handoff_note"),
         )
         key = f"{campaign['outlookId']}:{campaign['scenarioId']}:{campaign['analysisVersion']}"
         if key in seen:
             continue
         seen.add(key)
         campaigns.append(campaign)
+    campaigns = [item for item in campaigns if item.get("outlookQualified")]
+    from .registry import unify
+
+    campaigns = unify(campaigns, opps, account_cap=account_cap)
     if broker_positions is not None:
         _apply_terminal_positions(campaigns, broker_positions, checked_at=when.isoformat())
+        _drop_orders_missing_from_terminal(campaigns, broker_positions)
     campaigns.sort(key=lambda item: (
         0 if item["stage"] not in ("MONITORING", "BLOCKED", "CLOSED") else 1,
+        0 if item.get("sourceMode") != "STRATEGY" else 1,
         {"DAILY": 0, "WEEKLY": 1, "MONTHLY": 2, "QUARTERLY": 3, "GOLD_H8": 4}.get(item["horizon"], 9),
         -item["evidenceScore"],
         item["symbol"],
@@ -411,7 +485,7 @@ def build_overview(
     def count(stage: str) -> int:
         return sum(item["stage"] == stage for item in campaigns)
     qualified = count("QUALIFICATION")
-    horizon_counts = {name: sum(item["horizon"] == name for item in campaigns) for name in ("DAILY", "WEEKLY", "MONTHLY", "QUARTERLY", "GOLD_H8")}
+    horizon_counts = {name: sum(item["horizon"] == name and item.get("sourceMode") != "STRATEGY" for item in campaigns) for name in ("DAILY", "WEEKLY", "MONTHLY", "QUARTERLY", "GOLD_H8")}
     open_positions = len(broker_positions) if broker_positions is not None else sum(item["positionsOpen"] for item in campaigns)
     pending_orders = sum(item["positionsPending"] for item in campaigns)
     fx_positions = None
@@ -444,6 +518,12 @@ def build_overview(
             "brokerStatus": broker_status or "UNKNOWN",
             "brokerBasis": broker_basis,
             "horizonCounts": horizon_counts,
+            "sourceCounts": {
+                "outlook": sum(item.get("sourceMode") == "OUTLOOK" for item in campaigns),
+                "strategy": sum(item.get("sourceMode") == "STRATEGY" for item in campaigns),
+                "combined": sum(item.get("sourceMode") == "COMBINED" for item in campaigns),
+                "conflicts": sum(bool(item.get("conflict")) for item in campaigns),
+            },
         },
         "campaigns": campaigns,
         "generatedAt": when.isoformat(),
@@ -455,6 +535,41 @@ def _canon_symbol(symbol: object) -> str:
     if text.endswith("M") and len(text) > 6:
         text = text[:-1]
     return "".join(ch for ch in text if ch.isalnum())
+
+
+def qualified_outlook_directions(conn, tenant: str, account: str) -> dict[str, set[str]]:
+    """Directions the latest AI Market Outlook marked qualified, per symbol. An empty set means it is not an opportunity."""
+    from ..market.outlook.store import OutlookRepository
+
+    store = OutlookRepository(conn, (tenant, account))
+    found: dict[str, set[str]] = {}
+    for horizon in ("DAILY", "WEEKLY", "MONTHLY", "QUARTERLY", "H8"):
+        run = store.latest_published(horizon)
+        if not run:
+            continue
+        for outlook in store.outlooks(run["id"]):
+            if not outlook.get("qualified"):
+                continue
+            symbol = _canon_symbol(outlook.get("symbol"))
+            raw = str(outlook.get("expected_direction") or "").upper()
+            direction = {"BULLISH": "BULLISH", "BUY": "BULLISH", "BEARISH": "BEARISH", "SELL": "BEARISH"}.get(raw)
+            if symbol and direction:
+                found.setdefault(symbol, set()).add(direction)
+    return found
+
+
+def outlook_allows(directions: dict[str, set[str]], symbol: str, direction: str) -> bool:
+    """A symbol can be traded only when every qualified outlook agrees with this direction."""
+    allowed = directions.get(_canon_symbol(symbol))
+    return bool(allowed) and allowed == {str(direction or "").upper()}
+
+
+def outlook_blocks(directions: dict[str, set[str]], symbol: str, direction: str) -> bool:
+    """The execution book may trade a symbol the outlook does not mention. It may not trade against a qualified outlook."""
+    allowed = directions.get(_canon_symbol(symbol))
+    if not allowed:
+        return False
+    return str(direction or "").upper() not in allowed
 
 
 def _px(value: object) -> str:
@@ -474,6 +589,26 @@ def _position_note(positions: list[dict]) -> str:
             f"at {_px(pos.get('priceOpen'))}, stop {_px(pos.get('stopLoss'))}, target {_px(pos.get('takeProfit'))}{floating}"
         )
     return "Terminal position open. " + "; ".join(parts) + "."
+
+
+def _drop_orders_missing_from_terminal(campaigns: list[dict], positions: list[dict]) -> None:
+    """A recorded ticket that the terminal does not have is not an executing order."""
+    open_ids = {str(item.get("ticket")) for item in positions if item.get("ticket") is not None}
+    for item in campaigns:
+        if item.get("stage") != "EXECUTION":
+            continue
+        if int(item.get("positionsOpen") or 0) > 0:
+            continue
+        ref = item.get("executionRef")
+        if ref and str(ref) in open_ids:
+            continue
+        if ref:
+            item["nextAction"] = f"Broker order {ref} is not open on the terminal."
+        else:
+            item["nextAction"] = "No open broker order matches this campaign."
+        item["stage"] = "CLOSED"
+        item["positionsPending"] = 0
+        item["positionsOpen"] = 0
 
 
 def _apply_terminal_positions(campaigns: list[dict], positions: list[dict], *, checked_at: str) -> None:

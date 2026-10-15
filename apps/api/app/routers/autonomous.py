@@ -185,6 +185,15 @@ def _cron_authorized(authorization: str | None) -> None:
         raise HTTPException(401, "Invalid cron credentials")
 
 
+@router.get("/live-account")
+def live_account(user=Depends(current_user)):
+    """Equity, floating profit and open-position profit from the attached terminal. Read only."""
+    from ..autonomous.command_centre import read_live_money
+
+    money, _positions = read_live_money()
+    return money or {"ok": False}
+
+
 @router.get("/command-centre")
 def command_centre(user=Depends(current_user)):
     """Overview command centre. Reads persisted engine, outlook, scanner and account state. It does not advance a stage."""

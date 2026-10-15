@@ -10,7 +10,8 @@
   padding: 10px 14px 12px;
   flex: 1 1 auto;
   min-height: 0;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
 }
@@ -48,6 +49,7 @@
   color: #128a4e; background: #e8f8ef; border: 1px solid #b7ebc9; padding: 3px 9px; border-radius: 999px; vertical-align: middle;
 }
 .ce-actions, .ce-tools { display: flex; align-items: center; gap: 8px; flex: none; }
+.ce-tools { margin-left: auto; }
 .ce-actions button, .ce-columns, .ce-filters button, .ce-error button {
   border: 1px solid #e1e7f0; background: #fff; color: #31445f; border-radius: 10px; height: 36px;
   padding: 0 12px; display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; width: auto;
@@ -165,6 +167,7 @@
 .ce-dots .is-watch::before { background: #f59e0b; }
 .ce-dots .is-ok::before { background: #22c55e; }
 .ce-dots .is-bad::before { background: #ef4444; }
+.ce-dots .is-wait::before { background: #94a3b8; }
 .ce-squares .is-fx::before { background: #3b82f6; }
 .ce-squares .is-gold::before { background: #f59e0b; }
 .ce-squares .is-wait::before { background: #94a3b8; }
@@ -178,7 +181,7 @@
 .ce-card {
   background: #fff; border: 1px solid #e6edf5; border-radius: 14px; overflow: hidden;
   box-shadow: 0 1px 2px rgba(16, 35, 72, 0.04);
-  flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column;
+  flex: 1 1 auto; min-height: 440px; display: flex; flex-direction: column;
 }
 .ce-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; gap: 10px; }
 .ce-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -204,9 +207,10 @@
 }
 .ce-filters { display: flex; align-items: center; gap: 10px; background: #f8faff; padding: 10px 14px; font-size: 12px; border-top: 1px solid #e9eef6; }
 .ce-filters select { width: auto; margin: 0; height: 34px; padding: 0 8px; }
-.ce-scroll { overflow: auto; flex: 1 1 auto; min-height: 0; }
+.ce-scroll { overflow: auto; flex: 1 1 auto; min-height: 320px; }
 .ce table { width: 100%; border-collapse: collapse; min-width: 1180px; }
 .ce th {
+  position: sticky; top: 0; z-index: 2;
   background: #f8fafc; text-align: left; font-size: 12px; color: #5d7290; font-weight: 700; padding: 11px 10px;
   border-bottom: 1px solid #e8eef5; white-space: nowrap; text-transform: none; letter-spacing: 0;
 }
@@ -310,6 +314,39 @@
 .ce-time p, .ce-time small { font-size: 11px; color: #8796aa; margin: 4px 0; }
 .ce-notice { background: #eef7ff; color: #385b82; border-radius: 9px; padding: 12px; display: flex; gap: 8px; font-size: 12px; line-height: 1.5; margin-top: 20px; }
 .ce-close { background: #1567ee; color: #fff; border: 0; padding: 12px; border-radius: 8px; width: 100%; margin-top: 16px; font-weight: 700; }
+
+.ce-step-title > div { min-width: 0; }
+.ce-step-title b,
+.ce-step-title small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (max-height: 1080px), (max-width: 1500px) {
+  .page.ce-shell-page { padding: 6px 10px 8px !important; }
+  .ce { gap: 6px; }
+  .ce-heading h1 { font-size: 18px; }
+  .ce-heading p { display: none; }
+  .ce-actions button, .ce-columns, .ce-filters button { height: 32px; font-size: 12px; }
+  .ce-step { padding: 7px 8px 6px; border-radius: 12px; }
+  .ce-step p { display: none; }
+  .ce-num { width: 22px; height: 22px; flex-basis: 22px; font-size: 11px; }
+  .ce-step-title svg { width: 15px; height: 15px; }
+  .ce-step-title b { font-size: 12px; }
+  .ce-step-foot { min-height: 28px; padding: 4px 6px; }
+  .ce-step-foot b { font-size: 16px; }
+  .ce-step-foot span { font-size: 10px; }
+  .ce-kpis { gap: 6px; }
+  .ce-kpi { padding: 7px 8px 6px; gap: 8px; }
+  .ce-kpi-icon { width: 28px; height: 28px; }
+  .ce-kpi-icon svg { width: 14px; height: 14px; }
+  .ce-kpi span { font-size: 11px; }
+  .ce-kpi strong { font-size: 18px; }
+  .ce-dots, .ce-squares, .ce-legend { margin-top: 4px; gap: 2px 8px; }
+  .ce-mix, .ce-meter { margin-top: 6px; }
+  .ce-allow { margin-top: 4px; }
+  .ce-toolbar { padding: 6px 8px; }
+  .ce-tabs button { padding: 6px 8px; font-size: 12px; }
+  .ce-search { height: 32px; min-width: 180px; }
+  .ce th, .ce td { padding: 6px 8px; }
+}
 
 @container page (max-width: 1180px) {
   .ce-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }

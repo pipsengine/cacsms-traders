@@ -72,7 +72,7 @@ def test_shadow_plans_are_not_broker_positions():
     assert board["positions"]["orders_submitted"] == 0
     assert board["shadow_plans"][0]["order_status"] == "NOT_SUBMITTED"
     assert board["performance"]["profit_factor"] is None
-    assert board["execution"] == "BLOCKED"
+    assert board["execution"] == "SHADOW"
 
 
 def test_scanner_groups_count_every_row_once():
@@ -96,3 +96,35 @@ def test_scanner_groups_count_every_row_once():
     assert scan["excluded_reasons"][0]["reason"] == "Missing H1"
     assert board["tit"] == {"count": 1, "levels": {"L2": 1}}
     assert board["opportunities"][0]["symbol"] == "XAUUSD"
+    assert board["broker_positions"] is None
+    assert board["outlooks"]["DAILY"]["bias"] is None
+
+
+def test_live_terminal_equity_replaces_the_synced_snapshot():
+    board = assemble(
+        now=NOW, mode="DEMO_AUTONOMOUS", market_open=True, safety={}, ribbon={}, stages=[], outlook=None,
+        scanner=None, strength=[], opportunities=[],
+        portfolio={"account": {"currency": "USD", "balance": 1000, "equity": 1000, "floating_pnl": 0, "stale": True}, "limits": {}, "outcomes": {}},
+        execution=None, alerts=[],
+        live_account={"ok": True, "currency": "USD", "balance": 1287.06, "equity": 1283.97, "floating_pnl": -3.09, "margin": 20},
+    )
+    assert board["account"]["equity"] == 1283.97
+    assert board["account"]["floating_pnl"] == -3.09
+    assert board["account"]["stale"] is False
+    assert board["account"]["floating_pnl_basis"].startswith("Live equity")
+
+
+def test_open_position_r_uses_the_stop_distance():
+    board = assemble(
+        now=NOW, mode="DEMO_AUTONOMOUS", market_open=True, safety={}, ribbon={}, stages=[], outlook=None,
+        scanner=None, strength=[], opportunities=[], portfolio=None, execution=None, alerts=[],
+        broker_positions=[{
+            "ticket": "2011241144", "symbol": "EURGBP", "direction": "SELL", "volume": 0.03,
+            "priceOpen": 0.8700, "priceCurrent": 0.8680, "stopLoss": 0.8740, "profit": -18.2,
+        }],
+    )
+    row = board["broker_positions"][0]
+    assert row["ticket"] == "2011241144"
+    assert row["profit"] == -18.2
+    assert row["r_multiple"] == 0.5
+    assert board["execution"] == "DEMO"

@@ -290,14 +290,35 @@ class OutlookRepository:
         return out
 
     def save_handoff(self, outlook: dict, run: dict, lifecycle: str, evidence: dict, execution_ref: str | None) -> None:
+        """Upsert the live stage of one outlook. A later monitor pass keeps an order ticket and notes it did not resend."""
         stamp = now_iso()
+        current = self.conn.execute(
+            "SELECT execution_ref, evidence_json FROM ai_outlook_handoff WHERE outlook_id=?",
+            (outlook["outlook_id"],),
+        ).fetchone()
+        merged: dict = {}
+        kept_ref = execution_ref
+        if current:
+            previous_ref, previous_evidence = values(current)
+            kept_ref = execution_ref or previous_ref
+            try:
+                loaded = json.loads(previous_evidence or "{}")
+            except ValueError:
+                loaded = {}
+            if isinstance(loaded, dict):
+                merged.update(loaded)
+        for key, value in evidence.items():
+            if value is None:
+                merged.pop(key, None)
+            else:
+                merged[key] = value
         self.conn.execute(
             "INSERT INTO ai_outlook_handoff(id, outlook_id, run_id, tenant_id, trading_account_id, symbol, horizon, close_at, lifecycle, "
             "execution_ref, evidence_json, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(outlook_id) DO UPDATE SET lifecycle=excluded.lifecycle, execution_ref=excluded.execution_ref, "
             "evidence_json=excluded.evidence_json, updated_at=excluded.updated_at",
             (str(uuid.uuid4()), outlook["outlook_id"], run["id"], self.tenant, self.account, outlook["symbol"], run.get("horizon") or "DAILY",
-             run["close_at"], lifecycle, execution_ref, json.dumps(evidence, default=str), stamp, stamp),
+             run["close_at"], lifecycle, kept_ref, json.dumps(merged, default=str), stamp, stamp),
         )
         self.conn.commit()
 

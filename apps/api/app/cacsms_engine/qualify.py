@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 Horizon = Literal["DAILY", "WEEKLY", "MONTHLY", "QUARTERLY", "GOLD_H8"]
-LIMITS = {"DAILY": 5, "WEEKLY": 2, "MONTHLY": 1, "QUARTERLY": 1}
+LIMITS = {"DAILY": 5, "WEEKLY": 3, "MONTHLY": 1, "QUARTERLY": 1}
 
 
 @dataclass(frozen=True)

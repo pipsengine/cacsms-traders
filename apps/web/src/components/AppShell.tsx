@@ -71,6 +71,53 @@ const nav: [string, { page: Page; label: string; icon: React.ReactNode }[]][] = 
   ],
 ];
 
+function marketTone(health: Health | null) {
+  if (!health) return 'wait';
+  if (health.market_data?.provider_status === 'CONNECTED') return 'ok';
+  if (
+    health.market_data?.provider_status === 'CONNECTING' ||
+    health.market_data?.engine_state === 'WAITING_PROVIDER' ||
+    (health.mt5?.status === 'CONNECTED' &&
+      (health.market_data?.engine_state === 'INCOMPLETE_BASKET' || health.market_data?.engine_state === 'SYNCING'))
+  ) {
+    return 'wait';
+  }
+  return 'bad';
+}
+
+function SideStatus({ health, autonomousStatus, mode }: { health: Health | null; autonomousStatus: string; mode: string }) {
+  const market = marketTone(health);
+  const broker = !health ? 'wait' : health.mt5?.status === 'CONNECTED' ? 'ok' : health.mt5?.status === 'CONNECTING' ? 'wait' : 'bad';
+  const analysis = /degrad|await|error|fail/i.test(autonomousStatus) ? 'wait' : autonomousStatus === 'Checking…' ? 'wait' : 'ok';
+  const trading = /EMERGENCY|PAUSED/i.test(mode) ? 'bad' : 'ok';
+  const rows = [
+    { label: 'Market Data', value: market === 'ok' ? 'Connected' : market === 'wait' ? 'Syncing' : 'Unavailable', tone: market },
+    { label: 'Broker (MT5)', value: broker === 'ok' ? 'Connected' : broker === 'wait' ? 'Connecting' : health?.mt5?.status || 'Offline', tone: broker },
+    { label: 'Analysis Engine', value: autonomousStatus.replaceAll('_', ' '), tone: analysis },
+    { label: 'Trading Engine', value: trading === 'ok' ? 'Running' : 'Halted', tone: trading },
+  ];
+  const ok = rows.every((row) => row.tone === 'ok');
+  return (
+    <div className="side-status-card">
+      <div className="side-status-card-head">
+        <i className={ok ? 'is-ok' : 'is-wait'} aria-hidden />
+        <div>
+          <span>System status</span>
+          <b>{ok ? 'All Systems Operational' : 'Attention needed'}</b>
+        </div>
+      </div>
+      <ul>
+        {rows.map((row) => (
+          <li key={row.label}>
+            <span>{row.label}</span>
+            <b className={`is-${row.tone}`}>{row.value}</b>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export function AppShell({
   page,
   navigate,
@@ -166,49 +213,7 @@ export function AppShell({
         </nav>
         <div className={`side-foot side-foot-status ${collapsed ? '' : 'side-foot-figma'}`}>
           {!collapsed ? (
-            <div className="side-foot-lines">
-              <div className="side-status-row">
-                <i className="side-dot green" aria-hidden />
-                <div>
-                  <span>Operating mode</span>
-                  <b>{mode.replaceAll('_', ' ')}</b>
-                </div>
-              </div>
-              <div className="side-status-row">
-                <i
-                  className={`side-dot ${
-                    !health
-                      ? ''
-                      : health.market_data?.provider_status === 'CONNECTED'
-                        ? 'green'
-                        : health.market_data?.provider_status === 'CONNECTING' ||
-                            health.market_data?.engine_state === 'WAITING_PROVIDER' ||
-                            (health.mt5?.status === 'CONNECTED' &&
-                              (health.market_data?.engine_state === 'INCOMPLETE_BASKET' ||
-                                health.market_data?.engine_state === 'SYNCING'))
-                          ? 'amber'
-                          : 'red'
-                  }`}
-                  aria-hidden
-                />
-                <div>
-                  <span>Market data</span>
-                  <b>
-                    {!health
-                      ? 'Checking…'
-                      : health.market_data?.provider_status === 'CONNECTED'
-                        ? `${health.market_data.active_provider === 'ctrader' ? 'cTrader' : health.market_data.active_provider} · CONNECTED`
-                        : health.market_data?.provider_status === 'CONNECTING' ||
-                            health.market_data?.engine_state === 'WAITING_PROVIDER' ||
-                            (health.mt5?.status === 'CONNECTED' &&
-                              (health.market_data?.engine_state === 'INCOMPLETE_BASKET' ||
-                                health.market_data?.engine_state === 'SYNCING'))
-                          ? `${health.market_data.active_provider || 'mt5'} · SYNCING`
-                          : `${health.market_data?.active_provider === 'ctrader' ? 'cTrader' : health.market_data?.active_provider || 'NO PROVIDER'} · ${health.market_data?.provider_status || 'UNAVAILABLE'}`}
-                  </b>
-                </div>
-              </div>
-            </div>
+            <SideStatus health={health} autonomousStatus={autonomousStatus} mode={mode} />
           ) : (
             <div className="live-dot" />
           )}
@@ -225,7 +230,7 @@ export function AppShell({
             )}
             <label className="top-search" aria-label="Search">
               <Search size={16} />
-              <input type="search" placeholder="Search anything…" disabled title="Global search (coming soon)" />
+              <input type="search" placeholder="Search symbols, analysis, opportunities…" disabled title="Global search (coming soon)" />
               <kbd>Ctrl + K</kbd>
             </label>
           </div>

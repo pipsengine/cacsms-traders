@@ -294,9 +294,12 @@ def test_risk_rules_reject_defer_and_approve():
     assert opps.risk_decision(confirmed, [], ae)[0] == "RISK_APPROVED"
     assert opps.risk_decision({**confirmed, "target_1": 1.1060}, [], ae)[2]["rule"] == "MIN_REWARD_RISK"
     assert opps.risk_decision({**confirmed, "confidence": 20}, [], ae)[2]["rule"] == "MIN_CONFIDENCE"
-    assert opps.risk_decision(confirmed, [{"symbol": "EURUSD", "direction": "BULLISH"}], ae)[2]["rule"] == "SYMBOL_EXPOSURE"
-    full = [{"symbol": f"X{i}Y{i}", "direction": "BULLISH"} for i in range(ae.max_concurrent)]
-    assert opps.risk_decision(confirmed, full, ae)[2]["rule"] == "MAX_CONCURRENT"
+    one = [{"symbol": "EURUSD", "direction": "BULLISH", "state": "ORDER_ACCEPTED"}]
+    assert opps.risk_decision(confirmed, one, ae)[0] == "RISK_APPROVED"
+    two = one + [{"symbol": "EURUSD", "direction": "BULLISH", "state": "ORDER_ACCEPTED"}]
+    assert opps.risk_decision(confirmed, two, ae)[2]["rule"] == "STRATEGY_PAIR_CAP"
+    full = [{"symbol": f"ZZ{i:02d}", "direction": "BULLISH", "state": "ORDER_ACCEPTED"} for i in range(ae.max_concurrent)]
+    assert opps.risk_decision(confirmed, full, ae)[0] == "RISK_APPROVED"
     eur_long = [{"symbol": "EURGBP", "direction": "BULLISH"}, {"symbol": "EURJPY", "direction": "BULLISH"}]
     out = opps.risk_decision(confirmed, eur_long, ae)
     assert out[0] == "RISK_DEFERRED" and out[2]["rule"] == "CURRENCY_EXPOSURE" and out[2]["currency"] == "EUR"

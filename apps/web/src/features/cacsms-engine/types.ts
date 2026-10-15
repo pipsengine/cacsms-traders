@@ -33,6 +33,11 @@ export interface Campaign {
   analysisVersion: number;
   symbol: string;
   horizon: Horizon;
+  sourceMode?: 'STRATEGY' | 'OUTLOOK' | 'COMBINED';
+  strategyType?: string | null;
+  conflict?: string | null;
+  linkedIds?: string[];
+  outlookQualified?: boolean;
   direction: Direction;
   evidenceScore: number;
   stage: Stage;
@@ -75,6 +80,8 @@ export interface EngineSummary {
   brokerStatus: string;
   brokerBasis?: string;
   horizonCounts?: Partial<Record<Horizon, number>>;
+  sourceCounts?: { outlook: number; strategy: number; combined: number; conflicts: number };
+  performance?: { basis: string; strategy: Record<string, { closed: number; targets: number; stopped: number }> };
 }
 
 export interface EngineResponse {

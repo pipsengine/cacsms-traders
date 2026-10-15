@@ -32,15 +32,40 @@ def _evaluation_flags(conn, outlook_ids: list[str], tenant: str, account: str) -
     return out
 
 
-def _handoffs(conn, outlook_ids: list[str], tenant: str, account: str) -> dict[str, str]:
+def _handoff_note(evidence: dict) -> str | None:
+    if evidence.get("broker_error"):
+        return f"Broker did not accept the order: {evidence['broker_error']}"
+    if evidence.get("risk_note"):
+        return str(evidence["risk_note"])
+    done = evidence.get("steps_done") or []
+    if done:
+        return "Confirmation so far: " + ", ".join(str(step) for step in done) + "."
+    return None
+
+
+def _handoffs(conn, outlook_ids: list[str], tenant: str, account: str) -> dict[str, dict]:
     if not outlook_ids:
         return {}
     marks = ",".join("?" * len(outlook_ids))
     rows = conn.execute(
-        f"SELECT outlook_id, lifecycle FROM ai_outlook_handoff WHERE tenant_id=? AND trading_account_id=? AND outlook_id IN ({marks})",
+        f"SELECT outlook_id, lifecycle, execution_ref, evidence_json, updated_at FROM ai_outlook_handoff "
+        f"WHERE tenant_id=? AND trading_account_id=? AND outlook_id IN ({marks})",
         (tenant, account, *outlook_ids),
     ).fetchall()
-    return {str(values(row)[0]): str(values(row)[1]) for row in rows}
+    out = {}
+    for row in rows:
+        outlook_id, lifecycle, execution_ref, evidence_json, updated_at = values(row)
+        try:
+            evidence = json.loads(evidence_json or "{}")
+        except ValueError:
+            evidence = {}
+        out[str(outlook_id)] = {
+            "lifecycle": str(lifecycle),
+            "execution_ref": execution_ref or None,
+            "note": _handoff_note(evidence if isinstance(evidence, dict) else {}),
+            "updated_at": updated_at,
+        }
+    return out
 
 
 def load_campaign_rows(store: OutlookRepository) -> list[dict]:
@@ -57,15 +82,21 @@ def load_campaign_rows(store: OutlookRepository) -> list[dict]:
         for outlook in outlooks:
             outlook_id = str(outlook.get("outlook_id") or "")
             revision = revisions.get(outlook_id) or {}
-            lifecycle = handoffs.get(outlook_id) or revision.get("status") or (outlook.get("lifecycle"))
+            handoff = handoffs.get(outlook_id) or {}
+            lifecycle = handoff.get("lifecycle") or revision.get("status") or (outlook.get("lifecycle"))
             rows.append({
                 "outlook": outlook,
                 "horizon": horizon,
                 "tenant_id": store.tenant,
                 "account_id": store.account,
                 "lifecycle": lifecycle,
+                "execution_ref": handoff.get("execution_ref"),
+                "handoff_note": handoff.get("note"),
                 "invalidated": bool(invalidated.get(outlook_id)),
-                "updated_at": _iso_latest(run.get("monitored_at"), run.get("updated_at"), run.get("published_at"), run.get("created_at")),
+                "updated_at": _iso_latest(
+                    handoff.get("updated_at"), run.get("monitored_at"), run.get("updated_at"),
+                    run.get("published_at"), run.get("created_at"),
+                ),
                 "published_at": run.get("published_at") or run.get("created_at"),
                 "revisions": [],
             })
@@ -153,7 +184,11 @@ def assemble(conn, store: OutlookRepository, opportunities: list[dict], now) -> 
     if mode in ("ANALYSIS_ONLY", "PAUSED", "EMERGENCY_STOP"):
         broker_status = "BLOCKED" if broker_status in ("DISCONNECTED", "UNKNOWN") else f"{broker_status} · SUBMISSION BLOCKED"
     positions, basis, exposure = _terminal_book(snapshot)
-    return build_overview(
+    if positions is not None:
+        from .reconcile import close_absent_tickets
+
+        close_absent_tickets(conn, store.tenant, store.account, opportunities, positions, now)
+    book = build_overview(
         load_campaign_rows(store),
         generated_at=now,
         system_mode=mode,
@@ -168,6 +203,21 @@ def assemble(conn, store: OutlookRepository, opportunities: list[dict], now) -> 
         orders=[],
         broker_positions=positions,
     )
+    try:
+        from .registry import performance_counts, sync_registry
+
+        closed = conn.execute(
+            "SELECT opp_type, outcome, status FROM ae_opportunity WHERE tenant_id=? AND trading_account_id=? AND status='CLOSED'",
+            (store.tenant, store.account),
+        ).fetchall()
+        book["summary"]["performance"] = performance_counts(
+            [{"opp_type": values(row)[0], "outcome": values(row)[1], "status": values(row)[2]} for row in closed]
+        )
+        sync_registry(conn, store.tenant, store.account, book["campaigns"], now.isoformat())
+        conn.commit()
+    except Exception:
+        conn.rollback()
+    return book
 
 
 def detail_for(conn, store: OutlookRepository, opportunities: list[dict], outlook_id: str, now) -> dict | None:
@@ -178,7 +228,7 @@ def detail_for(conn, store: OutlookRepository, opportunities: list[dict], outloo
     match["events"] = [
         {"at": str(item.get("observed_at") or ""), "stage": str(item.get("status") or ""), "message": _revision_message(item)}
         for item in load_detail_revisions(store, outlook_id)
-    ] or match["events"]
+    ] or match.get("events") or []
     return match
 
 

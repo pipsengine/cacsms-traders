@@ -19,6 +19,7 @@ from datetime import date, datetime, timedelta, timezone
 from ...core.audit import write_audit
 from ...core.database import db
 from ..pair_relationships import pair_relationship
+from ..provenance import values
 from ..repository import MarketRepository
 from ..scanner_analytics import Bar
 from ..scanner_config import GOLD
@@ -156,6 +157,13 @@ class OutlookService:
                     report["live"] = cycle["live"]
                     if monitor_live:
                         report["monitored"] = self._monitor(conn, store, now, s)
+                        report["horizon_monitor"] = {}
+                        for horizon in ("WEEKLY", "MONTHLY", "QUARTERLY"):
+                            try:
+                                report["horizon_monitor"][horizon] = self._monitor_horizon(conn, store, now, s, horizon)
+                            except Exception:
+                                log.exception("Outlook monitor failed for %s", horizon)
+                                report["horizon_monitor"][horizon] = {"error": "monitor_failed"}
                         try:
                             report["gold_monitor"] = self._monitor_gold(conn, store, now, s)
                         except Exception:
@@ -553,8 +561,65 @@ class OutlookService:
                 store.add_revision(o, run["id"], res["status"], prev["status"] if prev else None, res["observed_at"], res["price"],
                                    {k: v for k, v in res.items() if k not in ("status", "observed_at", "price")})
                 changed += 1
+            self._save_stage(conn, store, o, run, res)
         store.update_run(run["id"], state="MONITORING", monitored_at=now_iso())
         return changed
+
+    def _monitor_horizon(self, conn, store: OutlookRepository, now: datetime, s: OutlookSettings, horizon: str) -> int:
+        """Closed-bar confirmation for a weekly, monthly or quarterly outlook. Same sequence as the daily monitor."""
+        run = store.latest_published(horizon)
+        if not run or run["state"] not in ("PUBLISHED", "MONITORING"):
+            return 0
+        if run["monitored_at"] and run["monitored_at"] > (now - timedelta(seconds=s.monitor_seconds - 5)).isoformat():
+            return 0
+        outlooks = [o for o in store.outlooks(run["id"]) if o.get("status") == "PUBLISHED" and o.get("qualified")]
+        if not outlooks:
+            store.update_run(run["id"], state="MONITORING", monitored_at=now_iso())
+            return 0
+        anchor = datetime.fromisoformat(run["close_at"])
+        if anchor.tzinfo is None:
+            anchor = anchor.replace(tzinfo=timezone.utc)
+        repo = MarketRepository(conn)
+        symbols = [o["symbol"] for o in outlooks]
+        try:
+            h1 = candles_between(repo, "H1", symbols, anchor, now + timedelta(hours=1))
+            m30 = candles_between(repo, "M30", symbols, anchor, now + timedelta(hours=1))
+        except Exception:
+            log.warning("Outlook monitor could not read closed bars for %s", horizon, exc_info=True)
+            return 0
+        events = self._live_events(anchor)
+        changed = 0
+        for outlook in outlooks:
+            symbol_events = (events or {}).get(outlook["symbol"]) if events is not None else None
+            res = monitor(outlook, h1.get(outlook["symbol"], []), m30.get(outlook["symbol"], []), symbol_events, now)
+            prev = store.latest_revision(outlook["outlook_id"])
+            signature = (res["lifecycle"], res["status"])
+            previous = None if prev is None else (prev.get("lifecycle"), prev.get("status"))
+            if signature != previous:
+                store.add_revision(
+                    outlook, run["id"], res["lifecycle"], prev.get("lifecycle") if prev else outlook.get("lifecycle"),
+                    res["observed_at"], res["price"], {k: v for k, v in res.items() if k not in ("status", "observed_at", "price")},
+                )
+                changed += 1
+            self._save_stage(conn, store, outlook, run, res)
+        store.update_run(run["id"], state="MONITORING", monitored_at=now_iso())
+        return changed
+
+    @staticmethod
+    def _save_stage(conn, store: OutlookRepository, outlook: dict, run: dict, res: dict) -> None:
+        """Persist the confirmation lifecycle. An order already sent is left on the handoff."""
+        row = conn.execute(
+            "SELECT execution_ref FROM ai_outlook_handoff WHERE outlook_id=?",
+            (outlook["outlook_id"],),
+        ).fetchone()
+        if row and values(row)[0]:
+            return
+        done = [step["key"] for step in res.get("steps") or [] if step.get("done")]
+        store.save_handoff(outlook, run, res.get("lifecycle") or "WATCHING", {
+            "status": res.get("status"),
+            "steps_done": done,
+            "system_action": (res.get("system_action") or {}).get("key"),
+        }, None)
 
     @staticmethod
     def _live_events(anchor: datetime) -> dict[str, list[dict]] | None:

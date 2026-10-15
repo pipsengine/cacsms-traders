@@ -10,6 +10,7 @@ from .config import OPP_TYPES, ae_settings
 from .read_model import opportunity_public
 
 MAJORS = {"EURUSD", "GBPUSD", "AUDUSD", "NZDUSD", "USDCAD", "USDCHF", "USDJPY"}
+INDEXES = {"US30", "NAS100", "US500", "SPX500", "USTEC", "GER40", "UK100", "JP225", "US30CASH", "NAS100CASH"}
 WORKFLOW = (
     ("scan", "Scan", ("MARKET_DATA", "SCANNER")),
     ("analyze", "Analyze", ("INTELLIGENCE", "STRUCTURE", "CHANNEL")),
@@ -32,6 +33,8 @@ def _num(value) -> float | None:
 def _bucket(symbol: str) -> str:
     if symbol == "XAUUSD":
         return "commodities"
+    if symbol.upper() in INDEXES:
+        return "indices"
     if symbol.endswith("JPY") and symbol not in MAJORS:
         return "jpy"
     if symbol in MAJORS:
@@ -133,7 +136,7 @@ def _workflow(stages: list[dict]) -> dict:
 def _scanner(raw: dict | None) -> dict:
     rows = list((raw or {}).get("rows") or [])
     counts = {"HIGH_INSPECTION": 0, "WATCHING": 0, "NEUTRAL": 0, "EXCLUDED": 0}
-    groups = {k: {"HIGH_INSPECTION": 0, "WATCHING": 0, "NEUTRAL": 0, "EXCLUDED": 0} for k in ("majors", "minors", "jpy", "commodities")}
+    groups = {k: {"HIGH_INSPECTION": 0, "WATCHING": 0, "NEUTRAL": 0, "EXCLUDED": 0} for k in ("majors", "minors", "jpy", "commodities", "indices")}
     excluded = []
     for row in rows:
         status = ((row.get("status") or {}).get("key")) or "EXCLUDED"
@@ -177,6 +180,35 @@ def _opportunities(rows: list[dict]) -> list[dict]:
     return out
 
 
+def _r_multiple(pos: dict) -> float | None:
+    entry = _num(pos.get("priceOpen"))
+    stop = _num(pos.get("stopLoss"))
+    current = _num(pos.get("priceCurrent"))
+    if entry is None or stop is None or current is None or stop == 0:
+        return None
+    risk = abs(entry - stop)
+    if risk < 1e-12:
+        return None
+    move = (current - entry) if pos.get("direction") == "BUY" else (entry - current)
+    return round(move / risk, 2)
+
+
+def _broker_rows(rows) -> list[dict] | None:
+    if rows is None:
+        return None
+    out = []
+    for pos in rows:
+        out.append({
+            "ticket": pos.get("ticket"),
+            "symbol": pos.get("symbol"),
+            "direction": pos.get("direction"),
+            "volume": _num(pos.get("volume")),
+            "profit": _num(pos.get("profit")),
+            "r_multiple": _r_multiple(pos),
+        })
+    return out
+
+
 def _tit(rows: list[dict]) -> dict:
     levels: dict[str, int] = {}
     for row in rows:
@@ -187,9 +219,75 @@ def _tit(rows: list[dict]) -> dict:
     return {"count": sum(levels.values()), "levels": levels}
 
 
+def read_live_money() -> tuple[dict | None, list | None]:
+    """(money, positions). money is None when the terminal cannot be read."""
+    try:
+        from ..domain.mt5_terminal_account import read_terminal_account
+        from ..domain.mt5_terminal_positions import read_terminal_positions
+        positions, _basis = read_terminal_positions()
+        account = read_terminal_account()
+    except Exception:
+        return None, None
+    rows = [
+        {"ticket": p.get("ticket"), "profit": _num(p.get("profit")), "priceCurrent": _num(p.get("priceCurrent")), "r_multiple": _r_multiple(p)}
+        for p in (positions or [])
+    ]
+    if account and account.get("available") and _num(account.get("equity")) is not None:
+        balance = _num(account.get("balance"))
+        equity = _num(account.get("equity"))
+        floating = round(equity - balance, 2) if equity is not None and balance is not None else _num(account.get("profit"))
+        return {
+            "ok": True,
+            "currency": account.get("currency") or None,
+            "balance": balance,
+            "equity": equity,
+            "floating_pnl": floating,
+            "margin": _num(account.get("margin")),
+            "positions": rows,
+        }, positions
+    if positions is None:
+        return None, None
+    return {"ok": True, "floating_pnl": round(sum(_num(p.get("profit")) or 0 for p in positions), 2), "positions": rows}, positions
+
+
+def _account_view(account: dict, live: dict | None) -> dict:
+    view = {
+        "currency": account.get("currency"),
+        "environment": account.get("environment"),
+        "balance": account.get("balance"),
+        "equity": account.get("equity"),
+        "floating_pnl": account.get("floating_pnl"),
+        "floating_pnl_basis": account.get("floating_pnl_basis"),
+        "margin_used_pct": account.get("margin_used_pct"),
+        "stale": account.get("stale"),
+        "connection_status": account.get("connection_status"),
+    }
+    if not live or not live.get("ok"):
+        return view
+    if live.get("equity") is not None:
+        equity = live["equity"]
+        balance = live["balance"] if live.get("balance") is not None else view.get("balance")
+        margin = live.get("margin")
+        view.update({
+            "currency": live.get("currency") or view.get("currency"),
+            "balance": balance,
+            "equity": equity,
+            "floating_pnl": live.get("floating_pnl"),
+            "floating_pnl_basis": "Live equity minus balance from the attached MT5 terminal.",
+            "margin_used_pct": round(100 * margin / equity, 1) if margin is not None and equity else view.get("margin_used_pct"),
+            "stale": False,
+        })
+    elif live.get("floating_pnl") is not None:
+        view["floating_pnl"] = live["floating_pnl"]
+        view["floating_pnl_basis"] = "Sum of open position profit read from the MT5 terminal."
+        view["stale"] = False
+    return view
+
+
 def assemble(*, now: datetime, mode: str, market_open: bool | None, safety: dict, ribbon: dict, stages: list[dict],
              outlook: dict | None, scanner: dict | None, strength: list[dict], opportunities: list[dict],
-             portfolio: dict | None, execution: dict | None, alerts: list[dict]) -> dict:
+             portfolio: dict | None, execution: dict | None, alerts: list[dict],
+             broker_positions: list[dict] | None = None, outlooks: dict | None = None, live_account: dict | None = None) -> dict:
     ae = ae_settings()
     port = portfolio or {}
     exe = execution or {}
@@ -201,14 +299,27 @@ def assemble(*, now: datetime, mode: str, market_open: bool | None, safety: dict
     safety_blockers = list(safety.get("blockers") or [])
     flow = _workflow(stages)
     flow["blockers"] = (safety_blockers + flow["blockers"])[:6]
+    if mode == "DEMO_AUTONOMOUS":
+        execution_state, execution_note = "DEMO", "Demo orders can be sent after confirmation and risk. Shadow plans are not broker fills."
+    elif mode == "LIVE_AUTONOMOUS":
+        execution_state, execution_note = "LIVE", "Live orders can be sent only when the terminal itself is live."
+    elif mode in ("PAUSED", "EMERGENCY_STOP"):
+        execution_state, execution_note = "BLOCKED", "Orders are halted."
+    else:
+        execution_state, execution_note = "SHADOW", "Shadow mode keeps plans on the books and does not send broker orders."
+    strategy_types: dict[str, int] = {}
+    for row in opportunities:
+        label = str(row.get("type_label") or row.get("opp_type") or row.get("type") or "Strategy")
+        strategy_types[label] = strategy_types.get(label, 0) + 1
+    outlook_view = _outlook(outlook)
     return {
         "as_of": now.isoformat(),
         "mode": mode,
         "market_open": market_open,
         "safety_status": safety.get("status") or ribbon.get("safety_status") or "UNKNOWN",
         "system_status": ribbon.get("system_status"),
-        "execution": "BLOCKED",
-        "execution_note": (exe.get("execution_note") or "Broker execution is disabled. No order is submitted."),
+        "execution": execution_state,
+        "execution_note": execution_note,
         "provider": ribbon.get("provider_label") or ribbon.get("provider"),
         "provider_connection": ribbon.get("provider_connection"),
         "data_as_of": ribbon.get("data_as_of"),
@@ -227,22 +338,19 @@ def assemble(*, now: datetime, mode: str, market_open: bool | None, safety: dict
             "shadow_open": int(shadow.get("open_plans") or 0),
             "orders_submitted": int(broker.get("orders_submitted") or 0),
         },
-        "account": {
-            "currency": account.get("currency"),
-            "environment": account.get("environment"),
-            "balance": account.get("balance"),
-            "equity": account.get("equity"),
-            "floating_pnl": account.get("floating_pnl"),
-            "floating_pnl_basis": account.get("floating_pnl_basis"),
-            "margin_used_pct": account.get("margin_used_pct"),
-            "stale": account.get("stale"),
-            "connection_status": account.get("connection_status"),
-        },
+        "account": _account_view(account, live_account),
         "outlook": _outlook(outlook),
+        "outlooks": {name: _outlook(raw) for name, raw in (outlooks or {"DAILY": outlook}).items()},
+        "broker_positions": _broker_rows(broker_positions),
         "strength": strength,
         "scanner": _scanner(scanner),
         "tit": _tit(opportunities),
         "opportunities": _opportunities(opportunities),
+        "modes": {
+            "strategy": len(opportunities),
+            "outlook": outlook_view["qualified"],
+            "strategy_types": strategy_types,
+        },
         "workflow": flow,
         "shadow_plans": [
             {
@@ -281,16 +389,18 @@ def build_command_centre(conn, repo, now: datetime, mode: str, engine_running: b
 
     board = overview(repo, now, {}, mode, engine_running)
     outlook_repo = OutlookRepository(conn, (repo.tenant, repo.account))
-    run = outlook_repo.latest_published("DAILY")
-    outlook = None
-    if run:
-        outlook = {
+    outlooks: dict = {}
+    for horizon in ("DAILY", "WEEKLY", "MONTHLY", "QUARTERLY", "H8"):
+        run = outlook_repo.latest_published(horizon)
+        outlooks[horizon] = None if not run else {
             "analysis_date": run.get("analysis_date"),
             "published_at": run.get("published_at"),
             "state": run.get("state"),
             "symbols_published": run.get("symbols_published"),
             "rows": outlook_repo.summaries(run["id"]),
         }
+    outlook = outlooks.get("DAILY")
+    live, broker_positions = read_live_money()
     try:
         scan = get_scanner_engine().payload()
     except Exception:
@@ -349,4 +459,7 @@ def build_command_centre(conn, repo, now: datetime, mode: str, engine_running: b
         portfolio=build_portfolio(conn, repo, now),
         execution=build_execution(repo, now),
         alerts=alerts,
+        broker_positions=broker_positions,
+        outlooks=outlooks,
+        live_account=live,
     )
