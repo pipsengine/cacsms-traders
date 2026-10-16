@@ -166,13 +166,20 @@ def unify(outlook_rows: list[dict], opportunities: list[dict], *, account_cap: i
             if primary is campaign:
                 book.remove(overlap)
                 book.append(primary)
-            primary["sourceMode"] = "COMBINED"
             links = list(primary.get("linkedIds") or [])
             if secondary["id"] not in links:
                 links.append(secondary["id"])
             primary["linkedIds"] = links
-            if secondary.get("strategyType") and not primary.get("strategyType"):
-                primary["strategyType"] = secondary["strategyType"]
+            outlook = overlap if str(overlap.get("sourceMode") or "") != "STRATEGY" else None
+            if outlook is None:
+                primary["sourceMode"] = "STRATEGY"
+                continue
+            primary["sourceMode"] = "COMBINED"
+            primary["evidenceScore"] = outlook["evidenceScore"]
+            primary["horizon"] = outlook.get("horizon") or primary.get("horizon")
+            primary["outlookQualified"] = outlook.get("outlookQualified", True)
+            if campaign.get("strategyType"):
+                primary["strategyType"] = campaign["strategyType"]
             note = "A strategy setup and an AI outlook share this entry. One order and one risk reservation are used."
             if note not in str(primary.get("nextAction") or ""):
                 primary["nextAction"] = f"{note} {primary.get('nextAction') or ''}".strip()

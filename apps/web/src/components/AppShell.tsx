@@ -17,6 +17,7 @@ import {
   Target,
   TrendingUp,
   Layers3,
+  Landmark,
   Zap,
 } from 'lucide-react';
 import type { AuthUser, Health, Tenant } from '../types';
@@ -48,6 +49,10 @@ const nav: [string, { page: Page; label: string; icon: React.ReactNode }[]][] = 
       { page: 'channel-intelligence', label: 'Channel Intelligence', icon: <GitBranch /> },
       { page: 'ai-market-outlook', label: 'AI Market Outlook', icon: <BrainCircuit /> },
     ],
+  ],
+  [
+    'TRADING ACCOUNTS',
+    [{ page: 'prop-firm', label: 'Prop Firm Account', icon: <Landmark /> }],
   ],
   [
     'TRADING',
@@ -264,7 +269,7 @@ export function AppShell({
         </header>
         <div
           className={
-            page === 'overview' ? 'page overview-page' : page === 'system-control' ? 'page sc-hub-page' : enginePage ? 'page ce-shell-page' : 'page'
+            page === 'overview' ? 'page overview-page' : page === 'system-control' ? 'page sc-hub-page' : page === 'prop-firm' ? 'page pf-shell-page' : enginePage ? 'page ce-shell-page' : 'page'
           }
         >
           <div className="page-inner">{children}</div>

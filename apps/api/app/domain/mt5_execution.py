@@ -125,6 +125,20 @@ def open_market_position(*, symbol: str, direction: str, stop: float, target: fl
     volume = lot_size(info, equity=equity, risk_pct=risk_pct, price=price, stop=stop_price)
     if volume is None:
         return {"ok": False, "error": "Minimum lot would risk more than the per-trade budget"}
+    from ..prop_firm.gate import block_prop_order
+
+    blocked = block_prop_order(
+        login=getattr(account, "login", None),
+        equity=equity,
+        balance=float(getattr(account, "balance", 0) or 0),
+        floating_pnl=float(getattr(account, "profit", 0) or 0),
+        symbol=symbol,
+        volume=volume,
+        risk_pct=risk_pct,
+        open_positions=int(mt5.positions_total() or 0),
+    )
+    if blocked:
+        return {"ok": False, "error": blocked}
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": broker,

@@ -6,7 +6,6 @@ import {
   BrainCircuit,
   ChevronLeft,
   ChevronRight,
-  Clock3,
   Columns3,
   Download,
   Eye,
@@ -22,10 +21,10 @@ import {
   Target,
   TrendingDown,
   TrendingUp,
-  X,
 } from 'lucide-react';
 import { InstrumentIcon } from '../features/market-scanner/components/InstrumentIcon';
 import { engineApi } from '../features/cacsms-engine/api';
+import { CampaignChartModal } from '../features/cacsms-engine/components/CampaignChartModal';
 import type { Campaign, CampaignDetail, EngineResponse, Horizon, Stage } from '../features/cacsms-engine/types';
 
 const steps = [
@@ -207,7 +206,6 @@ export function CacsmsEngine() {
   const [stage, setStage] = useState('ALL');
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<CampaignDetail | null>(null);
-  const [detailError, setDetailError] = useState('');
   const [showFilters, setShowFilters] = useState(false);
   const [showColumns, setShowColumns] = useState(false);
   const [columns, setColumns] = useState<Record<ColumnKey, boolean>>(() =>
@@ -291,12 +289,11 @@ export function CacsmsEngine() {
 
   const view = async (campaign: Campaign) => {
     setMenuId(null);
-    setDetailError('');
     setSelected(campaign);
     try {
       setSelected(await engineApi.detail(campaign.id));
-    } catch (err) {
-      setDetailError(err instanceof Error ? err.message : 'Detail unavailable');
+    } catch {
+      setSelected(campaign);
     }
   };
 
@@ -593,7 +590,8 @@ export function CacsmsEngine() {
               <tbody>
                 {pageRows.map((campaign) => {
                   const stamp = when(campaign.updatedAt);
-                  const passing = campaign.evidenceScore >= 70;
+                  const outlookScore = campaign.sourceMode !== 'STRATEGY';
+                  const passing = outlookScore && (campaign.outlookQualified || campaign.evidenceScore >= 70);
                   return (
                     <tr key={campaign.id} className={picked.includes(campaign.id) ? 'is-picked' : ''}>
                       <td className="ce-check">
@@ -629,10 +627,10 @@ export function CacsmsEngine() {
                       {columns.score && (
                     <td>
                       <span
-                        className={`ce-score ${campaign.sourceMode === 'STRATEGY' ? '' : passing ? 'is-pass' : 'is-fail'}`}
-                        title={campaign.sourceMode === 'STRATEGY' ? 'Strategy qualification uses its own rules. The 70-point outlook gate does not apply.' : 'Evidence score. Outlook qualification starts at 70.'}
+                        className={`ce-score ${outlookScore ? (passing ? 'is-pass' : 'is-fail') : ''}`}
+                        title={outlookScore ? 'AI Market Outlook evidence score for this symbol and horizon.' : 'Strategy qualification uses its own rules. This is not the AI Market Outlook score.'}
                       >
-                        {Math.round(campaign.evidenceScore)}{campaign.sourceMode === 'STRATEGY' ? '' : '%'}
+                        {Math.round(campaign.evidenceScore)}{outlookScore ? '%' : ''}
                       </span>
                     </td>
                   )}
@@ -723,60 +721,7 @@ export function CacsmsEngine() {
         </div>
       </section>
 
-      {selected && (
-        <div className="ce-backdrop" role="presentation" onMouseDown={() => setSelected(null)}>
-          <section className="ce-drawer" role="dialog" aria-modal="true" aria-label="Campaign details" onMouseDown={(event) => event.stopPropagation()}>
-            <div className="ce-drawer-head">
-              <div>
-                <small>AI OUTLOOK TRADING CAMPAIGN</small>
-                <h2>{selected.symbol} · {human(selected.horizon)}</h2>
-                <p>{selected.id}</p>
-              </div>
-              <button type="button" aria-label="Close details" onClick={() => setSelected(null)}><X size={20} /></button>
-            </div>
-            {detailError && <div className="ce-error">{detailError} · Showing summary record only.</div>}
-            <div className="ce-stats">
-              <div><small>Direction</small><strong>{selected.direction}</strong></div>
-              <div><small>Evidence</small><strong>{selected.evidenceScore}/100</strong></div>
-              <div><small>Stage</small><strong>{stageText(selected.stage)}</strong></div>
-              <div><small>Broker position</small><strong title={positionTitle(selected)}>{positionText(selected)}</strong></div>
-            </div>
-            <h3>Outlook evidence and controls</h3>
-            <dl>
-              <dt>Outlook ID</dt><dd>{selected.outlookId}</dd>
-              <dt>Scenario ID</dt><dd>{selected.scenarioId}</dd>
-              <dt>Analysis version</dt><dd>{selected.analysisVersion}</dd>
-              <dt>Pipeline</dt><dd>{selected.pipelineStage || 'Candidate — not yet in Stage 7–10'}</dd>
-              <dt>Entry</dt><dd>{fmt(selected.entry)}</dd>
-              <dt>Stop loss</dt><dd>{fmt(selected.stopLoss)}</dd>
-              <dt>Invalidation</dt><dd>{fmt(selected.invalidation)}</dd>
-              <dt>Targets</dt><dd>{selected.targets.map((value) => fmt(value)).join(' / ') || '—'}</dd>
-              <dt>Next action</dt><dd>{selected.nextAction}</dd>
-            </dl>
-            {selected.evidence?.length ? (
-              <>
-                <h3>Supporting evidence</h3>
-                {selected.evidence.map((item, index) => (
-                  <div className="ce-evidence" key={`${item.label}-${index}`}><b>{item.label}</b><span>{item.value}</span></div>
-                ))}
-              </>
-            ) : null}
-            {selected.events?.length ? (
-              <>
-                <h3>Audit timeline</h3>
-                {selected.events.map((item, index) => (
-                  <div className="ce-time" key={`${item.at}-${index}`}>
-                    <Clock3 size={14} />
-                    <div><b>{item.stage}</b><p>{item.message}</p><small>{when(item.at).day} {when(item.at).time}</small></div>
-                  </div>
-                ))}
-              </>
-            ) : null}
-            <div className="ce-notice"><ShieldCheck size={17} /> The UI never authorises or submits broker orders. Stage transitions stay with the existing confirmation, risk and execution services.</div>
-            <button type="button" className="ce-close" onClick={() => setSelected(null)}>Close details</button>
-          </section>
-        </div>
-      )}
+      {selected ? <CampaignChartModal campaign={selected} onClose={() => setSelected(null)} /> : null}
     </div>
   );
 }

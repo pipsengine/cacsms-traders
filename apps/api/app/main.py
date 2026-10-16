@@ -279,3 +279,6 @@ app.include_router(autonomous.router)
 
 from .routers import cacsms_engine
 app.include_router(cacsms_engine.router)
+
+from .routers import prop_firm
+app.include_router(prop_firm.router)

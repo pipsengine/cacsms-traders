@@ -12,6 +12,7 @@ import { TradingOpportunities } from './pages/TradingOpportunities';
 import { RiskPortfolio } from './pages/RiskPortfolio';
 import { ExecutionPositions } from './pages/ExecutionPositions';
 import { PerformanceLearning } from './pages/PerformanceLearning';
+import { PropFirm } from './pages/PropFirm';
 import { Administration } from './pages/hubs/Administration';
 import { SystemControl } from './pages/hubs/SystemControl';
 import { StrengthIntelligence } from './pages/hubs/StrengthIntelligence';
@@ -170,6 +171,9 @@ export function App() {
       break;
     case 'performance-learning':
       body = <PerformanceLearning />;
+      break;
+    case 'prop-firm':
+      body = <PropFirm />;
       break;
     case 'administration':
       body = (

@@ -19,6 +19,7 @@ import './styles/cacsms-engine.css';
 import './styles/trading-opportunities.css';
 import './styles/risk-portfolio.css';
 import './styles/execution-positions.css';
+import './styles/prop-firm.css';
 
 createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

@@ -267,6 +267,8 @@ def test_strategy_and_outlook_share_one_order_and_keep_conflicts():
         by_symbol.setdefault(row["symbol"], []).append(row)
     assert len(by_symbol["EURJPY"]) == 1
     assert by_symbol["EURJPY"][0]["sourceMode"] == "COMBINED"
+    assert by_symbol["EURJPY"][0]["evidenceScore"] == 82
+    assert by_symbol["EURJPY"][0]["horizon"] == "DAILY"
     assert {by_symbol["EURJPY"][0]["id"], *by_symbol["EURJPY"][0]["linkedIds"]} == {"daily", "strat-1"}
     assert by_symbol["AUDUSD"][0]["sourceMode"] == "STRATEGY"
     assert by_symbol["AUDUSD"][0]["evidenceScore"] == 42
@@ -274,6 +276,16 @@ def test_strategy_and_outlook_share_one_order_and_keep_conflicts():
     assert set(gbpusd) == {"BUY", "SELL"}
     assert gbpusd["BUY"]["conflict"] == "OPPOSITE_DIRECTION"
     assert gbpusd["SELL"]["conflict"] == "OPPOSITE_DIRECTION"
+    second = {
+        "id": "strat-4", "symbol": "AUDUSD", "direction": "BULLISH", "opp_type": "P2_BREAKOUT_RETEST", "status": "ACTIVE",
+        "stage": "OPPORTUNITY", "state": "WAITING_FOR_ZONE", "entry_lo": 0.6502, "entry_hi": 0.6508,
+        "invalidation": 0.64, "target_1": 0.66, "confidence": 81, "family_key": "audusd-p2",
+        "parent_tf": "D1", "next_condition": "Retest", "updated_at": "2026-10-15T09:00:00+00:00",
+    }
+    paired = unify([], [low_score, second], account_cap=3)
+    assert len(paired) == 1
+    assert paired[0]["sourceMode"] == "STRATEGY"
+    assert paired[0]["evidenceScore"] == 42
 
 
 def test_only_outlook_qualified_opportunities_are_listed():

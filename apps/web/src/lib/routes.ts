@@ -12,7 +12,8 @@ export type Page =
   | 'execution-positions'
   | 'performance-learning'
   | 'administration'
-  | 'system-control';
+  | 'system-control'
+  | 'prop-firm';
 
 /** Legacy sidebar ids → primary page + optional tab */
 export const LEGACY_ROUTE: Record<
@@ -48,6 +49,7 @@ export const PAGE_CRUMB: Record<Page, string> = {
   'performance-learning': 'Performance & Learning',
   administration: 'Administration',
   'system-control': 'System Control',
+  'prop-firm': 'Prop Firm Account',
 };
 
 export function parseHashRoute(): { page: Page; tab?: string } {
