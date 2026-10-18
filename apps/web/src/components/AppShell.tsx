@@ -183,6 +183,7 @@ export function AppShell({
         collapsed ? 'shell shell--collapsed' : 'shell',
         page === 'overview' ? 'shell--overview' : '',
         enginePage ? 'shell--ce' : '',
+        page === 'advanced-chart-analysis' ? 'shell--aca' : '',
       ]
         .filter(Boolean)
         .join(' ')}
@@ -271,7 +272,17 @@ export function AppShell({
         </header>
         <div
           className={
-            page === 'overview' ? 'page overview-page' : page === 'system-control' ? 'page sc-hub-page' : page === 'prop-firm' ? 'page pf-shell-page' : enginePage ? 'page ce-shell-page' : 'page'
+            page === 'overview'
+              ? 'page overview-page'
+              : page === 'system-control'
+                ? 'page sc-hub-page'
+                : page === 'prop-firm'
+                  ? 'page pf-shell-page'
+                  : page === 'advanced-chart-analysis'
+                    ? 'page aca-shell-page'
+                    : enginePage
+                      ? 'page ce-shell-page'
+                      : 'page'
           }
         >
           <div className="page-inner">{children}</div>

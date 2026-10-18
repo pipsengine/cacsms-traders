@@ -109,6 +109,7 @@ export function PriceChart({
   const [pending, setPending] = useState<{ time: number; price: number }[]>([]);
 
   const [hover, setHover] = useState<{ time: number; price: number } | null>(null);
+  const fitChartNext = useRef(true);
 
 
 
@@ -128,23 +129,40 @@ export function PriceChart({
 
   }, [tool, symbol, timeframe]);
 
+  useEffect(() => {
+
+    fitChartNext.current = true;
+
+  }, [symbol, timeframe]);
+
 
 
   useEffect(() => {
 
     if (!host.current) return;
 
+    const measure = () => {
+      if (!host.current) return { w: 0, h: 280 };
+      const rect = host.current.getBoundingClientRect();
+      return {
+        w: Math.max(host.current.clientWidth, rect.width),
+        h: Math.max(host.current.clientHeight, rect.height, 280),
+      };
+    };
+
+    const { w: initW, h: initH } = measure();
+
     const c = createChart(host.current, {
 
-      width: host.current.clientWidth,
+      width: initW,
 
-      height: host.current.clientHeight,
+      height: initH,
 
       layout: { background: { color: '#ffffff' }, textColor: '#64748b', fontSize: 11 },
 
       grid: { vertLines: { color: '#edf2f8' }, horzLines: { color: '#edf2f8' } },
 
-      rightPriceScale: { borderColor: '#e2e8f0' },
+      rightPriceScale: { borderColor: '#e2e8f0', minimumWidth: 72, autoScale: true },
 
       timeScale: { borderColor: '#e2e8f0', timeVisible: true, secondsVisible: false },
 
@@ -176,7 +194,9 @@ export function PriceChart({
 
     const resize = new ResizeObserver(() => {
 
-      if (host.current) c.applyOptions({ width: host.current.clientWidth, height: host.current.clientHeight });
+      if (!host.current) return;
+      const { w, h } = measure();
+      c.applyOptions({ width: w, height: h });
 
       setRevision((x) => x + 1);
 
@@ -348,7 +368,13 @@ export function PriceChart({
 
     );
 
-    chart.current.timeScale().fitContent();
+    if (fitChartNext.current && sorted.length > 0) {
+
+      chart.current.timeScale().fitContent();
+
+      fitChartNext.current = false;
+
+    }
 
     setRevision((x) => x + 1);
 
@@ -360,11 +386,9 @@ export function PriceChart({
 
     if (!chart.current || !series.current) return;
 
-    const lines = overlays
+    const levels = overlays.filter((o) => o.kind === 'level');
 
-      .filter((o) => o.kind === 'level')
-
-      .map((o) =>
+    const lines = levels.map((o, index) =>
 
         series.current!.createPriceLine({
 
@@ -376,9 +400,9 @@ export function PriceChart({
 
           lineStyle: LineStyle.Dashed,
 
-          axisLabelVisible: true,
+          axisLabelVisible: index < 6,
 
-          title: o.label,
+          title: (o.label || '').slice(0, 18),
 
         }),
 
@@ -646,7 +670,25 @@ export function PriceChart({
 
 
 
+  const renderChannelBand = (d: Drawing) => {
+    if (d.points.length < 4) return null;
+    const pts = d.points.slice(0, 4).map(toXY);
+    if (pts.some((p) => !p)) return null;
+    const [u0, u1, l1, l0] = pts as { x: number; y: number }[];
+    return (
+      <polygon
+        key={d.id}
+        points={`${u0.x},${u0.y} ${u1.x},${u1.y} ${l1.x},${l1.y} ${l0.x},${l0.y}`}
+        fill={d.color}
+        fillOpacity={d.id.includes('fs-ch-w-') || d.id.includes('fs-ch-d1') || d.id.includes('fs-ch-mn') ? '0.06' : '0.12'}
+        stroke="none"
+      />
+    );
+  };
+
   const render = (d: Drawing) => {
+
+    if (d.id.endsWith('-band')) return renderChannelBand(d);
 
     if (d.kind === 'fibonacci') return renderFib(d);
 
@@ -704,7 +746,21 @@ export function PriceChart({
 
       );
 
-    return <line key={d.id} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={d.color} strokeWidth="2" />;
+    const width = d.id.startsWith('fs-ch-') ? (d.id.includes('-mid') ? 1.5 : 2.5) : 2;
+    const dash = d.id.includes('-mid') ? '6 4' : undefined;
+    return (
+      <line
+        key={d.id}
+        x1={a.x}
+        y1={a.y}
+        x2={b.x}
+        y2={b.y}
+        stroke={d.color}
+        strokeWidth={width}
+        strokeDasharray={dash}
+        opacity={d.id.includes('fs-ch-w-') || d.id.includes('fs-ch-d1') || d.id.includes('fs-ch-mn') ? 0.65 : 1}
+      />
+    );
 
   };
 

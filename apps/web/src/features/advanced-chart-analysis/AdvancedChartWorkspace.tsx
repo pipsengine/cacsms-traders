@@ -7,6 +7,7 @@ import {
   LayoutTemplate,
   LineChart,
   Maximize2,
+  Minimize2,
   Minus,
   MousePointer2,
   PenLine,
@@ -30,8 +31,22 @@ import { PriceChart } from './PriceChart';
 import { RsiPane } from './RsiPane';
 import { MacdPane } from './MacdPane';
 import { AtrPane } from './AtrPane';
+import { channelApi } from '../channel-intelligence/api';
 import { useChartIntel } from './useChartIntel';
+import { channelLinesToDrawings, FULLSCREEN_CHANNEL_TFS, mapChartTfToChannelTf } from './channelOverlay';
+import type { ChannelLines, ChannelTf } from '../channel-intelligence/types';
 import type { Analysis, Candle, Drawing, Overlay, Quote } from './types';
+
+const FULLSCREEN_LAYERS = [
+  'AI Market Outlook',
+  'Channel Intelligence',
+  'Market Structure (BOS/CHoCH)',
+  'Key Levels (S/R)',
+  'Moving Averages',
+  'Indicators',
+  'Volume',
+  'Supertrend (10, 3)',
+] as const;
 
 const TF = ['M1', 'M5', 'M15', 'M30', 'H1', 'H8', 'D1', 'W1', 'MN', 'Q'] as const;
 const DEFAULT_SYMBOLS = ['XAUUSD'];
@@ -73,6 +88,8 @@ export function AdvancedChartWorkspace({ initialSymbol }: { initialSymbol?: stri
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [panel, setPanel] = useState(true);
+  const [insightsOpen, setInsightsOpen] = useState(true);
+  const [sideExtrasOpen, setSideExtrasOpen] = useState(false);
   const [full, setFull] = useState(false);
   const [notes, setNotes] = useState('');
   const [source, setSource] = useState('Strategy-Based');
@@ -87,7 +104,112 @@ export function AdvancedChartWorkspace({ initialSymbol }: { initialSymbol?: stri
   const drawHistoryRef = useRef<Drawing[][]>([[]]);
   const histIdxRef = useRef(0);
   const fetchGen = useRef(0);
+  const fsRootRef = useRef<HTMLDivElement>(null);
+  const layersBeforeFs = useRef<string[] | null>(null);
+  const [fsChannelSets, setFsChannelSets] = useState<{ tf: ChannelTf; lines: ChannelLines; variant: 'primary' | 'parent' }[]>(
+    [],
+  );
+  const [fsChannelCaption, setFsChannelCaption] = useState<string | null>(null);
   const intel = useChartIntel(symbol);
+
+  const loadFullscreenChannels = useCallback(async (sym: string, timeframe: string) => {
+    try {
+      const ctf = mapChartTfToChannelTf(timeframe);
+      const detail = await channelApi.detail(sym, ctf, 'H1');
+      if (!detail.available) {
+        setFsChannelSets([]);
+        setFsChannelCaption(null);
+        return;
+      }
+      const sets: { tf: ChannelTf; lines: ChannelLines; variant: 'primary' | 'parent' }[] = [];
+      const primaryLines = detail.tf_lines?.[ctf] ?? (detail.channel.available ? detail.channel.lines : null);
+      if (primaryLines) sets.push({ tf: ctf, lines: primaryLines, variant: 'primary' });
+      for (const pt of FULLSCREEN_CHANNEL_TFS) {
+        if (pt === ctf) continue;
+        const parentLines = detail.tf_lines?.[pt];
+        if (parentLines) sets.push({ tf: pt, lines: parentLines, variant: 'parent' });
+      }
+      setFsChannelSets(sets);
+      const view = detail.channel.available ? detail.channel.view : null;
+      setFsChannelCaption(
+        view
+          ? `${ctf} ±2σ channel · ${view.state?.label ?? view.direction?.label ?? 'Active'}`
+          : sets.length
+            ? `${ctf} regression channel`
+            : null,
+      );
+    } catch {
+      setFsChannelSets([]);
+      setFsChannelCaption(null);
+    }
+  }, []);
+
+  const setChartFullscreen = useCallback(
+    async (on: boolean) => {
+      if (on) {
+        setLayers((prev) => {
+          layersBeforeFs.current = prev;
+          return [...new Set([...prev, ...FULLSCREEN_LAYERS])];
+        });
+        void loadFullscreenChannels(symbol, tf);
+        setFull(true);
+        try {
+          await fsRootRef.current?.requestFullscreen?.();
+        } catch {
+          /* overlay fullscreen still applies */
+        }
+        return;
+      }
+      setFull(false);
+      setFsChannelSets([]);
+      setFsChannelCaption(null);
+      if (layersBeforeFs.current) {
+        setLayers(layersBeforeFs.current);
+        layersBeforeFs.current = null;
+      }
+      if (document.fullscreenElement) {
+        try {
+          await document.exitFullscreen();
+        } catch {
+          /* noop */
+        }
+      }
+    },
+    [loadFullscreenChannels, symbol, tf],
+  );
+
+  useEffect(() => {
+    if (!full) return;
+    void loadFullscreenChannels(symbol, tf);
+  }, [full, symbol, tf, loadFullscreenChannels]);
+
+  useEffect(() => {
+    const exitFullscreenUi = () => {
+      setFull(false);
+      setFsChannelSets([]);
+      setFsChannelCaption(null);
+      if (layersBeforeFs.current) {
+        setLayers(layersBeforeFs.current);
+        layersBeforeFs.current = null;
+      }
+    };
+    const onFsChange = () => {
+      if (!document.fullscreenElement) exitFullscreenUi();
+    };
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
+  }, []);
+
+  useEffect(() => {
+    document.body.classList.toggle('aca-chart-fullscreen', full);
+    document.documentElement.classList.toggle('aca-chart-fullscreen', full);
+    const t = window.setTimeout(() => window.dispatchEvent(new Event('resize')), 80);
+    return () => {
+      window.clearTimeout(t);
+      document.body.classList.remove('aca-chart-fullscreen');
+      document.documentElement.classList.remove('aca-chart-fullscreen');
+    };
+  }, [full]);
 
   const resetDrawHistory = useCallback((list: Drawing[]) => {
     drawHistoryRef.current = [list];
@@ -262,13 +384,52 @@ export function AdvancedChartWorkspace({ initialSymbol }: { initialSymbol?: stri
   const prev = candles.length > 1 ? candles[candles.length - 2] : null;
   const chgPct = latest && prev && prev.close ? ((latest.close - prev.close) / prev.close) * 100 : null;
 
+  const layerActive = useCallback(
+    (key: string) => {
+      if (full && (FULLSCREEN_LAYERS as readonly string[]).includes(key)) return true;
+      return layers.includes(key);
+    },
+    [full, layers],
+  );
+
   const shownOverlays = overlays.filter((o) => {
-    if (o.source === 'ai' && layers.includes('AI Market Outlook')) return true;
-    if (o.source === 'structure' && layers.some((l) => l.startsWith('Market Structure'))) return true;
-    if (o.source === 'channel' && layers.includes('Channel Intelligence')) return true;
-    if (o.source === 'levels' && layers.some((l) => l.startsWith('Key Levels'))) return true;
+    if (o.source === 'ai' && layerActive('AI Market Outlook')) return true;
+    if (
+      o.source === 'structure' &&
+      (layers.some((l) => l.startsWith('Market Structure')) || (full && layerActive('Market Structure (BOS/CHoCH)')))
+    )
+      return true;
+    if (o.source === 'channel' && layerActive('Channel Intelligence')) return true;
+    if (o.source === 'levels' && (layers.some((l) => l.startsWith('Key Levels')) || (full && layerActive('Key Levels (S/R)')))) return true;
     return false;
   });
+
+  const chartDrawings = useMemo(() => {
+    const user = layers.includes('My Drawings') ? drawings : [];
+    if (!full || !candles.length || !fsChannelSets.length) return user;
+    const auto: Drawing[] = [];
+    for (const set of fsChannelSets) {
+      auto.push(...channelLinesToDrawings(symbol, tf, set.lines, candles, set.tf, set.variant));
+    }
+    const bands = auto.filter((d) => d.id.endsWith('-band'));
+    const lines = auto.filter((d) => !d.id.endsWith('-band'));
+    return [...bands, ...lines, ...user];
+  }, [candles, drawings, full, fsChannelSets, layers, symbol, tf]);
+
+  const chartOverlays = useMemo(() => {
+    const zones = shownOverlays.filter((o) => o.kind === 'zone');
+    const levelScore = (o: Overlay) => (o.source === 'ai' ? 0 : o.confirmed ? 1 : 2);
+    const maxLevels = full ? 10 : 6;
+    const levels = shownOverlays
+      .filter((o) => o.kind === 'level')
+      .sort((a, b) => levelScore(a) - levelScore(b))
+      .slice(0, maxLevels)
+      .map((o) => ({
+        ...o,
+        label: o.label.replace(/^\[(Observed|Projected)\]\s*/i, '').slice(0, 22),
+      }));
+    return [...zones, ...levels];
+  }, [shownOverlays]);
 
   const o = intel.data?.outlook?.outlook;
   const range = intel.data?.range?.available ? intel.data.range : null;
@@ -277,19 +438,15 @@ export function AdvancedChartWorkspace({ initialSymbol }: { initialSymbol?: stri
   const verdictClass = dir === 'BULLISH' ? 'bull' : dir === 'BEARISH' ? 'bear' : 'neutral';
   const evidence = o?.confidence?.primary != null ? Math.round(o.confidence.primary) : null;
 
+  const showIndicatorStrip = (layerActive('Indicators') || full) && (tab === 'Indicators' || full);
+
   return (
-    <div className={full ? 'advanced-chart-analysis fullscreen' : 'advanced-chart-analysis'}>
-      <div className="aca-top-actions">
-        <button type="button" onClick={save} disabled={busy}>
-          <Save size={15} /> Save Layout
+    <div ref={fsRootRef} className={full ? 'advanced-chart-analysis fullscreen' : 'advanced-chart-analysis'}>
+      {full && (
+        <button type="button" className="aca-fs-exit" onClick={() => setChartFullscreen(false)}>
+          <Minimize2 size={16} /> Exit fullscreen
         </button>
-        <button type="button" onClick={() => setPanel((x) => !x)}>
-          <Layers size={15} /> {panel ? 'Hide Panels' : 'Show Panels'}
-        </button>
-        <button type="button" onClick={() => setFull((x) => !x)}>
-          <Maximize2 size={15} /> {full ? 'Exit Fullscreen' : 'Expand'}
-        </button>
-      </div>
+      )}
       {error && (
         <div className="error" role="alert">
           {error}{' '}
@@ -303,7 +460,21 @@ export function AdvancedChartWorkspace({ initialSymbol }: { initialSymbol?: stri
           {notice} ×
         </div>
       )}
-      <div className="workspace">
+      <header className="aca-page-head">
+        <div>
+          <h2>Advanced Chart Analysis</h2>
+          <p>Professional multi-symbol technical analysis with AI and structural intelligence.</p>
+        </div>
+        <div className="aca-page-head-actions">
+          <button type="button" onClick={save} disabled={busy}>
+            <Save size={15} /> Save Layout
+          </button>
+          <button type="button" onClick={() => setChartFullscreen(!full)}>
+            <Maximize2 size={15} /> {full ? 'Exit Fullscreen' : 'Fullscreen'}
+          </button>
+        </div>
+      </header>
+      <div className="aca-workspace">
         <div className="chart-column">
           <div className="chart-card">
             <div className="chart-toolbar">
@@ -322,17 +493,30 @@ export function AdvancedChartWorkspace({ initialSymbol }: { initialSymbol?: stri
                 ))}
               </div>
               <span className="toolbar-sep" />
-              <button type="button" title="Candlestick">
-                <CandlestickChart size={15} /> Candlestick
+              <button type="button" className="aca-labeled-btn" title="Candlestick">
+                <CandlestickChart size={15} /> <span>Candlestick</span>
               </button>
-              <button type="button" title="Indicators">
-                <LineChart size={15} /> Indicators
+              <button type="button" className="aca-labeled-btn" title="Indicators">
+                <LineChart size={15} /> <span>Indicators</span>
               </button>
-              <button type="button" title="Compare symbols" disabled>
-                <GitCompare size={15} /> Compare
+              <button type="button" className="aca-icon-btn" title="Compare symbols" disabled>
+                <GitCompare size={15} />
               </button>
-              <button type="button" title="Templates">
-                <LayoutTemplate size={15} /> Templates
+              <button type="button" className="aca-icon-btn" title="Templates">
+                <LayoutTemplate size={15} />
+              </button>
+              <span className="toolbar-sep" />
+              <button type="button" className="aca-icon-btn" title="Save layout" onClick={save} disabled={busy}>
+                <Save size={15} />
+              </button>
+              <button type="button" className="aca-icon-btn" title={panel ? 'Hide side panel' : 'Show side panel'} onClick={() => setPanel((x) => !x)}>
+                <Layers size={15} />
+              </button>
+              <button type="button" className="aca-icon-btn" title={insightsOpen ? 'Hide insight cards' : 'Show insight cards'} onClick={() => setInsightsOpen((x) => !x)}>
+                <BarChart3 size={15} />
+              </button>
+              <button type="button" className="aca-icon-btn" title={full ? 'Exit fullscreen' : 'Expand chart to full screen'} onClick={() => setChartFullscreen(!full)}>
+                <Maximize2 size={15} />
               </button>
               <div className="aca-toolbar-meta">
                 {latest && (
@@ -399,19 +583,73 @@ export function AdvancedChartWorkspace({ initialSymbol }: { initialSymbol?: stri
                   {latest && !latest.closed && <b className="stale">FORMING BAR</b>}
                 </div>
                 {busy && <div className="loading">Loading chart…</div>}
+                {full && (
+                  <aside className="aca-fs-intel" aria-label="AI Market Outlook">
+                    <div className="aca-fs-intel-head">
+                      <strong>AI Market Outlook</strong>
+                      <span>{symbol}</span>
+                    </div>
+                    {o ? (
+                      <>
+                        <div className="aca-verdict">
+                          <span className={`aca-badge ${verdictClass}`}>
+                            {dir === 'BULLISH' ? 'Bullish' : dir === 'BEARISH' ? 'Bearish' : 'Neutral'}
+                          </span>
+                          {evidence != null && <span>{evidence}/100</span>}
+                        </div>
+                        {evidence != null && (
+                          <div className="aca-evidence-bar">
+                            <span style={{ width: `${Math.min(100, evidence)}%` }} />
+                          </div>
+                        )}
+                        <p className="aca-fs-intel-copy">{o.primary_scenario?.summary ?? o.phase?.title ?? 'Published outlook loaded.'}</p>
+                        <dl className="aca-kv-grid">
+                          <dt>Entry</dt>
+                          <dd>{o.erz?.label ?? '—'}</dd>
+                          <dt>Invalidation</dt>
+                          <dd>{o.invalidation?.price != null ? fmtPrice(symbol, o.invalidation.price) : '—'}</dd>
+                          <dt>Target 1</dt>
+                          <dd>{o.targets?.[0]?.price != null ? fmtPrice(symbol, o.targets[0].price) : '—'}</dd>
+                        </dl>
+                      </>
+                    ) : (
+                      <p className="aca-fs-intel-copy muted">No published outlook — channel lines and structure overlays still apply.</p>
+                    )}
+                    {fsChannelCaption && <p className="aca-fs-channel-tag">{fsChannelCaption}</p>}
+                    {!fsChannelSets.length && full && (
+                      <p className="aca-fs-intel-copy muted" style={{ marginTop: 8 }}>
+                        Channel geometry unavailable for this symbol/timeframe.
+                      </p>
+                    )}
+                  </aside>
+                )}
                 <PriceChart
                   symbol={symbol}
                   timeframe={tf}
                   candles={candles}
-                  drawings={layers.includes('My Drawings') ? drawings : []}
-                  overlays={shownOverlays}
+                  drawings={chartDrawings}
+                  overlays={chartOverlays}
                   tool={tool}
                   onDrawing={addDrawing}
-                  showVolume={layers.includes('Volume')}
-                  showEMA={layers.includes('Moving Averages')}
-                  showSupertrend={layers.includes('Supertrend (10, 3)')}
+                  showVolume={layerActive('Volume')}
+                  showEMA={layerActive('Moving Averages')}
+                  showSupertrend={layerActive('Supertrend (10, 3)')}
                   snapEnabled={snapEnabled}
                 />
+                {showIndicatorStrip && (
+                  <div className="aca-indicator-strip">
+                    <div className="aca-indicator-tabs">
+                      {INDICATOR_PANES.map((p) => (
+                        <button key={p} type="button" className={indicatorPane === p ? 'selected' : ''} onClick={() => setIndicatorPane(p)}>
+                          {p}
+                        </button>
+                      ))}
+                    </div>
+                    {indicatorPane === 'RSI (14)' && <RsiPane candles={candles} />}
+                    {indicatorPane === 'MACD (12,26,9)' && <MacdPane candles={candles} />}
+                    {indicatorPane === 'ATR (14)' && <AtrPane candles={candles} />}
+                  </div>
+                )}
               </div>
             </div>
             <div className="chart-tabs">
@@ -422,28 +660,18 @@ export function AdvancedChartWorkspace({ initialSymbol }: { initialSymbol?: stri
               ))}
             </div>
             <div className="tab-content">
-              {tab === 'Indicators' && layers.includes('Indicators') && (
-                <>
-                  <div className="aca-indicator-tabs">
-                    {INDICATOR_PANES.map((p) => (
-                      <button key={p} type="button" className={indicatorPane === p ? 'selected' : ''} onClick={() => setIndicatorPane(p)}>
-                        {p}
-                      </button>
-                    ))}
-                  </div>
-                  {indicatorPane === 'RSI (14)' && <RsiPane candles={candles} />}
-                  {indicatorPane === 'MACD (12,26,9)' && <MacdPane candles={candles} />}
-                  {indicatorPane === 'ATR (14)' && <AtrPane candles={candles} />}
-                </>
-              )}
               {tab === 'Indicators' && !layers.includes('Indicators') && (
-                <span>Enable the Indicators layer to show RSI, MACD, and ATR panes.</span>
+                <span>Enable the Indicators layer to show RSI, MACD, and ATR under the chart.</span>
+              )}
+              {tab === 'Indicators' && layers.includes('Indicators') && (
+                <span className="aca-tab-hint">RSI / MACD / ATR render in the strip below the price chart.</span>
               )}
               {tab === 'Pine Editor' && <span>Pine Editor connects to your Cacsms scripting boundary — not enabled in this environment.</span>}
               {tab === 'Strategy Tester' && <span>Strategy Tester uses the autonomous backtest pipeline — open Cacsms Engine for full runs.</span>}
               {tab === 'Trading Panel' && <span>Draft opportunities only; execution remains in engine Stages 2–3.</span>}
             </div>
           </div>
+          {insightsOpen && (
           <div className="bottom-panels">
             <section className="card">
               <div className="card-head">
@@ -527,7 +755,49 @@ export function AdvancedChartWorkspace({ initialSymbol }: { initialSymbol?: stri
               ))}
               {!analyses.length && <p style={{ fontSize: 11, color: '#94a3b8' }}>No saved analyses yet.</p>}
             </section>
+            <section className="card opportunity">
+              <div className="card-head">
+                <strong>Create Opportunity</strong>
+                <span>Manual draft</span>
+              </div>
+              <div className="field">
+                <label htmlFor="aca-source">Source</label>
+                <select id="aca-source" value={source} onChange={(e) => setSource(e.target.value)}>
+                  {['Strategy-Based', 'AI Outlook', 'Structure Break'].map((x) => (
+                    <option key={x} value={x}>
+                      {x}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="field">
+                <label htmlFor="aca-strategy">Strategy type</label>
+                <select id="aca-strategy" value={strategy} onChange={(e) => setStrategy(e.target.value)}>
+                  {['Trend-in-Trend', 'Channel Continuation', 'Breakout–Retest'].map((x) => (
+                    <option key={x} value={x}>
+                      {x}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="field">
+                <span>Direction</span>
+                <div className="two-buttons">
+                  <button type="button" className={direction === 'BUY' ? 'buy' : ''} onClick={() => setDirection('BUY')}>
+                    Buy
+                  </button>
+                  <button type="button" className={direction === 'SELL' ? 'sell' : ''} onClick={() => setDirection('SELL')}>
+                    Sell
+                  </button>
+                </div>
+              </div>
+              <textarea placeholder="Notes…" value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} />
+              <button type="button" className="primary" onClick={createOpportunity}>
+                <Target size={16} /> Save as Potential Opportunity
+              </button>
+            </section>
           </div>
+          )}
         </div>
         {panel && (
           <aside className="rightpanels">
@@ -573,28 +843,7 @@ export function AdvancedChartWorkspace({ initialSymbol }: { initialSymbol?: stri
                 })}
               </div>
             </section>
-            <section className="card">
-              <div className="card-head">
-                <strong>Drawing tree</strong>
-                <span>{drawings.length}</span>
-              </div>
-              <div className="aca-drawing-list">
-                {drawings.slice(0, 12).map((d) => (
-                  <div className="aca-drawing-row" key={d.id}>
-                    <span>{d.kind}</span>
-                    <button
-                      type="button"
-                      className="link"
-                      onClick={() => commitDrawings(drawings.filter((x) => x.id !== d.id))}
-                    >
-                      Remove
-                    </button>
-                  </div>
-                ))}
-                {!drawings.length && <p className="muted" style={{ fontSize: 11, margin: 0 }}>No drawings on this layout.</p>}
-              </div>
-            </section>
-            <section className="card">
+            <section className="card aca-layers-card">
               <div className="card-head">
                 <strong>Analysis Layers</strong>
                 <Settings2 size={15} />
@@ -613,48 +862,32 @@ export function AdvancedChartWorkspace({ initialSymbol }: { initialSymbol?: stri
                 </label>
               ))}
             </section>
-            <section className="card opportunity">
+            <button type="button" className="aca-side-toggle" onClick={() => setSideExtrasOpen((x) => !x)}>
+              {sideExtrasOpen ? 'Hide' : 'Show'} drawing tree
+            </button>
+            {sideExtrasOpen && (
+            <section className="card">
               <div className="card-head">
-                <strong>Create Opportunity</strong>
-                <span>Manual draft</span>
+                <strong>Drawing tree</strong>
+                <span>{drawings.length}</span>
               </div>
-              <div className="field">
-                <label htmlFor="aca-source">Source</label>
-                <select id="aca-source" value={source} onChange={(e) => setSource(e.target.value)}>
-                  {['Strategy-Based', 'AI Outlook', 'Structure Break'].map((x) => (
-                    <option key={x} value={x}>
-                      {x}
-                    </option>
-                  ))}
-                </select>
+              <div className="aca-drawing-list">
+                {drawings.slice(0, 8).map((d) => (
+                  <div className="aca-drawing-row" key={d.id}>
+                    <span>{d.kind}</span>
+                    <button
+                      type="button"
+                      className="link"
+                      onClick={() => commitDrawings(drawings.filter((x) => x.id !== d.id))}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+                {!drawings.length && <p className="muted" style={{ fontSize: 11, margin: 0 }}>No drawings on this layout.</p>}
               </div>
-              <div className="field">
-                <label htmlFor="aca-strategy">Strategy type</label>
-                <select id="aca-strategy" value={strategy} onChange={(e) => setStrategy(e.target.value)}>
-                  {['Trend-in-Trend', 'Channel Continuation', 'Breakout–Retest'].map((x) => (
-                    <option key={x} value={x}>
-                      {x}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="field">
-                <span>Direction</span>
-                <div className="two-buttons">
-                  <button type="button" className={direction === 'BUY' ? 'buy' : ''} onClick={() => setDirection('BUY')}>
-                    Buy
-                  </button>
-                  <button type="button" className={direction === 'SELL' ? 'sell' : ''} onClick={() => setDirection('SELL')}>
-                    Sell
-                  </button>
-                </div>
-              </div>
-              <textarea placeholder="Notes…" value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} />
-              <button type="button" className="primary" onClick={createOpportunity}>
-                <Target size={16} /> Save as Potential Opportunity
-              </button>
-              <small>No broker order is placed. Confirmation and risk gates remain mandatory.</small>
             </section>
+            )}
           </aside>
         )}
       </div>

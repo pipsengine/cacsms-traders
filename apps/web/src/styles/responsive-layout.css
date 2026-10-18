@@ -120,6 +120,14 @@ body {
   flex-shrink: 0;
 }
 
+/* Advanced Chart Analysis: chart grid is not app shell main.workspace */
+.page.aca-shell-page .advanced-chart-analysis .aca-workspace {
+  display: grid !important;
+  grid-column: unset !important;
+  width: 100% !important;
+  min-height: 0 !important;
+}
+
 .workspace > .page {
   min-width: 0;
   overflow-x: hidden;
