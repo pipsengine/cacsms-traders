@@ -3,6 +3,7 @@ import {
   Activity,
   BarChart3,
   BrainCircuit,
+  ChartCandlestick,
   Building2,
   ChevronDown,
   Search,
@@ -48,6 +49,7 @@ const nav: [string, { page: Page; label: string; icon: React.ReactNode }[]][] = 
       { page: 'h8-bos-btl', label: 'H8 BOS & BTL Intelligence', icon: <BarChart3 /> },
       { page: 'channel-intelligence', label: 'Channel Intelligence', icon: <GitBranch /> },
       { page: 'ai-market-outlook', label: 'AI Market Outlook', icon: <BrainCircuit /> },
+      { page: 'advanced-chart-analysis', label: 'Advanced Chart Analysis', icon: <ChartCandlestick /> },
     ],
   ],
   [

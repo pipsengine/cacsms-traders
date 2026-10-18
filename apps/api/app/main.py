@@ -282,3 +282,6 @@ app.include_router(cacsms_engine.router)
 
 from .routers import prop_firm
 app.include_router(prop_firm.router)
+
+from .chart.router import router as chart_router
+app.include_router(chart_router)
