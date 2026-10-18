@@ -6,8 +6,12 @@ __pycache__/
 *.pyc
 logs/*.log
 database/backups/*.db
+database/*.db-shm
+database/*.db-wal
+deploy/iis/site/
 .vercel
 .env*
+!deploy/iis/.env.example
 .test-tmp-strength/
 .test-tmp-ctrader-inactive/
 .deploy-ctrader-state/

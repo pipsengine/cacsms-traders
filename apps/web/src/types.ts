@@ -2,7 +2,10 @@ export type { Page } from './lib/routes';
 import type { Page } from './lib/routes';
 export type Health={
  application:string;api:string;database:string;
- market_data?:{active_provider:string|null;provider_status:string;market_data_ready?:boolean};
+ market_data?:{
+  active_provider:string|null;provider_status:string;market_data_ready?:boolean;
+  engine_state?:string;
+ };
  mt5:{
   status:string;session_status?:string;adapter:string;message:string;
   terminal?:string;terminal_configured?:boolean;

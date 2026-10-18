@@ -74,6 +74,32 @@ The backend exposes readiness and liveness endpoints for process supervision:
 - `/api/health/ready` — ready-to-serve endpoint
 - `/api/health/live` — liveness endpoint used by process managers
 
+## Local IIS (Windows)
+
+The UI is served as static files from `deploy/iis/site`; IIS reverse-proxies `/api/*` to the FastAPI process on `127.0.0.1:8000` (same-origin model as Vercel).
+
+**Prerequisites:** IIS with **URL Rewrite** and **Application Request Routing (ARR)** (proxy enabled). Python venv at repo root (see Start backend).
+
+1. **Build and stage the site** (no admin required):
+
+   ```powershell
+   cd c:\Trading-Engine\cacsms-traders
+   .\scripts\build-iis.ps1
+   ```
+
+2. **Create the IIS site and API startup task** (elevated PowerShell — run from the repo folder, not `C:\Windows\System32`):
+
+   ```powershell
+   cd c:\Trading-Engine\cacsms-traders
+   .\scripts\setup-iis.ps1
+   # or double-click install-iis-site.cmd in the repo root
+   # optional: .\scripts\setup-iis.ps1 -Port 80 -HostHeader cacsms-traders.local
+   ```
+
+3. Open `http://localhost:8080` (default port). Health via IIS: `http://localhost:8080/api/health`.
+
+Environment: copy `deploy/iis/.env.example` to repo-root `.env` and set `WEB_ORIGINS` to your IIS URL. Leave `API_PROXY_SECRET` unset for local IIS unless you forward `x-ct-proxy-secret` in `deploy/iis/web.config` (ARR adds forwarding headers, which triggers proxy-secret checks when the secret is set).
+
 ## Deployment commands
 ```bash
 # Back-end service

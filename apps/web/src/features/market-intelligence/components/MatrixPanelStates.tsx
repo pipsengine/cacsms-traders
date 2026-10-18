@@ -41,7 +41,8 @@ export function MatrixBlockingState({
     'DISCOVERING_SYMBOLS',
     'WAITING_PROVIDER',
   ]);
-  if (meta && !syncStates.has(meta.engine_state) && meta.engine_state !== 'READY') {
+  const engineState = meta?.engine_state;
+  if (meta && engineState && !syncStates.has(engineState) && engineState !== 'READY') {
     return (
       <div className="si-state" role="status">
         <strong>Market data unavailable</strong>
