@@ -176,8 +176,24 @@ def _release_authorised(repo, active, mode, now, ae, conn, apply, gate, counts, 
         symbol = _canon_symbol(opportunity.get("symbol"))
         if not symbol or strategy_open.get(symbol, 0) >= STRATEGY_LIMIT:
             continue
+        from ..domain.mt5_execution import side_price
+
+        price = side_price(str(opportunity.get("symbol")), str(opportunity.get("direction")))
+        allowed, _reason, entry_metrics = opps.market_entry_allowed(opportunity, price, now, ae)
+        if not allowed:
+            if _reason != "NO_QUOTE":
+                at = now.isoformat()
+                apply(opportunity, [gate(
+                    opportunity, "LEARNING", "EXPIRED", "ENTRY_MISSED", at, entry_metrics, True, "EXPIRED",
+                )])
+                repo.update_opportunity(
+                    opportunity["id"], stage=opportunity["stage"], state=opportunity["state"], status="CLOSED",
+                    outcome="EXPIRED", closed_at=at, evidence_json=opportunity.get("evidence") or {},
+                    reason_code="ENTRY_MISSED", next_condition=opps.next_condition(opportunity), updated_at=at,
+                )
+            continue
         evidence = dict(opportunity.get("evidence") or {})
-        evidence.update(trade_risk_pct=risk_pct, open_risk_pct=open_risk, max_exposure_percent=max_exposure)
+        evidence.update(trade_risk_pct=risk_pct, open_risk_pct=open_risk, max_exposure_percent=max_exposure, entry_check=entry_metrics)
         opportunity["evidence"] = evidence
         live = []
         for item in positions:
@@ -574,6 +590,31 @@ class AutonomousEngine:
             return {"from_stage": o["stage"], "from_state": o["state"], "to_stage": to_stage, "to_state": to_state, "reason_code": reason,
                     "detail": opps.REASONS[reason], "evidence_at": at, "evidence": evidence, "close": close, "outcome": outcome}
 
+        def submit_confirmed_entry(o: dict, at: str) -> list[dict]:
+            """Send one market order only while the live quote is still the confirmed entry."""
+            from ..domain.mt5_execution import execution_allowed, side_price, terminal_trade_mode
+
+            if not execution_allowed(mode, terminal_trade_mode()):
+                return apply(o, [gate(
+                    o, "EXECUTION", "EXECUTION_BLOCKED_ANALYSIS_ONLY", "EXECUTION_BLOCKED_ANALYSIS_ONLY", at,
+                    {"mode": mode, "broker_order": None, "broker_error": "Terminal is not accepting this operating mode"},
+                )])
+            price = side_price(str(o["symbol"]), str(o["direction"]))
+            allowed, reason, metrics = opps.market_entry_allowed(o, price, now, ae)
+            if not allowed:
+                if reason == "NO_QUOTE":
+                    return []
+                return apply(o, [gate(o, "LEARNING", "EXPIRED", "ENTRY_MISSED", at, metrics, True, "EXPIRED")])
+            sent = _broker_order(o, mode, conn, repo)
+            if sent and sent.get("ok"):
+                o["evidence"] = {**(o.get("evidence") or {}), "broker_order": sent, "entry_check": metrics}
+                counts["orders_submitted"] = counts.get("orders_submitted", 0) + 1
+                return apply(o, [gate(o, "EXECUTION", "ORDER_ACCEPTED", "ORDER_ACCEPTED", at, sent)])
+            return apply(o, [gate(
+                o, "EXECUTION", "EXECUTION_BLOCKED_ANALYSIS_ONLY", "EXECUTION_BLOCKED_ANALYSIS_ONLY", at,
+                {"mode": mode, "broker_order": None, "broker_error": None if not sent else sent.get("error"), "entry_check": metrics},
+            )])
+
         def risk(o: dict, at: str) -> tuple[bool, list[dict]]:
             """Risk gate. SHADOW and analysis-only stop here. Demo and live modes send one broker order."""
             from .portfolio import open_position_cap
@@ -585,14 +626,15 @@ class AutonomousEngine:
             o["evidence"] = {**(o.get("evidence") or {}), "risk": {**metrics, "decided_at": at}}
             if state == "RISK_APPROVED":
                 applied = apply(o, [gate(o, "RISK", "RISK_APPROVED", "RISK_APPROVED", at, metrics)])
-                sent = _broker_order(o, mode, conn, repo)
-                if sent and sent.get("ok"):
-                    o["evidence"] = {**(o.get("evidence") or {}), "broker_order": sent}
-                    applied += apply(o, [gate(o, "EXECUTION", "ORDER_ACCEPTED", "ORDER_ACCEPTED", at, sent)])
-                    counts["orders_submitted"] = counts.get("orders_submitted", 0) + 1
-                else:
-                    applied += apply(o, [gate(o, "EXECUTION", "EXECUTION_BLOCKED_ANALYSIS_ONLY", "EXECUTION_BLOCKED_ANALYSIS_ONLY", at,
-                                              {"mode": mode, "broker_order": None, "broker_error": None if not sent else sent.get("error")})])
+                if (mode or "").upper() in ("DEMO_AUTONOMOUS", "LIVE_AUTONOMOUS"):
+                    sent_steps = submit_confirmed_entry(o, at)
+                    applied += sent_steps
+                    if o["status"] != "CLOSED":
+                        portfolio.append(o)
+                        counts["risk_approved"] += 1
+                    return o["state"] == "ORDER_ACCEPTED", applied
+                applied += apply(o, [gate(o, "EXECUTION", "EXECUTION_BLOCKED_ANALYSIS_ONLY", "EXECUTION_BLOCKED_ANALYSIS_ONLY", at,
+                                          {"mode": mode, "broker_order": None, "broker_error": None})])
                 portfolio.append(o)
                 counts["risk_approved"] += 1
                 return True, applied
@@ -609,6 +651,17 @@ class AutonomousEngine:
             a = ok.get(o["symbol"])
             blockers: list[str] = list(blockers_global)
             all_steps: list[dict] = []
+            if (
+                progress
+                and o["status"] == "ACTIVE"
+                and o["state"] == "RISK_APPROVED"
+                and not (o.get("evidence") or {}).get("broker_order")
+                and (mode or "").upper() in ("DEMO_AUTONOMOUS", "LIVE_AUTONOMOUS")
+            ):
+                all_steps += submit_confirmed_entry(o, o.get("stage_entered_at") or stamp)
+            if o["status"] == "CLOSED":
+                persist(o, before, all_steps, blockers)
+                return
             if a is None:
                 blockers.append("Instrument excluded from analysis — waiting for valid closed-bar data")
             elif progress:

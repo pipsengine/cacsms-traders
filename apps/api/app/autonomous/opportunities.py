@@ -8,7 +8,7 @@ watermark in order, so the same bars always produce the same transitions.
 from __future__ import annotations
 
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from ..market import channel_intelligence as chan
 from ..market.scanner_analytics import Bar
@@ -33,6 +33,7 @@ REASONS = {
     "RISK_DEFER_TIMEOUT": "Deferred beyond the risk window",
     "EXECUTION_BLOCKED_ANALYSIS_ONLY": "Operating mode is ANALYSIS ONLY — no broker order is submitted",
     "ORDER_ACCEPTED": "Broker accepted the market order",
+    "ENTRY_MISSED": "Live price is no longer the confirmed entry",
     "BROKER_REJECTED": "Broker rejected the order",
     "TARGET_1_REACHED": "Shadow plan reached objective 1",
     "INVALIDATED_AFTER_CONFIRMATION": "Shadow plan hit its invalidation level",
@@ -348,6 +349,39 @@ def _occupies_pair_slot(plan: dict) -> bool:
     if plan.get("ticket"):
         return True
     return str(plan.get("state") or "") == "ORDER_ACCEPTED"
+
+
+def market_entry_allowed(o: dict, price: float | None, now: datetime, ae: AESettings) -> tuple[bool, str, dict]:
+    """A market order is the entry only during the confirmation hour, and only while that quote still pays the minimum R.
+
+    Risk approval uses the confirmation close. The broker fills the live quote. A later quote is a different trade.
+    """
+    confirmation = (o.get("evidence") or {}).get("confirmation") or {}
+    stamp = confirmation.get("at")
+    metrics: dict = {"price": price, "confirmation_at": stamp, "required_reward_risk": ae.min_reward_risk}
+    if not stamp:
+        return False, "NO_CONFIRMATION", metrics
+    try:
+        confirmed = datetime.fromisoformat(str(stamp))
+    except ValueError:
+        return False, "NO_CONFIRMATION", metrics
+    if confirmed.tzinfo is None:
+        confirmed = confirmed.replace(tzinfo=timezone.utc)
+    current = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    age = (current - confirmed).total_seconds()
+    metrics["age_seconds"] = round(age, 1)
+    if age < 0 or age >= H1.total_seconds():
+        return False, "ENTRY_STALE", metrics
+    if price is None:
+        return False, "NO_QUOTE", metrics
+    direction = SIGN.get(str(o.get("direction")))
+    if not direction:
+        return False, "NO_DIRECTION", metrics
+    reward_risk = _rr(direction, float(price), float(o["invalidation"]), float(o["target_1"]))
+    metrics["live_reward_risk"] = reward_risk
+    if reward_risk is None or reward_risk < ae.min_reward_risk:
+        return False, "LIVE_REWARD_RISK", metrics
+    return True, "ENTRY_VALID", metrics
 
 
 def risk_decision(o: dict, portfolio: list[dict], ae: AESettings, *, position_cap: int | None = None) -> tuple[str, str, dict]:

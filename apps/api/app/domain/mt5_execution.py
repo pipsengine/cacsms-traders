@@ -85,6 +85,27 @@ def _round_price(info, price: float) -> float:
     return round(price, digits)
 
 
+def side_price(symbol: str, direction: str) -> float | None:
+    """Ask for a buy, bid for a sell. None when the terminal has no quote."""
+    if not mt5_session.is_initialized() and not mt5_session.initialize():
+        return None
+    try:
+        import MetaTrader5 as mt5  # type: ignore
+    except Exception:
+        return None
+    names = {item.name for item in (mt5.symbols_get() or ())}
+    broker = next((name for name in symbol_candidates(symbol) if name in names), None)
+    if broker is None:
+        return None
+    tick = mt5.symbol_info_tick(broker)
+    if tick is None:
+        return None
+    side = direction.upper()
+    raw = tick.ask if side == "BULLISH" else tick.bid if side == "BEARISH" else 0
+    price = float(raw or 0)
+    return price or None
+
+
 def open_market_position(*, symbol: str, direction: str, stop: float, target: float, risk_pct: float) -> dict[str, Any]:
     """Market deal with the plan's stop and target. Returns ok False when the broker rejects it or the size is unsafe."""
     if not mt5_session.is_initialized() and not mt5_session.initialize():

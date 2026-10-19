@@ -259,6 +259,29 @@ def _opp(**over) -> dict:
     return o
 
 
+def test_market_order_requires_the_confirmation_hour_and_live_reward():
+    """CADJPY and NZDUSD were filled hours after confirmation, far above the entry the risk check had priced."""
+    ae = ae_settings()
+    cad = {
+        "direction": "BULLISH", "invalidation": 111.40844644487959, "target_1": 113.33654691872025,
+        "evidence": {"confirmation": {"at": "2026-10-19T04:00:00+00:00", "close": 111.796, "by": "REACTION_BAR_BROKEN"}},
+    }
+    chased_at = datetime(2026, 10, 19, 9, 4, tzinfo=timezone.utc)
+    allowed, reason, _metrics = opps.market_entry_allowed(cad, 112.264, chased_at, ae)
+    assert not allowed and reason == "ENTRY_STALE"
+    on_the_hour = datetime(2026, 10, 19, 4, 10, tzinfo=timezone.utc)
+    allowed, reason, _metrics = opps.market_entry_allowed(cad, 112.264, on_the_hour, ae)
+    assert not allowed and reason == "LIVE_REWARD_RISK"
+    allowed, reason, metrics = opps.market_entry_allowed(cad, 111.796, on_the_hour, ae)
+    assert allowed and reason == "ENTRY_VALID" and metrics["live_reward_risk"] >= ae.min_reward_risk
+    nzd = {
+        "direction": "BULLISH", "invalidation": 0.5636651881889574, "target_1": 0.5700877038573181,
+        "evidence": {"confirmation": {"at": "2026-10-16T23:00:00+00:00", "close": 0.56518, "by": "REACTION_BAR_BROKEN"}},
+    }
+    allowed, reason, _metrics = opps.market_entry_allowed(nzd, 0.56605, chased_at, ae)
+    assert not allowed and reason == "ENTRY_STALE"
+
+
 def test_evaluate_zone_reaction_confirmation_is_deterministic():
     ae = ae_settings()
     steps, through, needs = opps.evaluate(_opp(), CRAFTED[:5], [], ae)
