@@ -120,7 +120,7 @@ def _account_row(conn, tenant_id: str, account_id: str) -> dict | None:
         return None
     rows = [dict(r) for r in conn.execute(
         "SELECT id, account_name, account_number, broker, server, environment, account_currency, balance, equity, margin, "
-        "free_margin, leverage, connection_status, last_synced_at FROM trading_accounts WHERE tenant_id=?",
+        "free_margin, leverage, connection_status, last_synced_at, floating_pnl, margin_level FROM trading_accounts WHERE tenant_id=?",
         (tenant_id,),
     ).fetchall()]
     if not rows:
@@ -148,11 +148,7 @@ def open_position_cap(conn, tenant_id: str, account_id: str) -> int | None:
 def _profile(conn, account_pk: str | None) -> dict | None:
     if not account_pk:
         return None
-    row = conn.execute(
-        "SELECT max_open_positions, max_total_risk_pct, max_trade_risk_pct, max_daily_loss_pct, max_total_loss_pct, "
-        "profit_target_pct, weekend_holding_allowed FROM account_risk_profiles WHERE trading_account_id=?",
-        (account_pk,),
-    ).fetchone()
+    row = conn.execute("SELECT * FROM account_risk_profiles WHERE trading_account_id=?", (account_pk,)).fetchone()
     return dict(row) if row else None
 
 
@@ -177,7 +173,9 @@ def build_portfolio(conn, repo: AERepository, now: datetime) -> dict:
     margin = _num(account.get("margin")) if account else None
     free_margin = _num(account.get("free_margin")) if account else None
     stale = _stale(account.get("last_synced_at") if account else None, now)
-    floating = equity - balance if equity is not None and balance is not None else None
+    floating = _num(account.get("floating_pnl")) if account and account.get("floating_pnl") is not None else None
+    if floating is None:
+        floating = equity - balance if equity is not None and balance is not None else None
 
     active = repo.active_opportunities()
     plans = [o for o in active if o.get("stage") == "EXECUTION"]
@@ -238,6 +236,12 @@ def build_portfolio(conn, repo: AERepository, now: datetime) -> dict:
         "max_total_loss_pct": profile.get("max_total_loss_pct") if profile else None,
         "profit_target_pct": profile.get("profit_target_pct") if profile else None,
         "weekend_holding_allowed": bool(profile.get("weekend_holding_allowed")) if profile else None,
+        "max_weekly_loss_pct": profile.get("max_weekly_loss_pct") if profile else None,
+        "max_drawdown_pct": profile.get("max_drawdown_pct") if profile else None,
+        "max_spread_points": profile.get("max_spread_points") if profile else None,
+        "margin_floor_pct": profile.get("margin_floor_pct") if profile else None,
+        "emergency_stop": bool(profile.get("emergency_stop")) if profile else False,
+        "live_trading_enabled": bool(profile.get("live_trading_enabled")) if profile else False,
         "max_concurrent": ae.max_concurrent,
         "max_currency_exposure": ae.max_currency_exposure,
         "min_reward_risk": ae.min_reward_risk,
@@ -265,6 +269,10 @@ def build_portfolio(conn, repo: AERepository, now: datetime) -> dict:
             "connection_status": account.get("connection_status"),
             "stale": stale,
             "source": "trading_account_sync",
+            "link_state": "DISCONNECTED" if (account.get("connection_status") or "").upper() != "CONNECTED" else "DEGRADED" if stale else "CONNECTED",
+            "execution_state": "EMERGENCY_STOP" if profile and profile.get("emergency_stop") else "LIVE_EXECUTION" if profile and profile.get("live_trading_enabled") and (account.get("environment") or "") in ("LIVE", "PROP_FIRM") else "SIMULATION",
+            "margin_level": _num(account.get("margin_level")),
+            "available_risk": None if equity is None or not profile or profile.get("max_trade_risk_pct") is None else round(equity * float(profile["max_trade_risk_pct"]) / 100, 2),
         },
         "limits": limits,
         "capacity": capacity,

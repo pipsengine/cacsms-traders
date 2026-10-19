@@ -1,4 +1,7 @@
-"""Read-only Windows MT5 attachment and outbound heartbeat worker."""
+"""Windows MT5 attachment. Market-data sampling does not send orders.
+
+Authorized orders are pulled from the API and submitted only by drain_orders.
+"""
 import json
 import math
 import os
@@ -72,17 +75,34 @@ class WindowsBridge:
         tf = ('H1','M1','M5','M15','M30','H4','D1','W1','MN')[self.frame % 9]
         if history:
             self.frame += 1
-        quotes, candles = [], []
-        names = {s.name for s in (self.sdk.symbols_get() or ())}
-        from ..market.mt5_gateway import symbol_candidates
+        quotes, candles, contracts = [], [], []
+        names = [s.name for s in (self.sdk.symbols_get() or ())]
+        from ..execution.symbols import resolve_broker_symbol
         for symbol in (*FX_PAIRS_28,'XAUUSD'):
-            broker = next((name for name in symbol_candidates(symbol) if name in names), None)
+            broker = resolve_broker_symbol(symbol, names)
             if not broker or not self.sdk.symbol_select(broker,True):
                 continue
             metadata = self.sdk.symbol_info(broker)
             tick = self.sdk.symbol_info_tick(broker)
             if tick and metadata and tick.bid > 0 and tick.ask >= tick.bid:
                 quotes.append(dict(symbol=symbol,provider_symbol=broker,bid=float(tick.bid),ask=float(tick.ask),time=int(tick.time),digits=int(metadata.digits),tick_size=float(metadata.trade_tick_size or metadata.point),pip_size=float(metadata.point)*(10 if metadata.digits in (3,5) else 1)))
+                tick_value = float(getattr(metadata, 'trade_tick_value', 0) or 0)
+                volume_min = float(getattr(metadata, 'volume_min', 0) or 0)
+                volume_step = float(getattr(metadata, 'volume_step', 0) or 0)
+                volume_max = float(getattr(metadata, 'volume_max', 0) or 0)
+                if tick_value > 0 and volume_min > 0 and volume_step > 0 and volume_max > 0:
+                    contracts.append(dict(
+                        symbol=symbol, broker_symbol=broker, tick_size=float(metadata.trade_tick_size or metadata.point),
+                        tick_value=tick_value, tick_value_currency=str(account.currency),
+                        currency_profit=str(getattr(metadata, 'currency_profit', '') or '') or None,
+                        currency_margin=str(getattr(metadata, 'currency_margin', '') or '') or None,
+                        digits=int(metadata.digits), point=float(metadata.point),
+                        volume_min=volume_min, volume_max=volume_max, volume_step=volume_step,
+                        stops_level_points=int(getattr(metadata, 'trade_stops_level', 0) or 0),
+                        spread_points=float(getattr(metadata, 'spread', 0) or 0),
+                        margin_per_lot=float(getattr(metadata, 'margin_initial', 0) or 0) or None,
+                        commission_per_lot=0,
+                    ))
             if not history:
                 continue
             # M1 goes stale faster than the 9-frame rotation, so every frame also carries a short M1 tail.
@@ -107,7 +127,10 @@ class WindowsBridge:
             item['broker_time'] = item['time']
             item['time'] -= offset
         return dict(account=dict(login=str(account.login),server=account.server,company=account.company,currency=account.currency,
-                                trade_mode={0:'DEMO',1:'PROP_FIRM',2:'LIVE'}.get(account.trade_mode,'LIVE'),balance=float(account.balance),equity=float(account.equity),margin=float(account.margin),free_margin=float(account.margin_free),leverage=int(account.leverage)),terminal_path=self.terminal,quotes=quotes,candles=candles,broker_utc_offset_seconds=offset)
+                                trade_mode={0:'DEMO',1:'PROP_FIRM',2:'LIVE'}.get(account.trade_mode,'LIVE'),balance=float(account.balance),equity=float(account.equity),margin=float(account.margin),free_margin=float(account.margin_free),leverage=int(account.leverage),
+                                margin_level=float(getattr(account, 'margin_level', 0) or 0), profit=float(getattr(account, 'profit', 0) or 0),
+                                trade_allowed=bool(getattr(account, 'trade_allowed', False)), trade_expert=bool(getattr(account, 'trade_expert', False))),
+                    terminal_path=self.terminal,quotes=quotes,candles=candles,contracts=contracts,broker_utc_offset_seconds=offset)
 
     def _request(self, endpoint, payload, timeout):
         session = self.session
@@ -194,12 +217,83 @@ class WindowsBridge:
             except Exception:  # noqa: BLE001 - the heartbeat loop reports bridge errors
                 continue
 
+    def _send_order(self, order):
+        """Submit the already sized volume. An uncertain result is not sent again."""
+        sdk = self.sdk
+        done = {10008, 10009, 10010}
+        uncertain = {10012, 10032}
+        symbol = order.get('broker_symbol') or order.get('symbol')
+        info = sdk.symbol_info(symbol)
+        if info is None or not sdk.symbol_select(symbol, True):
+            return {'request_id': order['id'], 'ok': False, 'uncertain': False, 'error': f'Symbol {symbol} is not on the terminal'}
+        action = (order.get('action') or 'PLACE').upper()
+        if action == 'CLOSE':
+            rows = sdk.positions_get(ticket=int(order['ticket']))
+            if not rows:
+                return {'request_id': order['id'], 'ok': False, 'uncertain': False, 'error': 'Ticket is not open'}
+            pos = rows[0]
+            tick = sdk.symbol_info_tick(pos.symbol)
+            closing = int(pos.type) == int(sdk.POSITION_TYPE_BUY)
+            request = {'action': sdk.TRADE_ACTION_DEAL, 'symbol': pos.symbol, 'volume': float(pos.volume),
+                       'type': sdk.ORDER_TYPE_SELL if closing else sdk.ORDER_TYPE_BUY, 'position': int(pos.ticket),
+                       'price': float(tick.bid if closing else tick.ask), 'deviation': 20, 'magic': 260151,
+                       'comment': 'cacsms-close', 'type_time': sdk.ORDER_TIME_GTC, 'type_filling': sdk.ORDER_FILLING_RETURN}
+        elif action == 'MODIFY':
+            request = {'action': sdk.TRADE_ACTION_SLTP, 'symbol': symbol, 'position': int(order['ticket']),
+                       'sl': float(order['stop_price'] or 0), 'tp': float(order['target_price'] or 0)}
+        else:
+            tick = sdk.symbol_info_tick(symbol)
+            buy = (order.get('direction') or '').upper() == 'BULLISH'
+            request = {'action': sdk.TRADE_ACTION_DEAL, 'symbol': symbol, 'volume': float(order['volume']),
+                       'type': sdk.ORDER_TYPE_BUY if buy else sdk.ORDER_TYPE_SELL,
+                       'price': float(tick.ask if buy else tick.bid), 'sl': float(order['stop_price'] or 0),
+                       'tp': float(order['target_price'] or 0), 'deviation': 20, 'magic': 260151, 'comment': 'cacsms',
+                       'type_time': sdk.ORDER_TIME_GTC, 'type_filling': sdk.ORDER_FILLING_FOK}
+        result = sdk.order_send(request)
+        retcode = None if result is None else int(result.retcode)
+        if result is None or retcode in uncertain:
+            return {'request_id': order['id'], 'ok': False, 'uncertain': True, 'retcode': retcode, 'error': 'Broker result is uncertain'}
+        if retcode == 10031 and request.get('type_filling') != sdk.ORDER_FILLING_RETURN:
+            request['type_filling'] = sdk.ORDER_FILLING_RETURN
+            result = sdk.order_send(request)
+            retcode = None if result is None else int(result.retcode)
+            if result is None or retcode in uncertain:
+                return {'request_id': order['id'], 'ok': False, 'uncertain': True, 'retcode': retcode, 'error': 'Broker result is uncertain'}
+        if result is None or retcode not in done:
+            comment = '' if result is None else str(getattr(result, 'comment', '') or '')
+            return {'request_id': order['id'], 'ok': False, 'uncertain': False, 'retcode': retcode, 'error': comment or f'Broker retcode {retcode}'}
+        return {'request_id': order['id'], 'ok': True, 'uncertain': False, 'retcode': retcode,
+                'ticket': str(getattr(result, 'order', '') or getattr(result, 'deal', '') or ''),
+                'deal': str(getattr(result, 'deal', '') or ''), 'volume': float(order.get('volume') or 0)}
+
+    def drain_orders(self):
+        """Pull at most one authorized order. Sampling never calls this."""
+        if not self.session:
+            return None
+        try:
+            with self._request('orders/pull', {'open_tickets': []}, 20) as response:
+                payload = json.load(response)
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError):
+            return None
+        order = payload.get('order')
+        if not order:
+            return None
+        with self.lock:
+            result = self._send_order(order)
+        try:
+            with self._request('orders/result', result, 20) as response:
+                json.load(response)
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError):
+            self.error = 'Order result was not acknowledged. It will not be retried until reconciliation.'
+        return result
+
     def run(self):
         while not self.stop.wait(HEARTBEAT_SECONDS):
             try:
                 with self.lock:
                     payload = self.sample()
                 self.upload(payload)
+                self.drain_orders()
                 self.error = None
             except Exception as exc:
                 self.error = str(exc)

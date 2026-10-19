@@ -2,6 +2,7 @@ import React from 'react';
 import { Plus, WalletCards } from 'lucide-react';
 import { Card, Empty, PageHeader, Status } from '../components/Ui';
 import { get, post } from '../lib/api';
+import { accountMoney, executionLabel } from '../lib/money';
 import type { TradingAccount } from '../types';
 
 export function Accounts({
@@ -23,6 +24,19 @@ export function Accounts({
   }, [tenantId]);
 
   const visible = environment === 'ALL' ? rows : rows.filter((a) => a.environment === environment);
+
+  async function setLive(account: TradingAccount, enabled: boolean) {
+    if (enabled && !window.confirm(`Enable live order submission on ${account.account_name}? Orders stay sized from the broker account.`)) return;
+    await post(`/tenants/${tenantId}/accounts/${account.id}/live-trading`, { enabled });
+    setRows(await get<TradingAccount[]>(`/tenants/${tenantId}/accounts`));
+  }
+
+  async function setStop(account: TradingAccount) {
+    const enabled = !account.emergency_stop;
+    if (enabled && !window.confirm(`Stop new orders on ${account.account_name}?`)) return;
+    await post(`/tenants/${tenantId}/accounts/${account.id}/emergency-stop`, { enabled });
+    setRows(await get<TradingAccount[]>(`/tenants/${tenantId}/accounts`));
+  }
 
   async function addAccount() {
     const account_name = window.prompt('Account name');
@@ -96,8 +110,10 @@ export function Accounts({
                   <th>Name</th>
                   <th>Environment</th>
                   <th>Currency</th>
+                  <th>Equity</th>
                   <th>Connection</th>
-                  <th>Trading</th>
+                  <th>Execution</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
@@ -108,10 +124,19 @@ export function Accounts({
                     </td>
                     <td>{a.environment}</td>
                     <td>{a.account_currency}</td>
+                    <td>{accountMoney(a.equity, a.account_currency)}</td>
                     <td>
                       <Status value={a.connection_status} />
                     </td>
-                    <td>{a.trading_enabled ? 'Enabled' : 'Disabled'}</td>
+                    <td>{executionLabel(a.emergency_stop ? 'EMERGENCY_STOP' : a.live_trading_enabled ? 'LIVE_EXECUTION' : 'SIMULATION')}</td>
+                    <td>
+                      {a.environment !== 'DEMO' ? (
+                        <button type="button" onClick={() => setLive(a, !a.live_trading_enabled)}>
+                          {a.live_trading_enabled ? 'Disable live' : 'Enable live'}
+                        </button>
+                      ) : null}
+                      <button type="button" onClick={() => setStop(a)}>{a.emergency_stop ? 'Clear stop' : 'Emergency stop'}</button>
+                    </td>
                   </tr>
                 ))}
               </tbody>

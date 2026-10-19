@@ -48,10 +48,10 @@ export function AccountsPanel({ tenantId, tenant, onChanged }: { tenantId: strin
             </div>
             <div className="kv-row">
               <span>Supported account currencies</span>
-              <b>USD · NGN</b>
+              <b>USD · EUR · NGN</b>
             </div>
           </div>
-          <p className="muted">Account-level currency is set at registration. FX conversion for reporting will use backend services when enabled.</p>
+          <p className="muted">Each account keeps the currency the broker reports. NGN balances, equity, margin and profit use ₦. Nothing is tied to a fixed deposit.</p>
         </Card>
       </TabPanel>
     </>

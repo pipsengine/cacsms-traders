@@ -342,6 +342,10 @@ export type PortfolioAccount = {
   connection_status: string | null;
   stale: boolean;
   source: string;
+  link_state?: 'CONNECTED' | 'DISCONNECTED' | 'DEGRADED';
+  execution_state?: 'SIMULATION' | 'LIVE_EXECUTION' | 'EMERGENCY_STOP';
+  margin_level?: number | null;
+  available_risk?: number | null;
 };
 
 export type PortfolioView = {

@@ -30,6 +30,44 @@ class Account(BaseModel):
     margin: float
     free_margin: float
     leverage: int = Field(ge=0,le=100000)
+    margin_level: float | None = None
+    profit: float = 0
+    trade_allowed: bool = False
+    trade_expert: bool = False
+
+
+class Contract(BaseModel):
+    model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
+    symbol: str
+    broker_symbol: str = Field(max_length=64)
+    tick_size: float = Field(gt=0)
+    tick_value: float = Field(gt=0)
+    tick_value_currency: str = Field(min_length=3, max_length=8)
+    currency_profit: str | None = None
+    currency_margin: str | None = None
+    digits: int | None = Field(default=None, ge=0, le=12)
+    point: float = Field(gt=0)
+    volume_min: float = Field(gt=0)
+    volume_max: float = Field(gt=0)
+    volume_step: float = Field(gt=0)
+    stops_level_points: int = Field(default=0, ge=0)
+    spread_points: float = Field(default=0, ge=0)
+    margin_per_lot: float | None = Field(default=None, ge=0)
+    commission_per_lot: float = Field(default=0, ge=0)
+
+
+class Deal(BaseModel):
+    model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
+    ticket: str = Field(min_length=1, max_length=32)
+    order: str = Field(default='', max_length=32)
+    symbol: str
+    profit: float
+    commission: float = 0
+    swap: float = 0
+    volume: float = Field(ge=0)
+    price: float = Field(gt=0)
+    time: int = Field(gt=0)
+    entry: str = Field(default='', max_length=16)
 
 
 class Quote(BaseModel):
@@ -76,6 +114,8 @@ class Heartbeat(BaseModel):
     terminal_path: str = Field(min_length=1,max_length=512)
     quotes: list[Quote] = Field(max_length=29)
     candles: list[Bar] = Field(default_factory=list,max_length=12000)
+    contracts: list[Contract] = Field(default_factory=list, max_length=29)
+    deals: list[Deal] = Field(default_factory=list, max_length=200)
     broker_utc_offset_seconds: int = Field(default=0,ge=-50400,le=50400)
     @model_validator(mode='after')
     def valid_times(self):
@@ -176,8 +216,21 @@ def heartbeat(tenant_id: str, body: Heartbeat, x_mt5_bridge_token: str = Header(
         state = dict(account=body.account.model_dump(),account_id=account_id,terminal_path=body.terminal_path,
                      received_at=stamp,connected=True,generation=cred['generation'],broker_utc_offset_seconds=body.broker_utc_offset_seconds,
                      quotes=_merge_quotes(old.get('quotes') if old.get('account_id') == account_id else None,[q.model_dump() for q in body.quotes]))
+        aid = bridge.sync_registry(conn,tenant_id,state)
+        state['trading_account_id'] = aid
         bridge.save(conn,tenant_id,'state',state)
-        bridge.sync_registry(conn,tenant_id,state)
+        from ..execution.service import save_spec
+        from ..execution.money import text, D
+        import uuid as _uuid
+        for contract in body.contracts:
+            save_spec(conn, tenant_id, aid, contract.model_dump())
+        for deal in body.deals:
+            conn.execute(
+                """INSERT INTO broker_deals(id,tenant_id,trading_account_id,deal_ticket,order_ticket,symbol,profit,commission,swap,volume,price,dealt_at,entry,currency)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(trading_account_id,deal_ticket) DO UPDATE SET profit=excluded.profit,commission=excluded.commission,swap=excluded.swap""",
+                (str(_uuid.uuid4()), tenant_id, aid, deal.ticket, deal.order or None, deal.symbol, text(D(deal.profit)), text(D(deal.commission)),
+                 text(D(deal.swap)), text(D(deal.volume)), text(D(deal.price)), datetime.fromtimestamp(deal.time, timezone.utc).isoformat(), deal.entry or None, body.account.currency),
+            )
         # Bounded batches avoid one Neon round-trip per bar.
         bars = {}
         h1 = {}
@@ -207,6 +260,67 @@ def heartbeat(tenant_id: str, body: Heartbeat, x_mt5_bridge_token: str = Header(
         if old.get('generation') != state['generation'] or not old.get('connected'):
             write_audit(conn,tenant_id,None,'MT5_BRIDGE_CONNECTED','WindowsGateway',tenant_id,after={'account_id':account_id,'execution_available':False})
         return dict(ok=True,received_at=stamp,account_id=account_id,execution_available=False)
+
+
+class OrderPull(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    open_tickets: list[str] = Field(default_factory=list, max_length=200)
+
+
+class OrderResult(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    request_id: str
+    ok: bool = False
+    uncertain: bool = False
+    retcode: int | None = None
+    ticket: str | None = None
+    deal: str | None = None
+    error: str | None = None
+    volume: float | None = None
+
+
+def _bridge_account(conn, tenant_id):
+    state = bridge.read(conn, tenant_id, 'state')
+    account_id = state.get('trading_account_id')
+    if not account_id:
+        return None, None
+    account = conn.execute('SELECT * FROM trading_accounts WHERE id=? AND tenant_id=?', (account_id, tenant_id)).fetchone()
+    return (None if account is None else dict(account)), state
+
+
+@router.post('/orders/pull')
+def pull_order(tenant_id: str, body: OrderPull, x_mt5_bridge_token: str = Header(default='')):
+    with db() as conn:
+        _authorize(conn, tenant_id, x_mt5_bridge_token)
+        account, _state = _bridge_account(conn, tenant_id)
+        if account is None:
+            return {'order': None}
+        from ..execution.pipeline import reconcile_account
+        from ..execution.service import pull_gateway_order
+        reconcile_account(conn, tenant_id, account['id'], set(body.open_tickets))
+        profile = conn.execute('SELECT * FROM account_risk_profiles WHERE trading_account_id=?', (account['id'],)).fetchone()
+        enabled = bool(profile['live_trading_enabled']) if profile and 'live_trading_enabled' in profile.keys() else False
+        if account['environment'] in ('LIVE', 'PROP_FIRM') and not enabled:
+            return {'order': None}
+        order = pull_gateway_order(conn, tenant_id, account['id'])
+        if order is None:
+            return {'order': None}
+        return {'order': {
+            'id': order['id'], 'action': order['action'], 'symbol': order['symbol'], 'broker_symbol': order.get('broker_symbol'),
+            'direction': order.get('direction'), 'volume': order.get('volume'), 'stop_price': order.get('stop_price'),
+            'target_price': order.get('target_price'), 'entry_price': order.get('entry_price'), 'ticket': order.get('ticket'),
+        }}
+
+
+@router.post('/orders/result')
+def order_result(tenant_id: str, body: OrderResult, x_mt5_bridge_token: str = Header(default='')):
+    with db() as conn:
+        _authorize(conn, tenant_id, x_mt5_bridge_token)
+        account, _state = _bridge_account(conn, tenant_id)
+        if account is None:
+            raise HTTPException(409, 'Send a heartbeat before reporting an order.')
+        from ..execution.service import apply_gateway_result
+        return apply_gateway_result(conn, tenant_id, account['id'], body.request_id, body.model_dump())
 
 
 @router.post('/disconnect')

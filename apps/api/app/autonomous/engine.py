@@ -108,12 +108,14 @@ def _canon_symbol(symbol: str) -> str:
     return "".join(ch for ch in text if ch.isalnum())
 
 
-def _broker_order(opportunity: dict, mode: str, conn, repo) -> dict | None:
+def _broker_order(opportunity: dict, mode: str, conn, repo, open_positions: int = 0) -> dict | None:
     """One market order when the system mode and the terminal environment match. None keeps the plan in shadow."""
-    from ..domain.mt5_execution import execution_allowed, open_market_position, terminal_trade_mode
-    from .portfolio import _account_row, _profile
+    from ..domain.mt5_execution import execution_allowed, open_market_position, terminal_order_context, terminal_trade_mode
+    from ..execution.service import execute_candidate
+    from .portfolio import _account_row, _profile, _stale
 
-    if not execution_allowed(mode, terminal_trade_mode()):
+    terminal = terminal_trade_mode()
+    if not execution_allowed(mode, terminal):
         return None
     from ..cacsms_engine.project import outlook_blocks, qualified_outlook_directions
 
@@ -121,16 +123,35 @@ def _broker_order(opportunity: dict, mode: str, conn, repo) -> dict | None:
     if outlook_blocks(directions, str(opportunity["symbol"]), str(opportunity["direction"])):
         return {"ok": False, "error": "AI Market Outlook direction disagrees"}
     account = _account_row(conn, repo.tenant, repo.account)
-    profile = _profile(conn, account["id"] if account else None)
-    risk_pct = 1.0
-    if profile and profile.get("max_trade_risk_pct") is not None:
-        risk_pct = float(profile["max_trade_risk_pct"])
-    return open_market_position(
-        symbol=str(opportunity["symbol"]),
-        direction=str(opportunity["direction"]),
-        stop=float(opportunity["invalidation"]),
-        target=float(opportunity["target_1"]),
-        risk_pct=risk_pct,
+    if not account:
+        return {"ok": False, "error": "ACCOUNT_UNKNOWN"}
+    profile = _profile(conn, account["id"])
+    context = terminal_order_context(str(opportunity["symbol"]), str(opportunity["direction"]))
+    send = None
+    spec = None
+    price = None
+    count = open_positions
+    if context.get("ok"):
+        spec = context["spec"]
+        price = context["price"]
+        count = max(count, int(context.get("open_positions") or 0))
+        broker_symbol = context["broker_symbol"]
+
+        def send(volume, _broker=broker_symbol, _symbol=str(opportunity["symbol"]), _direction=str(opportunity["direction"]),
+                 _stop=float(opportunity["invalidation"]), _target=float(opportunity["target_1"])):
+            return open_market_position(
+                symbol=_symbol, direction=_direction, stop=_stop, target=_target, risk_pct=1,
+                volume=float(volume), broker_symbol=_broker,
+            )
+    return execute_candidate(
+        conn, tenant_id=repo.tenant, account_id=account["id"], mode="MODE_1",
+        idempotency_key=f"mode1:{opportunity['id']}", symbol=str(opportunity["symbol"]),
+        direction=str(opportunity["direction"]), stop=float(opportunity["invalidation"]),
+        target=float(opportunity["target_1"]), price=price, spec=spec, system_mode=mode,
+        terminal_mode=terminal, open_position_count=count, account=account, profile=profile,
+        connected=(account.get("connection_status") == "CONNECTED") or bool(context.get("ok")),
+        stale=False if context.get("ok") else _stale(account.get("last_synced_at"), datetime.now(timezone.utc)),
+        send=send,
     )
 
 
@@ -142,6 +163,8 @@ def _release_authorised(repo, active, mode, now, ae, conn, apply, gate, counts, 
     from ..domain.mt5_terminal_positions import read_terminal_positions
     from .portfolio import _account_row, _profile
 
+    if (mode or "").upper() not in ("DEMO_AUTONOMOUS", "LIVE_AUTONOMOUS"):
+        return
     if not execution_allowed(mode, terminal_trade_mode()):
         return
     positions, _basis = read_terminal_positions()
@@ -168,7 +191,7 @@ def _release_authorised(repo, active, mode, now, ae, conn, apply, gate, counts, 
         symbol = _canon_symbol(row.get("symbol"))
         strategy_open[symbol] = strategy_open.get(symbol, 0) + 1
     blocked = [row for row in active if row.get("status") == "ACTIVE" and row.get("state") == "EXECUTION_BLOCKED_ANALYSIS_ONLY"]
-    blocked.sort(key=lambda row: (str(row.get("updated_at") or ""), float(row.get("confidence") or 0)), reverse=True)
+    blocked.sort(key=lambda row: (str(row.get("symbol") or "").upper().startswith("XAU"), str(row.get("updated_at") or ""), float(row.get("confidence") or 0)), reverse=True)
     for opportunity in blocked:
         open_risk = len(positions) * risk_pct
         if max_exposure is not None and open_risk + risk_pct > max_exposure:
@@ -208,7 +231,7 @@ def _release_authorised(repo, active, mode, now, ae, conn, apply, gate, counts, 
         state, _reason, _metrics = opps.risk_decision(opportunity, live, ae, position_cap=None)
         if state != "RISK_APPROVED":
             continue
-        sent = _broker_order(opportunity, mode, conn, repo)
+        sent = _broker_order(opportunity, mode, conn, repo, len(positions))
         if not sent or not sent.get("ok"):
             if sent and sent.get("error"):
                 opportunity["evidence"] = {**(opportunity.get("evidence") or {}), "broker_error": sent["error"]}

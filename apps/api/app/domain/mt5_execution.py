@@ -5,13 +5,14 @@ to a demo terminal, and a live system mode only to a live terminal.
 """
 from __future__ import annotations
 
-import math
 from typing import Any
 
-from ..market.mt5_gateway import symbol_candidates
+from ..execution.pipeline import UNCERTAIN_RETCODES
+from ..execution.symbols import resolve_broker_symbol
 from ..market import mt5_session
 
 _DONE = {10008, 10009, 10010}  # placed, done, partial
+_INVALID_FILL = 10031
 _MAGIC = 260151
 
 
@@ -25,27 +26,22 @@ def execution_allowed(system_mode: str | None, terminal_trade_mode: str | None) 
     return False
 
 
-def lot_size(info: Any, *, equity: float, risk_pct: float, price: float, stop: float) -> float | None:
+def lot_size(info: Any, *, equity: float, risk_pct: float, price: float, stop: float,
+             commission_per_lot: float = 0, spread_cost_per_lot: float = 0) -> float | None:
     """Largest volume whose stop loss stays inside the per-trade risk budget. None when the minimum lot is too large."""
-    distance = abs(price - stop)
-    tick_size = float(getattr(info, "trade_tick_size", 0) or getattr(info, "point", 0) or 0)
-    tick_value = float(getattr(info, "trade_tick_value", 0) or 0)
-    step = float(getattr(info, "volume_step", 0) or 0)
-    minimum = float(getattr(info, "volume_min", 0) or 0)
-    maximum = float(getattr(info, "volume_max", 0) or 0)
-    if distance <= 0 or tick_size <= 0 or tick_value <= 0 or step <= 0 or equity <= 0 or risk_pct <= 0:
-        return None
-    risk_money = equity * risk_pct / 100.0
-    raw = risk_money / ((distance / tick_size) * tick_value)
-    steps = math.floor((raw + step * 1e-9) / step)
-    volume = round(steps * step, 8)
-    if volume < minimum or (maximum and volume > maximum):
-        if minimum and volume < minimum:
-            return None
-        volume = min(volume, maximum) if maximum else volume
-    if volume < minimum or volume <= 0:
-        return None
-    return volume
+    from ..execution.sizing import size_position
+
+    sized = size_position(
+        equity=equity, risk_pct=risk_pct, price=price, stop=stop,
+        tick_size=getattr(info, "trade_tick_size", 0) or getattr(info, "point", 0) or 0,
+        tick_value=getattr(info, "trade_tick_value", 0) or 0,
+        volume_min=getattr(info, "volume_min", 0) or 0,
+        volume_max=getattr(info, "volume_max", 0) or 0,
+        volume_step=getattr(info, "volume_step", 0) or 0,
+        commission_per_lot=commission_per_lot,
+        spread_cost_per_lot=spread_cost_per_lot,
+    )
+    return None if not sized.ok or sized.volume is None else float(sized.volume)
 
 
 def _trade_mode_label(mt5, trade_mode: int) -> str:
@@ -85,6 +81,66 @@ def _round_price(info, price: float) -> float:
     return round(price, digits)
 
 
+def _broker_name(mt5, symbol: str, mapped: str | None = None) -> str | None:
+    names = [item.name for item in (mt5.symbols_get() or ())]
+    return resolve_broker_symbol(symbol, names, mapped)
+
+
+def terminal_order_context(symbol: str, direction: str) -> dict[str, Any]:
+    """Broker price and contract figures for one symbol. Tick value stays in the account currency."""
+    if not mt5_session.is_initialized() and not mt5_session.initialize():
+        return {"ok": False, "error": "MT5 terminal is not attached"}
+    try:
+        import MetaTrader5 as mt5  # type: ignore
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    account = mt5.account_info()
+    broker = _broker_name(mt5, symbol)
+    if account is None or broker is None or not mt5.symbol_select(broker, True):
+        return {"ok": False, "error": f"Symbol {symbol} is not uniquely available on this account"}
+    info = mt5.symbol_info(broker)
+    tick = mt5.symbol_info_tick(broker)
+    if info is None or tick is None or not tick.bid or not tick.ask:
+        return {"ok": False, "error": f"No quote for {symbol}"}
+    side = direction.upper()
+    price = float(tick.ask if side == "BULLISH" else tick.bid if side == "BEARISH" else 0)
+    if not price:
+        return {"ok": False, "error": "Direction is not bullish or bearish"}
+    point = float(info.point or 0)
+    tick_size = float(getattr(info, "trade_tick_size", 0) or point or 0)
+    spread_points = float(getattr(info, "spread", 0) or 0)
+    return {
+        "ok": True,
+        "broker_symbol": broker,
+        "price": price,
+        "currency": str(account.currency or ""),
+        "equity": float(account.equity or 0),
+        "free_margin": float(getattr(account, "margin_free", 0) or 0),
+        "balance": float(account.balance or 0),
+        "floating_pnl": float(getattr(account, "profit", 0) or 0),
+        "open_positions": int(mt5.positions_total() or 0),
+        "spec": {
+            "symbol": symbol,
+            "broker_symbol": broker,
+            "currency_profit": str(getattr(info, "currency_profit", "") or ""),
+            "currency_margin": str(getattr(info, "currency_margin", "") or ""),
+            "digits": int(getattr(info, "digits", 5) or 5),
+            "point": point,
+            "tick_size": tick_size,
+            "tick_value": float(getattr(info, "trade_tick_value", 0) or 0),
+            "tick_value_currency": str(account.currency or ""),
+            "profit_tick_value": float(getattr(info, "trade_tick_value_profit", 0) or 0),
+            "volume_min": float(getattr(info, "volume_min", 0) or 0),
+            "volume_max": float(getattr(info, "volume_max", 0) or 0),
+            "volume_step": float(getattr(info, "volume_step", 0) or 0),
+            "stops_level_points": int(getattr(info, "trade_stops_level", 0) or 0),
+            "spread_points": spread_points,
+            "margin_per_lot": float(getattr(info, "margin_initial", 0) or 0) or None,
+            "commission_per_lot": 0,
+        },
+    }
+
+
 def side_price(symbol: str, direction: str) -> float | None:
     """Ask for a buy, bid for a sell. None when the terminal has no quote."""
     if not mt5_session.is_initialized() and not mt5_session.initialize():
@@ -93,8 +149,7 @@ def side_price(symbol: str, direction: str) -> float | None:
         import MetaTrader5 as mt5  # type: ignore
     except Exception:
         return None
-    names = {item.name for item in (mt5.symbols_get() or ())}
-    broker = next((name for name in symbol_candidates(symbol) if name in names), None)
+    broker = _broker_name(mt5, symbol)
     if broker is None:
         return None
     tick = mt5.symbol_info_tick(broker)
@@ -106,7 +161,12 @@ def side_price(symbol: str, direction: str) -> float | None:
     return price or None
 
 
-def open_market_position(*, symbol: str, direction: str, stop: float, target: float, risk_pct: float) -> dict[str, Any]:
+def _uncertain(result, retcode) -> bool:
+    return result is None or retcode in UNCERTAIN_RETCODES
+
+
+def open_market_position(*, symbol: str, direction: str, stop: float, target: float, risk_pct: float,
+                         volume: float | None = None, broker_symbol: str | None = None) -> dict[str, Any]:
     """Market deal with the plan's stop and target. Returns ok False when the broker rejects it or the size is unsafe."""
     if not mt5_session.is_initialized() and not mt5_session.initialize():
         return {"ok": False, "error": "MT5 terminal is not attached"}
@@ -117,10 +177,9 @@ def open_market_position(*, symbol: str, direction: str, stop: float, target: fl
     account = mt5.account_info()
     if account is None:
         return {"ok": False, "error": "MT5 account_info returned no data"}
-    names = {item.name for item in (mt5.symbols_get() or ())}
-    broker = next((name for name in symbol_candidates(symbol) if name in names), None)
+    broker = _broker_name(mt5, symbol, broker_symbol)
     if broker is None or not mt5.symbol_select(broker, True):
-        return {"ok": False, "error": f"Symbol {symbol} is not on the terminal"}
+        return {"ok": False, "error": f"Symbol {symbol} is not uniquely available on this account"}
     info = mt5.symbol_info(broker)
     tick = mt5.symbol_info_tick(broker)
     if info is None or tick is None or not tick.bid or not tick.ask:
@@ -143,7 +202,14 @@ def open_market_position(*, symbol: str, direction: str, stop: float, target: fl
     if side == "BEARISH" and not (target_price < price - min_distance and stop_price > price + min_distance):
         return {"ok": False, "error": "Stop or target is on the wrong side of the bid"}
     equity = float(account.equity or 0)
-    volume = lot_size(info, equity=equity, risk_pct=risk_pct, price=price, stop=stop_price)
+    if volume is None:
+        point = float(info.point or 0)
+        tick_size = float(getattr(info, "trade_tick_size", 0) or point or 0)
+        spread_cost = 0.0
+        tick_value = float(getattr(info, "trade_tick_value", 0) or 0)
+        if tick_size and tick_value:
+            spread_cost = (float(getattr(info, "spread", 0) or 0) * point / tick_size) * tick_value
+        volume = lot_size(info, equity=equity, risk_pct=risk_pct, price=price, stop=stop_price, spread_cost_per_lot=spread_cost)
     if volume is None:
         return {"ok": False, "error": "Minimum lot would risk more than the per-trade budget"}
     from ..prop_firm.gate import block_prop_order
@@ -176,14 +242,17 @@ def open_market_position(*, symbol: str, direction: str, stop: float, target: fl
     }
     result = mt5.order_send(request)
     retcode = None if result is None else int(result.retcode)
-    if result is None or retcode not in _DONE:
-        if request["type_filling"] != mt5.ORDER_FILLING_RETURN:
-            request["type_filling"] = mt5.ORDER_FILLING_RETURN
-            result = mt5.order_send(request)
-            retcode = None if result is None else int(result.retcode)
+    if _uncertain(result, retcode):
+        return {"ok": False, "uncertain": True, "error": "Broker result is uncertain", "retcode": retcode, "volume": volume}
+    if retcode == _INVALID_FILL and request["type_filling"] != mt5.ORDER_FILLING_RETURN:
+        request["type_filling"] = mt5.ORDER_FILLING_RETURN
+        result = mt5.order_send(request)
+        retcode = None if result is None else int(result.retcode)
+        if _uncertain(result, retcode):
+            return {"ok": False, "uncertain": True, "error": "Broker result is uncertain", "retcode": retcode, "volume": volume}
     if result is None or retcode not in _DONE:
         comment = "" if result is None else str(result.comment or "")
-        return {"ok": False, "error": comment or f"Broker retcode {retcode}", "retcode": retcode, "volume": volume}
+        return {"ok": False, "uncertain": False, "error": comment or f"Broker retcode {retcode}", "retcode": retcode, "volume": volume}
     return {
         "ok": True,
         "ticket": str(result.order or result.deal or ""),

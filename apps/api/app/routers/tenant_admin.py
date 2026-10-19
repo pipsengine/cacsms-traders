@@ -40,7 +40,9 @@ def roles(tenant_id:str,user=Depends(current_user)):
 def accounts(tenant_id:str,user=Depends(current_user)):
  with db() as c:
   require_permission(c,user,tenant_id,'accounts.read')
-  return [dict(r) for r in c.execute('SELECT * FROM trading_accounts WHERE tenant_id=? ORDER BY created_at DESC',(tenant_id,))]
+  return [dict(r) for r in c.execute('''SELECT a.*, p.live_trading_enabled, p.emergency_stop
+   FROM trading_accounts a LEFT JOIN account_risk_profiles p ON p.trading_account_id=a.id
+   WHERE a.tenant_id=? ORDER BY a.created_at DESC''',(tenant_id,))]
 @router.post('/accounts')
 def add_account(tenant_id:str,x:AccountCreate,user=Depends(current_user)):
  if x.environment not in {'DEMO','LIVE','PROP_FIRM'}: raise HTTPException(400,'Invalid environment')

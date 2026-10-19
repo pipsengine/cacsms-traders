@@ -11,6 +11,7 @@ import { InstrumentIcon } from '../features/market-scanner/components/Instrument
 import { CurrencyFlag } from '../features/market-intelligence/components/CurrencyFlag';
 import { usePollingAsync } from '../features/market-intelligence/hooks/useMarketIntelligence';
 import { get } from '../lib/api';
+import { accountMoney } from '../lib/money';
 import { marketStatus, nextChangeLabel, type MarketStatus } from '../lib/marketClock';
 import { writeHashRoute, type Page } from '../lib/routes';
 import type { Health, Summary, Tenant } from '../types';
@@ -129,11 +130,7 @@ function when(iso: string | null | undefined) {
 }
 
 function cash(value: number | null | undefined, currency: string | null, signed = false) {
-  if (value == null || !Number.isFinite(value)) return '—';
-  const abs = Math.abs(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const sign = value < 0 ? '−' : signed && value > 0 ? '+' : '';
-  const prefix = !currency || currency === 'USD' ? '$' : `${currency} `;
-  return `${sign}${prefix}${abs}`;
+  return accountMoney(value, currency, signed);
 }
 
 function useNow() {

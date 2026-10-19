@@ -96,7 +96,8 @@ def _recent(stamp: object, now: datetime) -> bool:
 def advance_authorised_outlooks(conn, tenant: str, account: str, mode: str, now: datetime | None = None) -> dict:
     """Submit at most the remaining position slots for outlooks whose confirmation sequence is complete."""
     from ..autonomous.portfolio import _account_row, _profile, open_position_cap
-    from ..domain.mt5_execution import execution_allowed, open_market_position, terminal_trade_mode
+    from ..domain.mt5_execution import execution_allowed, open_market_position, terminal_order_context, terminal_trade_mode
+    from ..execution.service import execute_candidate
     from ..domain.mt5_terminal_account import read_terminal_account
     from ..domain.mt5_terminal_positions import read_terminal_positions
 
@@ -164,7 +165,7 @@ def advance_authorised_outlooks(conn, tenant: str, account: str, mode: str, now:
         payload = payload if isinstance(payload, dict) else {}
         payload.setdefault("symbol", symbol)
         pending.append((float(_score(payload) or 0), outlook_id, run_id, symbol, horizon, close_at, payload))
-    pending.sort(key=lambda item: item[0], reverse=True)
+    pending.sort(key=lambda item: (str(item[3] or "").upper().startswith("XAU"), item[0]), reverse=True)
     for _score_value, outlook_id, run_id, symbol, horizon, close_at, payload in pending:
         name = ui_horizon(str(horizon))
         decision = decide_outlook_order(
@@ -194,10 +195,30 @@ def advance_authorised_outlooks(conn, tenant: str, account: str, mode: str, now:
             held += 1
             continue
         order = decision["order"]
-        result = open_market_position(
-            symbol=order["symbol"], direction=order["direction"], stop=float(order["stop"]),
-            target=float(order["target"]), risk_pct=risk_pct,
-        )
+        context = terminal_order_context(order["symbol"], order["direction"])
+        send = None
+        spec = price = None
+        count = len(positions)
+        if context.get("ok"):
+            spec = context["spec"]
+            price = context["price"]
+            count = max(count, int(context.get("open_positions") or 0))
+            broker_symbol = context["broker_symbol"]
+
+            def send(volume, _order=order, _broker=broker_symbol):
+                return open_market_position(
+                    symbol=_order["symbol"], direction=_order["direction"], stop=float(_order["stop"]),
+                    target=float(_order["target"]), risk_pct=risk_pct, volume=float(volume), broker_symbol=_broker,
+                )
+        result = {"ok": False, "error": "ACCOUNT_UNKNOWN"}
+        if account_row:
+            result = execute_candidate(
+                conn, tenant_id=tenant, account_id=account_row["id"], mode="MODE_2",
+                idempotency_key=f"mode2:{outlook_id}:{horizon}", symbol=order["symbol"], direction=order["direction"],
+                stop=float(order["stop"]), target=float(order["target"]), price=price, spec=spec, system_mode=mode,
+                terminal_mode=terminal_trade_mode(), open_position_count=count, account=account_row, profile=profile,
+                connected=(account_row.get("connection_status") == "CONNECTED") or bool(context.get("ok")), send=send,
+            )
         stamp = now.isoformat()
         if result.get("ok") and result.get("ticket"):
             store.save_handoff(

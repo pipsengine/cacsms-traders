@@ -28,6 +28,7 @@ export type TradingAccount={
  environment:'DEMO'|'LIVE'|'PROP_FIRM';account_currency:string;balance:number;equity:number;
  free_margin?:number;margin?:number;last_synced_at?:string|null;
  connection_status:string;trading_enabled:number;autonomous_trading_enabled:number;
+ live_trading_enabled?: number; emergency_stop?: number;
 };
 export type AuditEvent={
  id:string;action:string;entity_type?:string;entity_id?:string;created_at:string;user_id?:string;

@@ -56,7 +56,14 @@ def sync_registry(conn, tenant_id, state):
         conn.execute('INSERT INTO trading_accounts(id,tenant_id,account_name,account_number,broker,server,environment,account_currency,balance,equity,free_margin,leverage,status,connection_type,connection_status,trading_enabled,autonomous_trading_enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                      (aid,tenant_id,f"MT5 {account['login']}",account['login'],account['company'],account['server'],account['trade_mode'],account['currency'],account['balance'],account['equity'],account['free_margin'],str(account['leverage']),'ACTIVE','LOCAL_MT5','CONNECTED',0,0,stamp,stamp))
         conn.execute('INSERT INTO account_risk_profiles(id,tenant_id,trading_account_id,created_at,updated_at) VALUES(?,?,?,?,?)', (str(uuid.uuid4()),tenant_id,aid,stamp,stamp))
-    conn.execute("UPDATE trading_accounts SET balance=?,equity=?,free_margin=?,margin=?,last_synced_at=?,updated_at=?,connection_status='CONNECTED' WHERE id=?", (account['balance'],account['equity'],account['free_margin'],account['margin'],stamp,stamp,aid))
+    conn.execute(
+        """UPDATE trading_accounts SET account_currency=?,balance=?,equity=?,free_margin=?,margin=?,margin_level=?,floating_pnl=?,
+           trade_allowed=?,trade_expert=?,leverage=?,last_synced_at=?,updated_at=?,connection_status='CONNECTED' WHERE id=?""",
+        (account['currency'], account['balance'], account['equity'], account['free_margin'], account['margin'], account.get('margin_level'),
+         account.get('profit'), int(bool(account.get('trade_allowed'))), int(bool(account.get('trade_expert'))), str(account['leverage']), stamp, stamp, aid),
+    )
+    from ..execution.baselines import touch_baseline
+    touch_baseline(conn, tenant_id, aid, account['currency'], account['equity'], source='mt5')
     existing = conn.execute('SELECT id FROM trading_connections WHERE tenant_id=? AND trading_account_id=?', (tenant_id,aid)).fetchone()
     if not existing:
         conn.execute('INSERT INTO trading_connections(id,tenant_id,trading_account_id,adapter_type,terminal_path,server_name,status,last_heartbeat_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)', (str(uuid.uuid4()),tenant_id,aid,'LOCAL_MT5',state['terminal_path'],account['server'],'CONNECTED',stamp,stamp,stamp))

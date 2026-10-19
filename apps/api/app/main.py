@@ -285,3 +285,6 @@ app.include_router(prop_firm.router)
 
 from .chart.router import router as chart_router
 app.include_router(chart_router)
+
+from .routers import live_trading
+app.include_router(live_trading.router, prefix="/api")

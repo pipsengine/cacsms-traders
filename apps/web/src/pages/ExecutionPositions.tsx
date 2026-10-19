@@ -3,6 +3,7 @@ import { Activity, CheckCircle2, Clock3, Crosshair, History, Inbox, Rocket, Shie
 import { usePollingAsync } from '../features/market-intelligence/hooks/useMarketIntelligence';
 import { autonomousApi } from '../features/autonomous/api';
 import { pretty } from '../features/autonomous/format';
+import { accountMoney, executionLabel, linkLabel } from '../lib/money';
 import type { ExecutionBook, ExecutionEvent, PortfolioView, ShadowPlan } from '../features/autonomous/types';
 
 const TABS = [
@@ -37,8 +38,7 @@ function px(symbol: string | null | undefined, value: number | null | undefined)
 }
 
 function money(value: number | null | undefined, currency = 'USD') {
-  if (value == null || !Number.isFinite(value)) return '—';
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency, maximumFractionDigits: 2 }).format(value);
+  return accountMoney(value, currency);
 }
 
 function modeHint(mode: string | null | undefined) {
@@ -90,7 +90,8 @@ export function ExecutionPositions() {
           <Chip k="Safety Supervisor" v={safety?.status === 'NORMAL' ? 'OPERATIONAL' : pretty(safety?.status)} s={safety?.status === 'NORMAL' ? 'All limits enforced' : 'Check supervisor'} ok={safety?.status === 'NORMAL'} />
           <Chip k="Operating Mode" v={(ribbon?.operating_mode || 'SHADOW').replaceAll('_', ' ')} s={modeHint(ribbon?.operating_mode)} shield />
           <Chip k="Active Broker" v={ribbon?.provider_label === 'MT5' ? 'MetaTrader 5' : (ribbon?.provider_label || '—')} s={account?.environment ? `${account.environment} account` : 'Market data'} />
-          <Chip k="Connection" v={ribbon?.provider_connection === 'CONNECTED' ? 'CONNECTED' : pretty(ribbon?.provider_connection)} s="Latency not measured" ok={ribbon?.provider_connection === 'CONNECTED'} />
+          <Chip k="Connection" v={linkLabel(account?.link_state || ribbon?.provider_connection)} s={account?.stale ? 'Account sync is stale' : 'Broker link'} ok={account?.link_state === 'CONNECTED' || ribbon?.provider_connection === 'CONNECTED'} />
+          <Chip k="Execution" v={executionLabel(account?.execution_state)} s={account?.execution_state === 'LIVE_EXECUTION' ? 'Owner enabled live orders' : 'Live orders stay off'} ok={account?.execution_state === 'LIVE_EXECUTION'} />
           <Chip k="Last Reconciliation" v={when(view?.last_cycle_at, true)} s="Engine cycle" clock />
         </div>
       </header>
@@ -222,7 +223,7 @@ function Positions({ view, plans, portfolio, query, onQuery }: { view: Execution
       <section className="exm-kpis">
         <Kpi icon={<Activity size={16} />} tone="amber" label="Shadow Positions" value={String(view.shadow.open_plans)} hint="Simulated" />
         <Kpi icon={<Inbox size={16} />} tone="blue" label="Broker Positions" value={String(view.broker.open_positions)} hint="Live / Demo / Prop" />
-        <Kpi icon={<Crosshair size={16} />} tone="blue" label="Total Exposure" value="—" hint="Not sized in currency" />
+        <Kpi icon={<Crosshair size={16} />} tone="blue" label="Available risk" value={money(portfolio?.account?.available_risk, currency)} hint="Equity × per-trade risk" />
         <Kpi icon={<Zap size={16} />} tone="green" label="Floating P&L (Shadow)" value="—" hint="No lot value" />
         <Kpi icon={<CheckCircle2 size={16} />} tone="green" label="Floating P&L (Broker)" value={money(portfolio?.account?.floating_pnl, currency)} hint="Equity − balance" />
         <Kpi icon={<Timer size={16} />} tone="red" label="Open Risk (R)" value="—" hint="Not sized" />
@@ -235,7 +236,7 @@ function Positions({ view, plans, portfolio, query, onQuery }: { view: Execution
           <div className="exm-table-wrap">
             <table className="exm-table">
               <thead>
-                <tr><th>#</th><th>Symbol</th><th>Direction</th><th>Volume</th><th>Entry Price</th><th>Current Price</th><th>SL</th><th>TP</th><th>P&L (USD)</th><th>R-Multiple</th><th>Status</th><th>Next Action</th></tr>
+                <tr><th>#</th><th>Symbol</th><th>Direction</th><th>Volume</th><th>Entry Price</th><th>Current Price</th><th>SL</th><th>TP</th><th>P&L ({currency})</th><th>R-Multiple</th><th>Status</th><th>Next Action</th></tr>
               </thead>
               <tbody>
                 {plans.map((row, i) => (
