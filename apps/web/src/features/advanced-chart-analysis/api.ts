@@ -7,7 +7,14 @@ async function req<T>(path: string, opts: RequestInit = {}): Promise<T> {
   const r = await apiFetch(`/chart${path}`, { ...opts, headers });
   if (!r.ok) {
     const text = await r.text();
-    throw new Error(text.slice(0, 240) || r.statusText);
+    let message = text.slice(0, 240) || r.statusText;
+    try {
+      const detail = JSON.parse(text).detail;
+      if (typeof detail === 'string' && detail.trim()) message = detail;
+    } catch {
+      /* body is already plain text */
+    }
+    throw new Error(message);
   }
   return r.json() as Promise<T>;
 }

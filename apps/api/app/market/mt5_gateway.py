@@ -57,10 +57,48 @@ def symbol_candidates(pair: str) -> list[str]:
     return out
 
 
+_DISCOVERED: dict[str, str] = {}
+
+
+def _discover_symbol(mt5, pair: str) -> str | None:
+    """Pick the terminal's live decoration when the plain name is absent.
+
+    HFM Zero lists gold as XAUUSDb beside an unquoted XAUUSD247b. A quoted,
+    visible name wins. Two equally live decorations stay unresolved.
+    """
+    canon = pair.upper().replace("/", "")
+    if not canon:
+        return None
+    rows = mt5.symbols_get() or []
+    matched = [row for row in rows if str(getattr(row, "name", "") or "").upper().startswith(canon)]
+    if not matched:
+        return None
+
+    def rank(row) -> tuple[int, int, int]:
+        quoted = 1 if (getattr(row, "bid", 0) or getattr(row, "ask", 0)) else 0
+        visible = 1 if getattr(row, "visible", False) else 0
+        return (quoted, visible, -len(str(row.name)))
+
+    matched.sort(key=rank, reverse=True)
+    best = rank(matched[0])
+    if sum(1 for row in matched if rank(row) == best) != 1:
+        return None
+    return str(matched[0].name)
+
+
 def _select_symbol(mt5, pair: str) -> str:
+    key = pair.upper().replace("/", "")
+    cached = _DISCOVERED.get(key)
+    if cached and mt5.symbol_select(cached, True):
+        return cached
     for sym in symbol_candidates(pair):
         if mt5.symbol_select(sym, True):
+            _DISCOVERED[key] = sym
             return sym
+    found = _discover_symbol(mt5, pair)
+    if found and mt5.symbol_select(found, True):
+        _DISCOVERED[key] = found
+        return found
     return symbol_candidates(pair)[0]
 
 
