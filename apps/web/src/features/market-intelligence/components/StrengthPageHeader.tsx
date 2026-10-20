@@ -45,6 +45,13 @@ function liveStatus(meta: MatrixMeta | null, apiError: boolean): LiveStatus {
     const basis = meta.closed_bar_only ? 'Closed bars only' : 'Live price (EarnForex)';
     return { tone: 'live', title: 'LIVE DATA', sub: `${meta.active_provider || "Market data"} Connected • ${basis}` };
   }
+  if (meta.engine_state === 'WORKER_UNAVAILABLE') {
+    return {
+      tone: 'warn',
+      title: 'WORKER_UNAVAILABLE',
+      sub: 'Strength engine is not running — restart the API without STRENGTH_ENGINE_ENABLED=0 (see run-api-dev).',
+    };
+  }
   return { tone: 'warn', title: meta.engine_state || 'SYNCING', sub: `${meta.active_provider || 'Market data'}: completing basket history` };
 }
 
