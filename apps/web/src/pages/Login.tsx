@@ -1,12 +1,9 @@
 import React from 'react';
 import { ShieldCheck } from 'lucide-react';
-import { post } from '../lib/api';
+import { get, post } from '../lib/api';
+import type { AuthUser } from '../types';
 
-type LoginResponse = {
-  user: { display_name: string; username: string };
-};
-
-export function Login({ onSuccess }: { onSuccess: () => void }) {
+export function Login({ onSuccess }: { onSuccess: (user: AuthUser) => void }) {
   const [username, setUsername] = React.useState('');
   const [password, setPassword] = React.useState('');
   const [error, setError] = React.useState<string | null>(null);
@@ -17,8 +14,9 @@ export function Login({ onSuccess }: { onSuccess: () => void }) {
     setBusy(true);
     setError(null);
     try {
-      await post<LoginResponse>('/auth/login', { username, password });
-      onSuccess();
+      await post('/auth/login', { username, password });
+      const me = await get<AuthUser>('/auth/me');
+      onSuccess(me);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {

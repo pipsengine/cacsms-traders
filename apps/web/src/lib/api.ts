@@ -4,15 +4,30 @@
  */
 export const API_PREFIX = '/api';
 
+const DEFAULT_TIMEOUT_MS = 45_000;
+
 /** URL for a backend path, e.g. apiUrl('/auth/login') -> '/api/auth/login'. */
 export const apiUrl = (path: string) => `${API_PREFIX}${path}`;
+
+let unauthorizedHandler: (() => void) | null = null;
+
+/** Clear session UI when the API rejects the cookie (e.g. after a database rebuild). */
+export function onUnauthorized(handler: () => void) {
+  unauthorizedHandler = handler;
+}
 
 /** fetch() for backend calls: same-origin session cookie plus the client header the API requires on cookie-authenticated writes. */
 export function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers);
   headers.set('X-CT-Client', 'web');
   if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
-  return fetch(apiUrl(path), { ...init, headers, credentials: 'include' });
+  const timeoutMs = init.signal ? undefined : DEFAULT_TIMEOUT_MS;
+  const signal =
+    init.signal ??
+    (typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal
+      ? AbortSignal.timeout(timeoutMs!)
+      : undefined);
+  return fetch(apiUrl(path), { ...init, headers, credentials: 'include', signal });
 }
 
 export class ApiError extends Error {
@@ -22,8 +37,19 @@ export class ApiError extends Error {
 }
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const r = await apiFetch(path, init);
+  let r: Response;
+  try {
+    r = await apiFetch(path, init);
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'TimeoutError') {
+      throw new ApiError('Request timed out — is the API running on port 8000?', 504);
+    }
+    throw err;
+  }
   if (!r.ok) {
+    if (r.status === 401 && path !== '/auth/me' && !path.startsWith('/auth/login') && unauthorizedHandler) {
+      unauthorizedHandler();
+    }
     const body = await r.json().catch(() => ({ detail: r.statusText }));
     const detail = body.detail;
     throw new ApiError(

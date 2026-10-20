@@ -17,7 +17,7 @@ import { PropFirm } from './pages/PropFirm';
 import { Administration } from './pages/hubs/Administration';
 import { SystemControl } from './pages/hubs/SystemControl';
 import { StrengthIntelligence } from './pages/hubs/StrengthIntelligence';
-import { get, post } from './lib/api';
+import { get, onUnauthorized, post } from './lib/api';
 import type { AuthUser, Health, Summary, Tenant, AppRouteState } from './types';
 import type { Page } from './lib/routes';
 import { LEGACY_ROUTE, parseHashRoute, writeHashRoute } from './lib/routes';
@@ -50,13 +50,35 @@ export function App() {
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
 
+  const clearSession = React.useCallback(() => {
+    setAuthed(false);
+    setUser(null);
+    setHealth(null);
+    setSummary(null);
+    setTenants([]);
+    setAutonomousStatus('Checking…');
+  }, []);
+
+  React.useEffect(() => {
+    onUnauthorized(clearSession);
+  }, [clearSession]);
+
   const refresh = React.useCallback(async () => {
-    const [h, s, t, me] = await Promise.all([
+    const results = await Promise.allSettled([
       get<Health>('/system/health'),
       get<Summary>('/dashboard/summary'),
       get<Tenant[]>('/tenants'),
       get<AuthUser>('/auth/me'),
     ]);
+    const failed = results.find((r) => r.status === 'rejected') as PromiseRejectedResult | undefined;
+    if (failed) throw failed.reason;
+
+    const [h, s, t, me] = results.map((r) => (r as PromiseFulfilledResult<unknown>).value) as [
+      Health,
+      Summary,
+      Tenant[],
+      AuthUser,
+    ];
     setHealth(h);
     setSummary(s);
     setTenants(t);
@@ -74,21 +96,25 @@ export function App() {
 
   React.useEffect(() => {
     localStorage.removeItem('ct_token');
+    let alive = true;
     get<AuthUser>('/auth/me')
       .then((me) => {
+        if (!alive) return;
         setUser(me);
         setAuthed(true);
       })
-      .catch(() => setAuthed(false));
+      .catch(() => {
+        if (alive) setAuthed(false);
+      });
+    return () => {
+      alive = false;
+    };
   }, []);
 
   React.useEffect(() => {
     if (!authed) return;
-    refresh().catch(() => {
-      setUser(null);
-      setAuthed(false);
-    });
-  }, [authed, refresh]);
+    refresh().catch(() => clearSession());
+  }, [authed, refresh, clearSession]);
 
   React.useEffect(() => {
     if (!authed || route.page !== 'system-control') return;
@@ -121,7 +147,14 @@ export function App() {
   }
 
   if (!authed) {
-    return <Login onSuccess={() => setAuthed(true)} />;
+    return (
+      <Login
+        onSuccess={(me) => {
+          setUser(me);
+          setAuthed(true);
+        }}
+      />
+    );
   }
 
   if (!user) {
