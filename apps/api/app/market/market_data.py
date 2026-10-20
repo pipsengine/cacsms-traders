@@ -24,6 +24,22 @@ def configuration(conn):
             'account_id': str(cfg.get('account_id', os.getenv('MARKET_DATA_ACCOUNT_ID', '')))}
 
 
+def _attached_mt5_account_id() -> str:
+    """Account logged into this process's MT5 session. Does not attach or launch a terminal."""
+    from . import mt5_session
+
+    if not mt5_session.is_initialized():
+        return ""
+    from ..domain.mt5_terminal_account import read_terminal_account
+
+    terminal = read_terminal_account() or {}
+    if not terminal.get("available"):
+        return ""
+    server = str(terminal.get("server") or "").strip()
+    login = str(terminal.get("login") or "").strip()
+    return f"{server}/{login}" if server and login else ""
+
+
 def ensure_active_provider_snapshot(conn) -> str | None:
     """Keep an open analytical scope when MT5/cTrader is configured (survives transient worker gaps)."""
     cfg = configuration(conn)
@@ -31,6 +47,21 @@ def ensure_active_provider_snapshot(conn) -> str | None:
     if provider not in ('mt5', 'ctrader'):
         return None
     account_id = str(cfg.get('account_id') or '').strip()
+    if provider == 'mt5':
+        # The broker session is authoritative. A stale configured account finalizes the
+        # live snapshot on every tick and strength calculation then has nothing to write to.
+        live_account = _attached_mt5_account_id()
+        if live_account:
+            account_id = live_account
+            if str(cfg.get('account_id') or '') != live_account:
+                from ..core.security import iso
+
+                cfg['account_id'] = live_account
+                conn.execute(
+                    """INSERT INTO system_settings(key,value_json,updated_at) VALUES(?,?,?)
+                       ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at""",
+                    ('market_data.provider', json.dumps(cfg), iso()),
+                )
     row = conn.execute(
         "SELECT id FROM mi_provider_snapshot WHERE finalized_at IS NULL ORDER BY started_at DESC LIMIT 1"
     ).fetchone()

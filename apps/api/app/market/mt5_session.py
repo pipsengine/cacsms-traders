@@ -30,6 +30,11 @@ def connection_state() -> dict:
     }
 
 
+# A missing timeout makes initialize() wait until the terminal answers. Startup and
+# login must not sit behind that, especially while the Windows gateway already owns IPC.
+_INIT_TIMEOUT_MS = 10_000
+
+
 def initialize(path: str | None = None) -> bool:
     ok, _ = initialize_first([path] if path else [])
     return ok
@@ -51,10 +56,10 @@ def initialize_first(paths: list[str | None]) -> tuple[bool, str]:
             mt5.shutdown()
         except Exception:
             pass
-        if mt5.initialize(path=p):
+        if mt5.initialize(path=p, timeout=_INIT_TIMEOUT_MS):
             return True, p
     if not ordered:
-        if mt5.initialize():
+        if mt5.initialize(timeout=_INIT_TIMEOUT_MS):
             return True, ""
     return False, ""
 

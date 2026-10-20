@@ -51,7 +51,9 @@ class ProviderManager:
                     state.update(healthy=bool(ready and observed.get('healthy') and fresh_heartbeat), market_data_available=bool(ready and observed.get('market_data_available') and fresh_heartbeat))
                 last = observed.get('observed_at')
                 recent_failure = last and (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds() < 60 and not observed.get('healthy', True)
-                if recent_failure:
+                # A live MT5 terminal is the readiness source. One stale series must not
+                # take that session offline, or strength and the scanner stay waiting.
+                if recent_failure and not (provider == 'mt5' and ready):
                     state.update(healthy=False, market_data_available=False, last_error=observed.get('last_error'))
                     ctx.update(market_data_ready=False, provider_status='DEGRADED', error_code=state['last_error'])
                 if ctx['provider_status'] == 'APP_INACTIVE':

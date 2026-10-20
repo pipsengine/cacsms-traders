@@ -159,6 +159,47 @@ def ensure_gateway_session(conn: sqlite3.Connection, tenant_id: str) -> dict[str
     return {"restored": True, "path": used or path}
 
 
+def reconnect_gateway_session(tenant_id: str) -> dict[str, Any]:
+    """Re-attach MT5 without holding the database lock during terminal IPC."""
+    from ..core.database import db
+
+    with db() as conn:
+        gw = LocalMT5Gateway(tenant_id)
+        settings = gw._load_settings(conn)
+        if settings.get("session_status") != "CONNECTED":
+            return {"restored": False, "reason": "not_connected"}
+        if not settings.get("auto_reconnect", True):
+            return {"restored": False, "reason": "auto_reconnect_off"}
+        saved = normalize_terminal_exe((settings.get("terminal_path") or "").strip())
+    paths: list[str] = []
+    if saved:
+        paths.append(saved)
+    for candidate in running_terminal64_processes():
+        if candidate not in paths:
+            paths.append(candidate)
+    if mt5_session.is_initialized():
+        return {"restored": False, "reason": "already_live"}
+    if not paths:
+        return {"restored": False, "reason": "no_terminal_path"}
+    if connection_in_progress(tenant_id):
+        return {"restored": False, "reason": "connect_in_progress"}
+    ok, used = mt5_session.initialize_first(paths)
+    with db() as conn:
+        gw = LocalMT5Gateway(tenant_id)
+        settings = gw._load_settings(conn)
+        if ok and used:
+            settings["terminal_path"] = used
+        if not ok:
+            settings["last_error"] = (
+                "Auto-reconnect failed — open your broker terminal, then use Connect in System Control."
+            )
+            gw._save_settings(conn, settings)
+            return {"restored": False, "reason": "initialize_failed"}
+        settings["last_error"] = None
+        gw._touch_heartbeat(conn, settings)
+    return {"restored": True, "path": used or saved}
+
+
 def read_terminal_account_for_tenant(
     conn: sqlite3.Connection,
     tenant_id: str,

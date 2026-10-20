@@ -3,6 +3,7 @@ import hmac
 import logging
 import os
 import sqlite3
+import threading
 import traceback
 from contextlib import asynccontextmanager
 
@@ -46,11 +47,28 @@ def _log_startup_failure(component: str, exc: Exception) -> None:
     )
 
 
+def _another_api_is_serving() -> bool:
+    """True when a server is already answering, so a second process must not take the database."""
+    import urllib.request
+
+    port = os.getenv("APP_PORT", "8000").strip() or "8000"
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health/live", timeout=1) as response:
+            return response.status == 200
+    except Exception:
+        return False
+
+
 def _initialize_database(app: FastAPI) -> None:
     app.state.database_bootstrap_status = "initializing"
     try:
-        hold_sqlite_process_lock()
         load_env_file()
+        try:
+            hold_sqlite_process_lock()
+        except DatabaseUnavailable as exc:
+            if _another_api_is_serving():
+                raise
+            log.warning("%s No API is accepting requests, so this process will serve.", exc)
         bootstrap()
     except Exception as exc:
         app.state.database_bootstrap_status = "failed"
@@ -79,6 +97,18 @@ async def _mi_cycle_async():
     await asyncio.to_thread(run_intelligence_cycle, ingest=True)
 
 
+def _restore_mt5_session(tenant_id: str) -> None:
+    """Re-attach a connected terminal without blocking HTTP startup or database readers."""
+    try:
+        from .domain.mt5_connection import reconnect_gateway_session
+
+        restored = reconnect_gateway_session(tenant_id)
+        if restored.get("restored"):
+            log.info("Restored local MT5 session for tenant %s", tenant_id)
+    except Exception as exc:
+        log.warning("MT5 auto-reconnect on startup skipped: %s", _safe_error_message(exc))
+
+
 def _start_optional_services(app: FastAPI) -> None:
     global _mi_worker
     if _is_vercel():
@@ -94,7 +124,6 @@ def _start_optional_services(app: FastAPI) -> None:
         if not _is_vercel():
             try:
                 from .core.database import db
-                from .domain.mt5_connection import ensure_gateway_session
                 from .market.market_data import configuration
 
                 with db() as conn:
@@ -107,9 +136,9 @@ def _start_optional_services(app: FastAPI) -> None:
                         from .market.market_data import ensure_active_provider_snapshot
 
                         ensure_active_provider_snapshot(conn)
-                        restored = ensure_gateway_session(conn, tenant_id)
-                        if restored.get("restored"):
-                            log.info("Restored local MT5 session for tenant %s", tenant_id)
+                        threading.Thread(
+                            target=_restore_mt5_session, args=(tenant_id,), name="mt5-startup-reconnect", daemon=True,
+                        ).start()
             except Exception as exc:
                 log.warning("MT5 auto-reconnect on startup skipped: %s", _safe_error_message(exc))
         try:
