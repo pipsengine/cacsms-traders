@@ -123,7 +123,8 @@ class ProviderManager:
             ctx.update(provider_status='MARKET DATA UNAVAILABLE', market_data_ready=False)
         binding = self.conn.execute("SELECT value_json FROM system_settings WHERE key='execution.provider'").fetchone()
         execution = json.loads(binding['value_json']) if binding else {}
-        active = selected or (self.cfg['provider'] if self.cfg['provider'] in ('mt5', 'ctrader') else None) or diagnostic
+        pinned = self.cfg['provider'] if self.cfg['provider'] in ('mt5', 'ctrader') else None
+        active = selected or pinned
         active_state = states.get(active) or states.get(diagnostic) or {}
         active_ctx = active_state.get('context') or ctx
         ready = bool(

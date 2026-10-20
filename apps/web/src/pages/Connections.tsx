@@ -42,11 +42,15 @@ export function Connections({ tenantId, embedded }: { tenantId: string; embedded
             </div>
             <div>
               <span>Heartbeat</span>
-              <b>—</b>
+              <b>{gw?.heartbeat_at ? new Date(gw.heartbeat_at).toLocaleString() : '—'}</b>
             </div>
             <div>
               <span>Execution</span>
-              <b>Disabled</b>
+              <b>{gw?.execution || 'Simulation'}</b>
+            </div>
+            <div>
+              <span>Account currency</span>
+              <b>{data?.diagnostics?.terminal_account?.currency || '—'}</b>
             </div>
           </div>
           <button type="button" className="secondary full" disabled>

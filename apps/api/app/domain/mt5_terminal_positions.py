@@ -12,7 +12,7 @@ from ..market import mt5_session
 
 def read_terminal_positions() -> tuple[list[dict[str, Any]] | None, str]:
     """Return (positions, basis). None means the terminal could not be read."""
-    if not mt5_session.is_initialized() and not mt5_session.initialize():
+    if not mt5_session.is_initialized():
         return None, "MT5 terminal is not attached. Open positions stay hidden until the terminal is connected."
     try:
         import MetaTrader5 as mt5  # type: ignore

@@ -79,11 +79,12 @@ def connections(tenant_id:str,user=Depends(current_user)):
    FROM trading_connections c JOIN trading_accounts a ON a.id=c.trading_account_id
    WHERE c.tenant_id=? ORDER BY c.updated_at DESC""",(tenant_id,)).fetchall()
   connection_rows=[dict(r) for r in rows]
-  from ..domain.mt5_bridge import status as bridge_status, gateway as bridge_gateway
+  from ..domain.mt5_bridge import status as bridge_status, gateway as bridge_gateway, account_execution
   bridge=bridge_status(c,tenant_id)
   if bridge:
    settings={**settings,'session_status':'CONNECTED' if bridge['connected'] else 'DISCONNECTED','terminal_path':bridge['terminal_path'],'last_heartbeat_at':bridge['received_at'],'last_error':None if bridge['connected'] else 'Windows bridge heartbeat expired.'}
-   return {'gateway':bridge_gateway(bridge,tenant_id),'settings':settings,'connections':connection_rows,'diagnostics':{'python_package':'remote','terminal_launch_mode':'WINDOWS_GATEWAY_REQUIRED','terminal_launch_supported':False,'bridge_connected':bridge['connected'],'terminal_account':{**bridge['account'],'available':bridge['connected']}}}
+   execution=account_execution(c,tenant_id,bridge.get('trading_account_id'))
+   return {'gateway':bridge_gateway(bridge,tenant_id,execution),'settings':settings,'connections':connection_rows,'diagnostics':{'python_package':'remote','terminal_launch_mode':'WINDOWS_GATEWAY_REQUIRED','terminal_launch_supported':False,'bridge_connected':bridge['connected'],'terminal_account':{**bridge['account'],'available':bridge['connected']}}}
   live=mt5_session.is_initialized()
   terminal_account=read_terminal_account_for_tenant(
    c, tenant_id, force_attach=False, persist_snapshot=live,

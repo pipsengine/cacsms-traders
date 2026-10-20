@@ -33,13 +33,34 @@ def status(conn, tenant_id):
     return {**state, 'connected': fresh and state.get('connected', False)}
 
 
-def gateway(state, tenant_id):
+def account_execution(conn, tenant_id, account_id):
+    """Live submission is on only after the owner enables it for a live or prop account."""
+    if not account_id:
+        return {'execution_enabled': False, 'execution': 'Simulation', 'execution_state': 'SIMULATION'}
+    row = conn.execute(
+        """SELECT a.environment, COALESCE(p.live_trading_enabled,0) AS live_trading_enabled, COALESCE(p.emergency_stop,0) AS emergency_stop
+           FROM trading_accounts a LEFT JOIN account_risk_profiles p ON p.trading_account_id=a.id
+           WHERE a.id=? AND a.tenant_id=?""",
+        (account_id, tenant_id),
+    ).fetchone()
+    if not row:
+        return {'execution_enabled': False, 'execution': 'Simulation', 'execution_state': 'SIMULATION'}
+    row = dict(row)
+    if row['emergency_stop']:
+        return {'execution_enabled': False, 'execution': 'Emergency stop', 'execution_state': 'EMERGENCY_STOP'}
+    if row['live_trading_enabled'] and row['environment'] in ('LIVE', 'PROP_FIRM'):
+        return {'execution_enabled': True, 'execution': 'Live execution', 'execution_state': 'LIVE_EXECUTION'}
+    return {'execution_enabled': False, 'execution': 'Simulation', 'execution_state': 'SIMULATION'}
+
+
+def gateway(state, tenant_id, execution=None):
     connected = bool(state['connected'])
+    execution = execution or {'execution_enabled': False, 'execution': 'Simulation', 'execution_state': 'SIMULATION'}
     return dict(status='CONNECTED' if connected else 'DISCONNECTED', session_status='CONNECTED' if connected else 'DISCONNECTED',
                 adapter='WINDOWS_MT5_BRIDGE', tenant_id=tenant_id, terminal=state['terminal_path'], terminal_configured=True,
                 terminal_path_detected=state['terminal_path'], heartbeat_at=state['received_at'], last_connected_at=state['received_at'],
                 last_error=None if connected else 'Windows bridge heartbeat expired or disconnected.',
-                market_data_connected=connected, execution_enabled=False, execution='Disabled',
+                market_data_connected=connected, link_state='CONNECTED' if connected else 'DISCONNECTED', **execution,
                 message='Windows bridge connected' if connected else 'Windows bridge disconnected',
                 terminal_account={**state['account'], 'available': connected})
 

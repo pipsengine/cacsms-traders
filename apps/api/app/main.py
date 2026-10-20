@@ -115,7 +115,8 @@ def _start_optional_services(app: FastAPI) -> None:
         try:
             from .domain.mt5_session_keeper import get_mt5_session_keeper
 
-            get_mt5_session_keeper().start()
+            if not os.getenv("PYTEST_CURRENT_TEST"):
+                get_mt5_session_keeper().start()
         except Exception as exc:
             log.warning("Local MT5 session keeper failed to start: %s", _safe_error_message(exc))
         if scanner_enabled():

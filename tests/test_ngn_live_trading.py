@@ -183,6 +183,31 @@ def test_emergency_stop_blocks_a_demo_account():
     assert result["error"] == "EMERGENCY_STOP" and result["calls"] == 0
 
 
+def test_confirmed_gateway_result_writes_the_broker_ticket_back():
+    from apps.api.app.execution.pipeline import upsert_request
+    from apps.api.app.execution.service import apply_gateway_result
+
+    conn = memory()
+    conn.execute("CREATE TABLE ae_opportunity(id TEXT PRIMARY KEY, tenant_id TEXT, evidence_json TEXT, updated_at TEXT)")
+    conn.execute("CREATE TABLE ai_outlook_handoff(outlook_id TEXT PRIMARY KEY, tenant_id TEXT, execution_ref TEXT, lifecycle TEXT, updated_at TEXT)")
+    conn.execute("INSERT INTO ae_opportunity(id,tenant_id,evidence_json,updated_at) VALUES('opp','tenant','{}','x')")
+    conn.execute("INSERT INTO ai_outlook_handoff(outlook_id,tenant_id,execution_ref,lifecycle,updated_at) VALUES('out','tenant',NULL,'AUTHORIZATION_PENDING','x')")
+    mode1 = upsert_request(
+        conn, tenant_id="tenant", account_id="acc", key="mode1:opp", mode="MODE_1", symbol="XAUUSD",
+        direction="BULLISH", currency="NGN", status="SUBMITTING", now=NOW,
+    )
+    mode2 = upsert_request(
+        conn, tenant_id="tenant", account_id="acc", key="mode2:out:H1", mode="MODE_2", symbol="XAUUSD",
+        direction="BULLISH", currency="NGN", status="SUBMITTING", now=NOW,
+    )
+    assert apply_gateway_result(conn, "tenant", "acc", mode1["id"], {"ok": True, "ticket": "555", "retcode": 10009})["ok"]
+    assert apply_gateway_result(conn, "tenant", "acc", mode2["id"], {"ok": True, "ticket": "556", "retcode": 10009})["ok"]
+    evidence = conn.execute("SELECT evidence_json FROM ae_opportunity WHERE id='opp'").fetchone()["evidence_json"]
+    assert '"555"' in evidence
+    handoff = conn.execute("SELECT execution_ref, lifecycle FROM ai_outlook_handoff WHERE outlook_id='out'").fetchone()
+    assert handoff["execution_ref"] == "556" and handoff["lifecycle"] == "ORDER_SUBMITTED"
+
+
 def test_gateway_pull_is_isolated_to_the_tenant_account():
     from apps.api.app.execution.pipeline import claim_queued, upsert_request
 

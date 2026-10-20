@@ -6,6 +6,8 @@ Live and prop accounts stay queued-or-blocked until live trading is enabled.
 """
 from __future__ import annotations
 
+import json
+import sqlite3
 import uuid
 from datetime import datetime, timezone
 
@@ -240,6 +242,44 @@ def pull_gateway_order(conn, tenant_id: str, account_id: str) -> dict | None:
     return claim_queued(conn, tenant_id, account_id)
 
 
+def _publish_confirmed_ticket(conn, request: dict, result: dict) -> None:
+    """Write the broker ticket back onto the Mode 1 plan or Mode 2 outlook that queued this order."""
+    ticket = str(result.get("ticket") or "")
+    key = str(request.get("idempotency_key") or "")
+    if not ticket or ":" not in key:
+        return
+    stamp = datetime.now(timezone.utc).isoformat()
+    try:
+        if key.startswith("mode1:"):
+            opportunity_id = key.split(":", 1)[1]
+            row = conn.execute(
+                "SELECT evidence_json FROM ae_opportunity WHERE id=? AND tenant_id=?",
+                (opportunity_id, request["tenant_id"]),
+            ).fetchone()
+            if row is None:
+                return
+            raw = dict(row).get("evidence_json") or "{}"
+            evidence = json.loads(raw)
+            if not isinstance(evidence, dict):
+                evidence = {}
+            broker = dict(evidence.get("broker_order") or {})
+            broker["ticket"] = ticket
+            broker["status"] = "CONFIRMED"
+            evidence["broker_order"] = broker
+            conn.execute(
+                "UPDATE ae_opportunity SET evidence_json=?,updated_at=? WHERE id=? AND tenant_id=?",
+                (json.dumps(evidence), stamp, opportunity_id, request["tenant_id"]),
+            )
+        elif key.startswith("mode2:"):
+            outlook_id = key.split(":")[1]
+            conn.execute(
+                "UPDATE ai_outlook_handoff SET execution_ref=?,lifecycle='ORDER_SUBMITTED',updated_at=? WHERE outlook_id=? AND tenant_id=?",
+                (ticket, stamp, outlook_id, request["tenant_id"]),
+            )
+    except (sqlite3.OperationalError, json.JSONDecodeError, TypeError, ValueError):
+        return
+
+
 def apply_gateway_result(conn, tenant_id: str, account_id: str, request_id: str, result: dict) -> dict:
     request = _row(conn, "SELECT * FROM trade_requests WHERE id=? AND tenant_id=? AND trading_account_id=?", (request_id, tenant_id, account_id))
     if request is None:
@@ -248,4 +288,6 @@ def apply_gateway_result(conn, tenant_id: str, account_id: str, request_id: str,
         return {"ok": True, "status": request["status"], "replayed": True}
     outcome = classify_broker_result(result)
     saved = record_outcome(conn, request, outcome, result)
+    if outcome == "CONFIRMED":
+        _publish_confirmed_ticket(conn, saved, result)
     return {"ok": outcome == "CONFIRMED", "status": saved["status"], "uncertain": outcome == "UNCERTAIN"}

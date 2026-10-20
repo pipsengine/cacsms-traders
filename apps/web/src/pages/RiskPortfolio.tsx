@@ -5,6 +5,7 @@ import { autonomousApi } from '../features/autonomous/api';
 import { pretty, until } from '../features/autonomous/format';
 import { useNow } from '../features/autonomous/components/DetailParts';
 import type { PortfolioView } from '../features/autonomous/types';
+import { accountMoney } from '../lib/money';
 
 const TABS = [
   ['overview', 'Portfolio Overview'],
@@ -16,8 +17,7 @@ type TabId = (typeof TABS)[number][0];
 const COLORS = ['#2563eb', '#7c3aed', '#0d9488', '#d97706', '#dc2626', '#0891b2', '#4f46e5', '#64748b'];
 
 function money(value: number | null | undefined, currency = 'USD') {
-  if (value == null || !Number.isFinite(value)) return '—';
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency, maximumFractionDigits: 2 }).format(value);
+  return accountMoney(value, currency);
 }
 
 function pct(value: number | null | undefined, digits = 1) {
@@ -26,9 +26,7 @@ function pct(value: number | null | undefined, digits = 1) {
 }
 
 function signed(value: number | null | undefined, currency = 'USD') {
-  if (value == null || !Number.isFinite(value)) return '—';
-  const text = money(Math.abs(value), currency);
-  return value > 0 ? `+${text}` : value < 0 ? `−${text}` : text;
+  return accountMoney(value, currency, true);
 }
 
 function stamp(iso: string | null | undefined) {

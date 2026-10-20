@@ -111,12 +111,15 @@ def advance_authorised_outlooks(conn, tenant: str, account: str, mode: str, now:
     ).fetchall()
     if not rows:
         return {"checked": 0, "sent": 0, "held": 0}
-    positions, _basis = read_terminal_positions()
-    positions = positions or []
+    autonomous = (mode or "").upper() in ("DEMO_AUTONOMOUS", "LIVE_AUTONOMOUS")
+    positions = []
+    if autonomous:
+        positions, _basis = read_terminal_positions()
+        positions = positions or []
     open_ids = {str(item.get("ticket")) for item in positions if item.get("ticket") is not None}
     ae = ae_settings()
     cap = open_position_cap(conn, tenant, account)
-    allowed = execution_allowed(mode, terminal_trade_mode())
+    allowed = execution_allowed(mode, terminal_trade_mode()) if autonomous else False
     account_row = _account_row(conn, tenant, account)
     profile = _profile(conn, account_row["id"] if account_row else None)
     risk_pct = 1.0
@@ -127,7 +130,7 @@ def advance_authorised_outlooks(conn, tenant: str, account: str, mode: str, now:
         if profile.get("max_total_risk_pct") is not None:
             max_exposure = float(profile["max_total_risk_pct"])
     exposure = None
-    terminal = read_terminal_account()
+    terminal = read_terminal_account() if autonomous else None
     if terminal and terminal.get("available"):
         equity = float(terminal.get("equity") or 0)
         margin = terminal.get("margin")

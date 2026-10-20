@@ -10,7 +10,7 @@ export type Health={
   status:string;session_status?:string;adapter:string;message:string;
   terminal?:string;terminal_configured?:boolean;
   heartbeat_at?:string|null;last_connected_at?:string|null;last_error?:string|null;
-  execution?:string;execution_enabled?:boolean;market_data_connected?:boolean;
+  execution?:string;execution_enabled?:boolean;execution_state?:string;link_state?:string;market_data_connected?:boolean;
  };
 };
 export type Summary={tenants:number;users:number;accounts:number;connections:number;mode:string};
