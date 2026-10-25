@@ -255,7 +255,7 @@ function Decisions({ view, compact = false }: { view: PortfolioView; compact?: b
       <table className="rsk-table">
         <thead>
           <tr>
-            <th>Time</th><th>Symbol</th><th>Direction</th><th>Type</th><th>R:R</th><th>Decision</th><th>Rule</th><th>Reason</th>
+            <th>Time</th><th>Symbol</th><th>Direction</th><th>Type</th><th>Hold</th><th>R:R</th><th>Decision</th><th>Rule</th><th>Reason</th>
           </tr>
         </thead>
         <tbody>
@@ -265,6 +265,15 @@ function Decisions({ view, compact = false }: { view: PortfolioView; compact?: b
               <td>{row.symbol || '—'}</td>
               <td>{row.direction === 'BULLISH' ? 'Bullish' : row.direction === 'BEARISH' ? 'Bearish' : '—'}</td>
               <td>{row.type_label || '—'}</td>
+              <td
+                title={
+                  row.holding_profile
+                    ? [row.holding_profile.setup_window, row.holding_profile.typical_hold].filter(Boolean).join('\n\n')
+                    : undefined
+                }
+              >
+                {row.holding_profile?.style_label ?? '—'}
+              </td>
               <td>{row.reward_risk == null ? '—' : Number(row.reward_risk).toFixed(2)}</td>
               <td><span className={`rsk-pill ${decisionTone(row.state)}`}>{pretty(row.state)}</span></td>
               <td>{row.rule || '—'}</td>

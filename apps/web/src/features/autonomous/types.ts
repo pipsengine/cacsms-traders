@@ -407,6 +407,7 @@ export type PortfolioView = {
     position_size_note: string;
     shadow: boolean;
     broker_order: null;
+    holding_profile?: HoldingProfile | null;
   }[];
   decision_counts: Record<string, number>;
   outcomes: {
