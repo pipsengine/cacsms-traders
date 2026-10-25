@@ -7,7 +7,7 @@ from fastapi import HTTPException
 
 from ..core.database import db
 from ..market.live import live_snapshot
-from ..market.scanner_config import SCANNER_UNIVERSE
+from ..market.scanner_config import CHART_TIMEFRAMES, SCANNER_UNIVERSE
 from ..market.scanner_engine import chart_candles
 
 
@@ -29,6 +29,49 @@ def list_symbols() -> list[str]:
     return list(SCANNER_UNIVERSE)
 
 
+def _store_timeframe(chart_tf: str) -> str | None:
+    name = chart_tf.strip().upper()
+    if name in ("Y", "HY", "Q"):
+        return "MN"
+    if name == "YTD":
+        return "D1"
+    return CHART_TIMEFRAMES.get(name)
+
+
+def _hydrate_candles_from_provider(symbol: str, chart_tf: str, limit: int) -> bool:
+    """Pull closed bars from the active market-data adapter when the store is empty (e.g. scanner worker off)."""
+    store_tf = _store_timeframe(chart_tf)
+    if not store_tf:
+        return False
+    from ..market.ingestion_runner import MarketIngestionRunner
+    from ..market.market_data import create_market_data_gateway, market_context
+    from ..market.repository import MarketRepository
+
+    sym = symbol.upper()
+    with db() as conn:
+        ctx = market_context(conn)
+        if not ctx.get("market_data_ready"):
+            return False
+        gw = create_market_data_gateway(conn, context=ctx, verify_scope=False)
+        if gw is None:
+            return False
+        repo = MarketRepository(
+            conn,
+            provider=ctx.get("active_provider") or "__unavailable__",
+            snapshot_id=getattr(gw, "snapshot_id", None),
+        )
+        try:
+            have = len(repo.candles(sym, store_tf, 3))
+        except Exception:
+            have = 0
+        count = min(400, max(limit, 80)) if have < 3 else min(32, max(limit, 12))
+        result = MarketIngestionRunner(gw, repo, candle_count=count).sync_pair_timeframe(sym, store_tf)
+        conn.commit()
+        if result.get("error"):
+            return False
+        return int(result.get("accepted") or 0) > 0
+
+
 def fetch_candles(symbol: str, timeframe: str, limit: int) -> tuple[list[dict], dict]:
     sym = symbol.upper()
     if sym not in SCANNER_UNIVERSE:
@@ -39,8 +82,18 @@ def fetch_candles(symbol: str, timeframe: str, limit: int) -> tuple[list[dict], 
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     raw = payload.get("candles") or []
+    if not raw and _hydrate_candles_from_provider(sym, tf, limit):
+        try:
+            payload = chart_candles(sym, tf, limit)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        raw = payload.get("candles") or []
     if not raw:
-        return [], {"stale": True, "message": "No closed candles in store for this symbol/timeframe", "closed_only": True}
+        return [], {
+            "stale": True,
+            "message": "No closed candles in store for this symbol/timeframe — ensure MT5 is connected and the symbol is visible in Market Watch",
+            "closed_only": True,
+        }
     rows: list[dict] = []
     for c in raw:
         rows.append(
