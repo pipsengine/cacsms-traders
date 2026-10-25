@@ -108,12 +108,18 @@ def execute_candidate(conn, *, tenant_id: str, account_id: str, mode: str, idemp
                       direction: str, stop, target=None, price=None, spec: dict | None = None, system_mode: str,
                       terminal_mode: str | None, open_position_count: int = 0, account: dict | None = None,
                       profile: dict | None = None,                       connected: bool = True, stale: bool = False, send=None, dry_run: bool = False,
+                      parent_tf: str | None = None, trigger_tf: str | None = None, outlook_horizon: str | None = None,
                       now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
+    from .holding_profile import holding_profile_for_execution
+
     holder = f"{mode}:{idempotency_key}"
     symbol = canonical_symbol(symbol)
+    holding_profile = holding_profile_for_execution(
+        mode=mode, symbol=symbol, parent_tf=parent_tf, trigger_tf=trigger_tf, outlook_horizon=outlook_horizon,
+    )
     if not acquire_lock(conn, tenant_id, account_id, holder, now):
         return {"ok": False, "error": "EXECUTION_LOCK", "status": "LOCKED", "uncertain": False}
     existing = get_request(conn, tenant_id, idempotency_key)
@@ -194,7 +200,7 @@ def execute_candidate(conn, *, tenant_id: str, account_id: str, mode: str, idemp
         return {
             "ok": True, "status": "DRY_RUN", "submitted": False, "uncertain": False, "error": None,
             "volume": text(sized.volume), "projected_loss": text(sized.projected_loss), "risk_amount": text(sized.risk_amount),
-            "currency": currency,
+            "currency": currency, "holding_profile": holding_profile,
         }
     allowed, gate = live_submission_allowed(
         environment=account.get("environment") or "", policy=policy, system_mode=system_mode, terminal_mode=terminal_mode,
@@ -211,11 +217,21 @@ def execute_candidate(conn, *, tenant_id: str, account_id: str, mode: str, idemp
         return {"ok": False, "error": gate, "status": "PRECHECK_REJECTED", "uncertain": False, "request_id": request["id"], "volume": text(sized.volume)}
     if send is None:
         conn.execute("UPDATE trade_requests SET status='QUEUED',updated_at=? WHERE id=?", (now.isoformat(), request["id"]))
-        _audit(conn, tenant_id, account_id, request["id"], "LIVE_ORDER_SUBMISSION", {"queued": True}, now)
+        _audit(
+            conn, tenant_id, account_id, request["id"], "LIVE_ORDER_SUBMISSION",
+            {"queued": True, "holding_profile": holding_profile}, now,
+        )
         release_lock(conn, account_id, holder)
-        return {"ok": True, "queued": True, "status": "QUEUED", "uncertain": False, "request_id": request["id"], "ticket": request["id"], "volume": text(sized.volume), "projected_loss": text(sized.projected_loss), "currency": currency}
+        return {
+            "ok": True, "queued": True, "status": "QUEUED", "uncertain": False, "request_id": request["id"],
+            "ticket": request["id"], "volume": text(sized.volume), "projected_loss": text(sized.projected_loss),
+            "currency": currency, "holding_profile": holding_profile,
+        }
     conn.execute("UPDATE trade_requests SET status='SUBMITTING',updated_at=? WHERE id=?", (now.isoformat(), request["id"]))
-    _audit(conn, tenant_id, account_id, request["id"], "LIVE_ORDER_SUBMISSION", {"queued": False, "volume": text(sized.volume)}, now)
+    _audit(
+        conn, tenant_id, account_id, request["id"], "LIVE_ORDER_SUBMISSION",
+        {"queued": False, "volume": text(sized.volume), "holding_profile": holding_profile}, now,
+    )
     try:
         result = send(sized.volume)
     except Exception as exc:
@@ -235,6 +251,7 @@ def execute_candidate(conn, *, tenant_id: str, account_id: str, mode: str, idemp
         "projected_loss": text(sized.projected_loss),
         "currency": currency,
         "retcode": None if not isinstance(result, dict) else result.get("retcode"),
+        "holding_profile": holding_profile,
     }
 
 

@@ -78,9 +78,12 @@ def shadow_outcomes(closed: list[dict]) -> dict:
 
 
 def decision_row(transition: dict, opportunity: dict | None) -> dict:
+    from ..execution.holding_profile import holding_profile_for_opportunity
+
     evidence = transition.get("evidence") or {}
     opp = opportunity or {}
     opp_type = opp.get("opp_type")
+    holding = holding_profile_for_opportunity(opp) if opp.get("symbol") else None
     return {
         "id": transition.get("id"),
         "opportunity_id": transition.get("entity_id"),
@@ -102,6 +105,7 @@ def decision_row(transition: dict, opportunity: dict | None) -> dict:
         "position_size_note": SIZE_NOTE,
         "shadow": True,
         "broker_order": None,
+        "holding_profile": holding,
     }
 
 

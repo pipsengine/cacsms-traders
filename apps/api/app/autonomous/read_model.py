@@ -135,6 +135,8 @@ def transition_public(t: dict) -> dict:
 
 
 def opportunity_public(o: dict) -> dict:
+    from ..execution.holding_profile import holding_profile_for_opportunity
+
     info = STAGE_INFO.get(o["stage"], {})
     return {
         "id": o["id"], "symbol": o["symbol"], "digits": digits(o["symbol"]), "direction": o["direction"], "type": o["opp_type"],
@@ -147,6 +149,7 @@ def opportunity_public(o: dict) -> dict:
         "reason_code": o.get("reason_code"), "provider": o.get("provider"), "blockers": o.get("blockers") or [], "origin_at": o.get("origin_at"),
         "stage_entered_at": o.get("stage_entered_at"), "evaluated_through": o.get("evaluated_through"), "created_at": o.get("created_at"),
         "updated_at": o.get("updated_at"), "closed_at": o.get("closed_at"),
+        "holding_profile": holding_profile_for_opportunity(o),
     }
 
 

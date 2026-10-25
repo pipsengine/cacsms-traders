@@ -140,7 +140,7 @@ function Monitor({ view, plans, query, onQuery, focus, onFocus }: { view: Execut
           <div className="exm-table-wrap">
             <table className="exm-table">
               <thead>
-                <tr><th>#</th><th>Symbol</th><th>Direction</th><th>Type</th><th>Volume</th><th>Entry Price</th><th>SL</th><th>TP</th><th>Status</th><th>Next Action</th><th>ETA</th></tr>
+                <tr><th>#</th><th>Symbol</th><th>Direction</th><th>Type</th><th>Hold</th><th>Volume</th><th>Entry Price</th><th>SL</th><th>TP</th><th>Status</th><th>Next Action</th></tr>
               </thead>
               <tbody>
                 {plans.map((row, i) => (
@@ -149,13 +149,15 @@ function Monitor({ view, plans, query, onQuery, focus, onFocus }: { view: Execut
                     <td className="exm-sym">{row.symbol}</td>
                     <td><span className={`exm-pill ${side(row.direction).tone}`}>{side(row.direction).label}</span></td>
                     <td>{row.type_label || '—'}</td>
+                    <td title={row.holding_profile ? [row.holding_profile.setup_window, row.holding_profile.typical_hold].filter(Boolean).join('\n\n') : undefined}>
+                      {row.holding_profile?.style_label ?? '—'}
+                    </td>
                     <td>—</td>
                     <td>{px(row.symbol, row.entry_reference)}</td>
                     <td>{px(row.symbol, row.invalidation)}</td>
                     <td>{px(row.symbol, row.target_1)}</td>
                     <td><span className="exm-pill held">HELD</span></td>
                     <td>No broker submit</td>
-                    <td>—</td>
                   </tr>
                 ))}
               </tbody>
@@ -454,6 +456,8 @@ function Detail({ event, plan }: { event: ExecutionEvent; plan: ShadowPlan | nul
     ['Source', 'Simulated'],
     ['Execution time', '—'],
     ['Reason', event.detail || pretty(event.reason_code)],
+    ['Hold style', plan?.holding_profile?.style_label ?? '—'],
+    ['Typical hold', plan?.holding_profile?.typical_hold ?? '—'],
   ];
   return (
     <div className="exm-detail-list">

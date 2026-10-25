@@ -35,6 +35,9 @@ class EvaluateIn(BaseModel):
     stop: Decimal
     target: Decimal | None = None
     system_mode: str = "ANALYSIS_ONLY"
+    parent_tf: str | None = None
+    trigger_tf: str | None = None
+    outlook_horizon: str | None = None
 
 
 def _account(conn, tenant_id: str, account_id: str) -> dict:
@@ -134,6 +137,7 @@ def evaluate(tenant_id: str, account_id: str, body: EvaluateIn, user=Depends(cur
             idempotency_key=f"evaluate:{body.mode}:{body.symbol}:{body.direction}:{body.stop}",
             symbol=body.symbol, direction=body.direction, stop=body.stop, target=body.target, price=body.price,
             system_mode="ANALYSIS_ONLY", terminal_mode=None, send=None, dry_run=True,
+            parent_tf=body.parent_tf, trigger_tf=body.trigger_tf, outlook_horizon=body.outlook_horizon,
         )
         result["submitted"] = False
         return result

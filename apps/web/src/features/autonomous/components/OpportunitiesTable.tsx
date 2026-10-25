@@ -147,6 +147,7 @@ export function OpportunitiesTable({
                 <th>Current Stage</th>
                 <th>Current State</th>
                 <th>Parent → Trigger</th>
+                <th>Hold style</th>
                 <th>Entry Zone / Level</th>
                 <th>Current Price</th>
                 <th>Next Condition</th>
@@ -181,6 +182,16 @@ export function OpportunitiesTable({
                   </td>
                   <td>
                     {o.parent_tf ?? '—'} → {o.trigger_tf ?? '—'}
+                  </td>
+                  <td
+                    className="ae-clip"
+                    title={
+                      o.holding_profile
+                        ? [o.holding_profile.setup_window, o.holding_profile.typical_hold].filter(Boolean).join('\n\n')
+                        : undefined
+                    }
+                  >
+                    {o.holding_profile?.style_label ?? '—'}
                   </td>
                   <td className="ae-num">
                     {o.entry_lo != null && o.entry_hi != null && o.entry_lo !== o.entry_hi

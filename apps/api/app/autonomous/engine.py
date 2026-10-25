@@ -151,7 +151,7 @@ def _broker_order(opportunity: dict, mode: str, conn, repo, open_positions: int 
         terminal_mode=terminal, open_position_count=count, account=account, profile=profile,
         connected=(account.get("connection_status") == "CONNECTED") or bool(context.get("ok")),
         stale=False if context.get("ok") else _stale(account.get("last_synced_at"), datetime.now(timezone.utc)),
-        send=send,
+        parent_tf=opportunity.get("parent_tf"), trigger_tf=opportunity.get("trigger_tf"), send=send,
     )
 
 

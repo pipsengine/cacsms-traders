@@ -132,6 +132,18 @@ export type Transition = {
   evidence: Record<string, unknown>;
 };
 
+export type HoldingProfile = {
+  style: 'INTRADAY' | 'SWING' | 'POSITION';
+  style_label: string;
+  setup_window: string | null;
+  typical_hold: string;
+  exit_mechanism: string;
+  derived_from: string;
+  parent_tf?: string | null;
+  trigger_tf?: string | null;
+  outlook_horizon?: string;
+};
+
 export type Opportunity = {
   id: string;
   symbol: string;
@@ -140,6 +152,7 @@ export type Opportunity = {
   type: string;
   type_label: string;
   tit_level: string | null;
+  holding_profile?: HoldingProfile | null;
   stage: StageKey;
   stage_label: string | null;
   stage_number: number | null;
@@ -461,6 +474,7 @@ export type ShadowPlan = {
   broker_order_id: null;
   record_class: 'SIMULATED';
   order_status: 'NOT_SUBMITTED';
+  holding_profile?: HoldingProfile | null;
 };
 
 export type ExecutionBook = {

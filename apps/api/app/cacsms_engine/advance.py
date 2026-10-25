@@ -220,7 +220,8 @@ def advance_authorised_outlooks(conn, tenant: str, account: str, mode: str, now:
                 idempotency_key=f"mode2:{outlook_id}:{horizon}", symbol=order["symbol"], direction=order["direction"],
                 stop=float(order["stop"]), target=float(order["target"]), price=price, spec=spec, system_mode=mode,
                 terminal_mode=terminal_trade_mode(), open_position_count=count, account=account_row, profile=profile,
-                connected=(account_row.get("connection_status") == "CONNECTED") or bool(context.get("ok")), send=send,
+                connected=(account_row.get("connection_status") == "CONNECTED") or bool(context.get("ok")),
+                outlook_horizon=horizon, send=send,
             )
         stamp = now.isoformat()
         if result.get("ok") and result.get("ticket"):

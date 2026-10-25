@@ -89,6 +89,8 @@ def _price_status(opportunity: dict, now: datetime) -> str:
 
 
 def plan_row(opportunity: dict, now: datetime) -> dict:
+    from ..execution.holding_profile import holding_profile_for_opportunity
+
     opp_type = opportunity.get("opp_type")
     return {
         "id": opportunity.get("id"),
@@ -114,6 +116,7 @@ def plan_row(opportunity: dict, now: datetime) -> dict:
         "broker_order_id": None,
         "record_class": "SIMULATED",
         "order_status": "NOT_SUBMITTED",
+        "holding_profile": holding_profile_for_opportunity(opportunity),
     }
 
 
