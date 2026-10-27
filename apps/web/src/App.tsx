@@ -17,7 +17,7 @@ import { PropFirm } from './pages/PropFirm';
 import { Administration } from './pages/hubs/Administration';
 import { SystemControl } from './pages/hubs/SystemControl';
 import { StrengthIntelligence } from './pages/hubs/StrengthIntelligence';
-import { get, onUnauthorized, post } from './lib/api';
+import { apiFetch, get, onUnauthorized, post } from './lib/api';
 import type { AuthUser, Health, Summary, Tenant, AppRouteState } from './types';
 import type { Page } from './lib/routes';
 import { LEGACY_ROUTE, parseHashRoute, writeHashRoute } from './lib/routes';
@@ -97,9 +97,22 @@ export function App() {
   React.useEffect(() => {
     localStorage.removeItem('ct_token');
     let alive = true;
-    get<AuthUser>('/auth/me')
-      .then((me) => {
+    const timeout =
+      typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal
+        ? AbortSignal.timeout(12_000)
+        : undefined;
+    apiFetch('/auth/me', timeout ? { signal: timeout } : {})
+      .then(async (r) => {
         if (!alive) return;
+        if (r.status === 401) {
+          setAuthed(false);
+          return;
+        }
+        if (!r.ok) {
+          setAuthed(false);
+          return;
+        }
+        const me = (await r.json()) as AuthUser;
         setUser(me);
         setAuthed(true);
       })

@@ -280,10 +280,8 @@ async def require_proxy_secret(request: Request, call_next):
 
     path = request.url.path
     liveness = path == "/api/health/live"
-    unauthenticated_me = path == "/api/auth/me" and not (
-        request.headers.get("authorization") or request.cookies.get(SESSION_COOKIE)
-    )
-    if path.startswith("/api/") and not liveness and not unauthenticated_me:
+    session_probe = path == "/api/auth/me"
+    if path.startswith("/api/") and not liveness and not session_probe:
         await _ensure_database_bootstrap(request.app)
         if (
             getattr(request.app.state, "database_bootstrap_status", "not_started") != "ready"
