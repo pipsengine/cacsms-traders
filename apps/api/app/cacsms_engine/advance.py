@@ -113,8 +113,9 @@ def advance_authorised_outlooks(conn, tenant: str, account: str, mode: str, now:
 
     promote_reaction_handoffs(conn, tenant, account)
     from ..autonomous.portfolio import _account_row, _profile, open_position_cap
+    from ..domain.mt5_connection import ensure_gateway_session
     from ..domain.mt5_execution import execution_allowed, open_market_position, terminal_order_context, terminal_trade_mode
-    from ..execution.service import execute_candidate
+    from ..execution.service import execute_candidate, save_spec
     from ..domain.mt5_terminal_account import read_terminal_account
     from ..domain.mt5_terminal_positions import read_terminal_positions
 
@@ -128,6 +129,10 @@ def advance_authorised_outlooks(conn, tenant: str, account: str, mode: str, now:
     ).fetchall()
     if not rows:
         return {"checked": 0, "sent": 0, "held": 0}
+    try:
+        ensure_gateway_session(conn, tenant)
+    except Exception:
+        pass
     autonomous = (mode or "").upper() in ("DEMO_AUTONOMOUS", "LIVE_AUTONOMOUS")
     positions = []
     if autonomous:
@@ -191,7 +196,9 @@ def advance_authorised_outlooks(conn, tenant: str, account: str, mode: str, now:
             continue
         if not isinstance(evidence, dict):
             evidence = {}
-        if _recent(evidence.get("attempted_at"), now):
+        last_err = str(evidence.get("broker_error") or "")
+        retriable = last_err in ("NO_CONTRACT", "NO_QUOTE", "MT5 terminal is not attached", "ACCOUNT_UNKNOWN") or last_err.startswith("Symbol ")
+        if _recent(evidence.get("attempted_at"), now) and not retriable:
             held += 1
             continue
         payload = payload if isinstance(payload, dict) else {}
@@ -236,12 +243,23 @@ def advance_authorised_outlooks(conn, tenant: str, account: str, mode: str, now:
             price = context["price"]
             count = max(count, int(context.get("open_positions") or 0))
             broker_symbol = context["broker_symbol"]
+            if account_row and spec:
+                save_spec(conn, tenant, account_row["id"], spec)
 
             def send(volume, _order=order, _broker=broker_symbol):
                 return open_market_position(
                     symbol=_order["symbol"], direction=_order["direction"], stop=float(_order["stop"]),
                     target=float(_order["target"]), risk_pct=risk_pct, volume=float(volume), broker_symbol=_broker,
                 )
+        elif context.get("error"):
+            result = {"ok": False, "error": context["error"]}
+            store.save_handoff(
+                outlook, run, "AUTHORIZATION_PENDING",
+                {"broker_error": context["error"], "attempted_at": now.isoformat(), "risk_note": None},
+                None,
+            )
+            held += 1
+            continue
         result = {"ok": False, "error": "ACCOUNT_UNKNOWN"}
         if account_row:
             result = execute_candidate(

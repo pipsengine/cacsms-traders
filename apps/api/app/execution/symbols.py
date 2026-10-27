@@ -28,9 +28,10 @@ def resolve_broker_symbol(symbol: str, available, mapped: str | None = None) -> 
         return None
     keyed = [name for name in names if _head(name) == canon]
     loose = [name for name in names if name.upper().startswith(canon) and _head(name) != canon]
-    if keyed and loose:
+    if len(keyed) == 1:
+        return keyed[0]
+    if len(keyed) > 1:
         return None
-    candidates = keyed or loose
-    if len(candidates) == 1:
-        return candidates[0]
+    if len(loose) == 1:
+        return loose[0]
     return None

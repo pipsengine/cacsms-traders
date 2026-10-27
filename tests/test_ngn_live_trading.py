@@ -113,6 +113,7 @@ def test_symbol_resolution_uses_the_account_symbol_and_refuses_an_ambiguous_suff
     assert resolve_broker_symbol("EURUSD", ["EURUSDm"]) == "EURUSDm"
     assert resolve_broker_symbol("EURUSD", ["EURUSD.a"]) == "EURUSD.a"
     assert resolve_broker_symbol("EURUSD", ["EURUSD", "EURUSD.a"]) is None
+    assert resolve_broker_symbol("EURJPY", ["EURJPY", "EURJPYb"]) == "EURJPY"
     assert resolve_broker_symbol("EURUSD", ["EURUSD", "EURUSD.a"], mapped="EURUSD.a") == "EURUSD.a"
     assert resolve_broker_symbol("EURUSD", ["GBPUSD"], mapped="EURUSDm") is None
 
