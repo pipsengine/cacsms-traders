@@ -197,7 +197,10 @@ def advance_authorised_outlooks(conn, tenant: str, account: str, mode: str, now:
         if not isinstance(evidence, dict):
             evidence = {}
         last_err = str(evidence.get("broker_error") or "")
-        retriable = last_err in ("NO_CONTRACT", "NO_QUOTE", "MT5 terminal is not attached", "ACCOUNT_UNKNOWN") or last_err.startswith("Symbol ")
+        retriable = last_err in (
+            "NO_CONTRACT", "NO_QUOTE", "MINIMUM_EXCEEDS_BUDGET", "MARGIN", "PER_TRADE_RISK",
+            "MT5 terminal is not attached", "ACCOUNT_UNKNOWN",
+        ) or last_err.startswith("Symbol ")
         if _recent(evidence.get("attempted_at"), now) and not retriable:
             held += 1
             continue

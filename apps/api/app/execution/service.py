@@ -7,8 +7,10 @@ Live and prop accounts stay queued-or-blocked until live trading is enabled.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import uuid
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from .baselines import touch_baseline
@@ -18,8 +20,27 @@ from .pipeline import (
     record_outcome, release_lock, upsert_request, _audit,
 )
 from .risk import Baselines, RiskPolicy, evaluate_entry, live_submission_allowed
-from .sizing import account_tick_value, size_position
+from .sizing import SizeResult, account_tick_value, size_position
 from .symbols import canonical_symbol
+
+
+def _outlook_min_lot_ceiling_pct(profile: dict | None) -> float:
+    raw = os.getenv("OUTLOOK_MIN_LOT_MAX_RISK_PCT", "").strip()
+    ceiling = float(raw) if raw else 13.0
+    if profile and profile.get("max_trade_risk_pct") is not None:
+        ceiling = max(ceiling, float(profile["max_trade_risk_pct"]))
+    return ceiling
+
+
+def _outlook_min_lot_size(sized: SizeResult, *, equity, volume_min, ceiling_pct: float) -> tuple[SizeResult, bool]:
+    """MODE_2 only: send broker minimum when projected stop loss fits the outlook ceiling (default 5% equity)."""
+    if sized.ok or sized.reason != "MINIMUM_EXCEEDS_BUDGET" or sized.projected_loss is None:
+        return sized, False
+    projected = D(sized.projected_loss)
+    cap = money(D(equity) * D(ceiling_pct) / D(100))
+    if projected > cap:
+        return sized, False
+    return SizeResult(True, D(volume_min), sized.risk_amount, money(projected), None), True
 
 
 def _row(conn, sql, params=()):
@@ -179,7 +200,17 @@ def execute_candidate(conn, *, tenant_id: str, account_id: str, mode: str, idemp
         tick_value=tick_value, volume_min=spec["volume_min"], volume_max=spec["volume_max"], volume_step=spec["volume_step"],
         commission_per_lot=spec.get("commission_per_lot") or 0, spread_cost_per_lot=spread_cost, stops_distance=stops,
     )
-    _audit(conn, tenant_id, account_id, None, "RISK_CALCULATED", {"risk_amount": str(sized.risk_amount), "reason": sized.reason}, now)
+    outlook_min_lot = False
+    if not sized.ok and mode == "MODE_2":
+        ceiling = _outlook_min_lot_ceiling_pct(profile)
+        sized, outlook_min_lot = _outlook_min_lot_size(
+            sized, equity=equity, volume_min=spec["volume_min"], ceiling_pct=ceiling,
+        )
+    _audit(
+        conn, tenant_id, account_id, None, "RISK_CALCULATED",
+        {"risk_amount": str(sized.risk_amount), "reason": sized.reason, "outlook_min_lot": outlook_min_lot},
+        now,
+    )
     if not sized.ok:
         return _refuse(conn, tenant_id=tenant_id, account_id=account_id, key=idempotency_key, mode=mode, symbol=symbol,
                        direction=direction, currency=currency, reason=sized.reason or "VOLUME_REJECTED", now=now, holder=holder)
@@ -187,8 +218,18 @@ def execute_candidate(conn, *, tenant_id: str, account_id: str, mode: str, idemp
     losses, confirmed = open_exposure(conn, tenant_id, account_id)
     margin_per_lot = spec.get("margin_per_lot")
     margin_required = None if margin_per_lot is None else D(margin_per_lot) * sized.volume
+    risk_policy = policy
+    if outlook_min_lot:
+        ceiling = _outlook_min_lot_ceiling_pct(profile)
+        aggregate = policy.max_aggregate_pct
+        aggregate_f = float(aggregate) if aggregate is not None else ceiling
+        risk_policy = replace(
+            policy,
+            per_trade_pct=ceiling,
+            max_aggregate_pct=max(ceiling, aggregate_f),
+        )
     decision = evaluate_entry(
-        policy=policy, equity=equity, free_margin=account.get("free_margin") or 0, projected_loss=sized.projected_loss,
+        policy=risk_policy, equity=equity, free_margin=account.get("free_margin") or 0, projected_loss=sized.projected_loss,
         open_losses=losses, open_positions=max(int(open_position_count), confirmed), baselines=baselines,
         spread_points=spread_points, margin_required=margin_required, connected=connected, stale=stale,
     )
