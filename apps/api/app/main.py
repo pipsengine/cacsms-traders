@@ -212,8 +212,14 @@ async def lifespan(app: FastAPI):
         log.info("Vercel runtime initialized; DATABASE_URL configured=%s", bool(database_url()))
     else:
         _initialize_database(app)
-        _start_optional_services(app)
     try:
+        if not _is_vercel():
+            threading.Thread(
+                target=_start_optional_services,
+                args=(app,),
+                name="cacsms-optional-services",
+                daemon=True,
+            ).start()
         yield
     finally:
         _stop_optional_services()
