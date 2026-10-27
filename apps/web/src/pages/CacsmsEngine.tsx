@@ -222,6 +222,13 @@ export function CacsmsEngine() {
     if (initial) setLoading(true);
     else if (!quiet) setBusy(true);
     try {
+      if (!quiet) {
+        try {
+          await engineApi.retryExecution();
+        } catch {
+          /* overview still loads if retry is unavailable */
+        }
+      }
       const result = await engineApi.overview();
       setData(result);
       setError('');

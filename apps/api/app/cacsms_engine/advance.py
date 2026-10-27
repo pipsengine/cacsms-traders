@@ -112,6 +112,9 @@ def advance_authorised_outlooks(conn, tenant: str, account: str, mode: str, now:
     from ..market.outlook.lifecycle import promote_reaction_handoffs
 
     promote_reaction_handoffs(conn, tenant, account)
+    from .retry import reset_execution_retries
+
+    reset_execution_retries(conn, tenant, account)
     from ..autonomous.portfolio import _account_row, _profile, open_position_cap
     from ..domain.mt5_connection import ensure_gateway_session
     from ..domain.mt5_execution import execution_allowed, open_market_position, terminal_order_context, terminal_trade_mode

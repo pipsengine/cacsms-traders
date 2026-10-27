@@ -1,8 +1,4 @@
-"""Read-only Cacsms Engine API.
-
-Campaigns are a projection of persisted AI Market Outlook analyses plus the autonomous
-pipeline. This router does not submit orders or change the operating mode.
-"""
+"""Cacsms Engine API — read campaigns and retry execution after retriable errors."""
 from __future__ import annotations
 
 import logging
@@ -11,7 +7,10 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..autonomous.store import AERepository
+from ..autonomous.engine import _mode
+from ..cacsms_engine.advance import advance_authorised_outlooks
 from ..cacsms_engine.load import assemble, detail_for
+from ..cacsms_engine.retry import reset_execution_retries
 from ..core.database import db
 from ..deps import current_user
 from ..market.outlook.store import OutlookRepository
@@ -57,6 +56,21 @@ def overview(user=Depends(current_user), tenant_id: str | None = Query(default=N
         except Exception:
             log.exception("Cacsms Engine overview failed")
             raise HTTPException(503, "Cacsms Engine could not read persisted outlook records") from None
+
+
+@router.post("/retry-execution")
+def retry_execution(user=Depends(current_user), tenant_id: str | None = Query(default=None)):
+    """Clear retriable broker/sizing errors (e.g. MINIMUM_EXCEEDS_BUDGET) and run one outlook advance pass."""
+    del tenant_id
+    with db() as conn:
+        scope = _scope(conn, user)
+        if not user["is_platform_admin"]:
+            require_permission(conn, user, scope[0], "system.manage")
+        cleared = reset_execution_retries(conn, scope[0], scope[1])
+        mode = _mode(conn)
+        advanced = advance_authorised_outlooks(conn, scope[0], scope[1], mode, _now())
+        conn.commit()
+        return {"cleared": cleared, "advance": advanced}
 
 
 @router.get("/campaigns/{campaign_id}")
