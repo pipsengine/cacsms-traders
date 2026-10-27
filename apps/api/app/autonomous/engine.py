@@ -59,9 +59,9 @@ def _mode(conn) -> str:
 
     row = conn.execute("SELECT value_json FROM system_settings WHERE key='system.mode'").fetchone()
     try:
-        return json.loads(dict(row)["value_json"]) if row else "ANALYSIS_ONLY"
+        return json.loads(dict(row)["value_json"]) if row else "LIVE_AUTONOMOUS"
     except (TypeError, ValueError, KeyError):
-        return "ANALYSIS_ONLY"
+        return "LIVE_AUTONOMOUS"
 
 
 def _open_snapshot(conn) -> dict | None:
@@ -192,12 +192,16 @@ def _release_authorised(repo, active, mode, now, ae, conn, apply, gate, counts, 
         strategy_open[symbol] = strategy_open.get(symbol, 0) + 1
     blocked = [row for row in active if row.get("status") == "ACTIVE" and row.get("state") == "EXECUTION_BLOCKED_ANALYSIS_ONLY"]
     blocked.sort(key=lambda row: (str(row.get("symbol") or "").upper().startswith("XAU"), str(row.get("updated_at") or ""), float(row.get("confidence") or 0)), reverse=True)
+    from ..cacsms_engine.priority import strategy_deferred_for_outlook
+
     for opportunity in blocked:
         open_risk = len(positions) * risk_pct
         if max_exposure is not None and open_risk + risk_pct > max_exposure:
             break
         symbol = _canon_symbol(opportunity.get("symbol"))
         if not symbol or strategy_open.get(symbol, 0) >= STRATEGY_LIMIT:
+            continue
+        if strategy_deferred_for_outlook(conn, repo.tenant, repo.account, symbol):
             continue
         from ..domain.mt5_execution import side_price
 
@@ -504,10 +508,9 @@ class AutonomousEngine:
                         channel_changes += 1
         stages["CHANNEL"] = self._stage_channel(repo, ok, safety, now, cs, channel_changes)
 
-        # Stages 6–11: opportunities
-        report = self._opportunities(conn, repo, ok, rows, st, safety, now, ae, cs, ts, ovs, record, provider, snapshot_id, mode)
-        counts.update(report["counts"])
-        if report.get("progress") and not report.get("halted"):
+        # AI Market Outlook (Mode 2) submits before strategy release when cycles are healthy.
+        counts["outlook_orders"] = 0
+        if safety.get("progress_opportunities") and safety["status"] != "HALTED":
             try:
                 from ..cacsms_engine.advance import advance_authorised_outlooks
 
@@ -515,6 +518,9 @@ class AutonomousEngine:
                 counts["outlook_orders"] = outlook_orders.get("sent", 0)
             except Exception:
                 log.exception("Outlook campaign advance failed")
+        # Stages 6–11: opportunities
+        report = self._opportunities(conn, repo, ok, rows, st, safety, now, ae, cs, ts, ovs, record, provider, snapshot_id, mode)
+        counts.update(report["counts"])
         stages.update(self._stage_pipeline(repo, report, safety, now, mode, ae))
 
         # Persist stage states

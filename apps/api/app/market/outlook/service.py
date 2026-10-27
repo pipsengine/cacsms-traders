@@ -538,13 +538,17 @@ class OutlookService:
         day = self.target_day(now, s)
         run = store.run(day.isoformat(), "LIVE")
         if not run or run["state"] not in ("PUBLISHED", "MONITORING"):
+            run = store.latest_published("DAILY")
+        if not run or run["state"] not in ("PUBLISHED", "MONITORING"):
             return 0
         if run["monitored_at"] and run["monitored_at"] > (now - timedelta(seconds=s.monitor_seconds - 5)).isoformat():
             return 0
         outlooks = [o for o in store.outlooks(run["id"]) if o["status"] == "PUBLISHED"]
         if not outlooks:
             return 0
-        anchor = cal.close_time(day)
+        anchor = datetime.fromisoformat(str(run["close_at"]))
+        if anchor.tzinfo is None:
+            anchor = anchor.replace(tzinfo=timezone.utc)
         repo = MarketRepository(conn)
         syms = [o["symbol"] for o in outlooks]
         h1 = candles_between(repo, "H1", syms, anchor, now + timedelta(hours=1))

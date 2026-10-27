@@ -400,11 +400,14 @@ def risk_decision(o: dict, portfolio: list[dict], ae: AESettings, *, position_ca
     metrics: dict = {"entry_reference": entry, "reward_risk": rr, "confidence": o.get("confidence"),
                      "open_plans": len(portfolio), "max_concurrent": ae.max_concurrent, "position_cap": position_cap,
                      "position_rule": "PER_PAIR"}
-    if rr is None or rr < ae.min_reward_risk:
-        return "RISK_REJECTED", "RISK_REJECTED", {**metrics, "rule": "MIN_REWARD_RISK", "required": ae.min_reward_risk}
-    if (o.get("confidence") or 0) < ae.min_confidence:
-        return "RISK_REJECTED", "RISK_REJECTED", {**metrics, "rule": "MIN_CONFIDENCE", "required": ae.min_confidence}
     horizon = ev.get("outlook_horizon")
+    if not horizon:
+        if rr is None or rr < ae.min_reward_risk:
+            return "RISK_REJECTED", "RISK_REJECTED", {**metrics, "rule": "MIN_REWARD_RISK", "required": ae.min_reward_risk}
+        if (o.get("confidence") or 0) < ae.min_confidence:
+            return "RISK_REJECTED", "RISK_REJECTED", {**metrics, "rule": "MIN_CONFIDENCE", "required": ae.min_confidence}
+    elif rr is not None:
+        metrics["outlook_reward_risk"] = rr
     if horizon:
         name = ui_horizon(str(horizon))
         cap = horizon_slot_cap(name, engine_cap=ae.max_concurrent, account_cap=position_cap)

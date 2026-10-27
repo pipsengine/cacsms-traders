@@ -222,6 +222,12 @@ def read_terminal_account_for_tenant(
     if terminal and terminal.get("available"):
         if persist_snapshot:
             persist_terminal_account_snapshot(conn, tenant_id, terminal)
+        try:
+            from ..services.trading_account_sync import sync_trading_account_from_terminal
+
+            sync_trading_account_from_terminal(conn, tenant_id, terminal)
+        except Exception:
+            pass
         return terminal
     return _snapshot_as_terminal_account(settings) or terminal
 
@@ -509,7 +515,7 @@ def clear_stale_mt5_package_errors_all_tenants(conn: sqlite3.Connection) -> None
 def _system_mode(conn: sqlite3.Connection) -> str:
     row = conn.execute("SELECT value_json FROM system_settings WHERE key='system.mode'").fetchone()
     if not row:
-        return "ANALYSIS_ONLY"
+        return "LIVE_AUTONOMOUS"
     return json.loads(row["value_json"])
 
 

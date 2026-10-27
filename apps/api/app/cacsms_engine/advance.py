@@ -12,10 +12,23 @@ from ..autonomous.config import ae_settings
 from ..autonomous import opportunities as opps
 from ..market.outlook.store import OutlookRepository
 from ..market.provenance import values
+import os
+
+from ..market.outlook.config import outlook_settings
 from .policy import horizon_slot_cap, ui_horizon
 from .project import _direction, _levels, _score
 
 _HOLD_SECONDS = 600
+
+
+def _min_send_score() -> float:
+    raw = os.getenv("OUTLOOK_MIN_SEND_SCORE", "").strip()
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    return outlook_settings().min_probability
 
 
 def decide_outlook_order(
@@ -35,8 +48,9 @@ def decide_outlook_order(
     if not payload.get("qualified"):
         return {"action": "skip", "reason": "Outlook is not a qualified opportunity"}
     score = _score(payload)
-    if score is None or score < 70:
-        return {"action": "skip", "reason": "Evidence score is below 70"}
+    floor = _min_send_score()
+    if score is None or score < floor:
+        return {"action": "skip", "reason": f"Evidence score is below {floor:g}"}
     direction = _direction(payload)
     if direction not in ("BUY", "SELL"):
         return {"action": "skip", "reason": "Outlook has no tradable direction"}
@@ -95,6 +109,9 @@ def _recent(stamp: object, now: datetime) -> bool:
 
 def advance_authorised_outlooks(conn, tenant: str, account: str, mode: str, now: datetime | None = None) -> dict:
     """Submit at most the remaining position slots for outlooks whose confirmation sequence is complete."""
+    from ..market.outlook.lifecycle import promote_reaction_handoffs
+
+    promote_reaction_handoffs(conn, tenant, account)
     from ..autonomous.portfolio import _account_row, _profile, open_position_cap
     from ..domain.mt5_execution import execution_allowed, open_market_position, terminal_order_context, terminal_trade_mode
     from ..execution.service import execute_candidate
@@ -121,6 +138,18 @@ def advance_authorised_outlooks(conn, tenant: str, account: str, mode: str, now:
     cap = open_position_cap(conn, tenant, account)
     allowed = execution_allowed(mode, terminal_trade_mode()) if autonomous else False
     account_row = _account_row(conn, tenant, account)
+    if account_row is None:
+        try:
+            from ..domain.mt5_connection import read_terminal_account_for_tenant
+
+            terminal = read_terminal_account_for_tenant(conn, tenant, force_attach=False, persist_snapshot=True)
+            if terminal and terminal.get("available"):
+                from ..services.trading_account_sync import sync_trading_account_from_terminal
+
+                sync_trading_account_from_terminal(conn, tenant, terminal)
+                account_row = _account_row(conn, tenant, account)
+        except Exception:
+            pass
     profile = _profile(conn, account_row["id"] if account_row else None)
     risk_pct = 1.0
     max_exposure = None

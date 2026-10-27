@@ -104,7 +104,7 @@ def bootstrap():
         ensure_super_admin(c, tenant_id, now, list(PERMISSIONS.keys()))
         c.execute(
             "INSERT INTO system_settings(key,value_json,updated_at) VALUES('system.mode',?,?) ON CONFLICT (key) DO NOTHING",
-            ('"ANALYSIS_ONLY"', now),
+            ('"LIVE_AUTONOMOUS"', now),
         )
         c.execute(
             "INSERT INTO system_settings(key,value_json,updated_at) VALUES('mt5.local',?,?) ON CONFLICT (key) DO NOTHING",

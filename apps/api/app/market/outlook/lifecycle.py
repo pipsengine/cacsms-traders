@@ -5,7 +5,13 @@ AUTHORIZED is never produced here — Stage 8 risk approval stays with the auton
 """
 from __future__ import annotations
 
-from datetime import datetime
+import os
+from datetime import datetime, timezone
+
+
+def _send_on_reaction() -> bool:
+    """When enabled, ERZ reaction alone may hand off to execution (default on for autonomous outlook trading)."""
+    return os.getenv("OUTLOOK_SEND_ON_REACTION", "1").strip().lower() not in ("0", "false", "no")
 
 PROGRESS = (
     "PUBLISHED",
@@ -19,6 +25,39 @@ PROGRESS = (
     "AUTHORIZED",
 )
 TERMINAL = ("INVALIDATED", "EXPIRED", "COMPLETED", "NO_OPPORTUNITY")
+
+
+def promote_reaction_handoffs(conn, tenant: str, account: str) -> int:
+    """Upgrade stale REACTION_PENDING rows when ERZ reaction is already confirmed (e.g. after rule or weekend monitor gap)."""
+    if not _send_on_reaction():
+        return 0
+    import json
+
+    from ..provenance import values
+
+    rows = conn.execute(
+        "SELECT outlook_id, evidence_json FROM ai_outlook_handoff "
+        "WHERE tenant_id=? AND trading_account_id=? AND lifecycle='REACTION_PENDING' "
+        "AND (execution_ref IS NULL OR execution_ref='')",
+        (tenant, account),
+    ).fetchall()
+    stamp = datetime.now(timezone.utc).isoformat()
+    n = 0
+    for row in rows:
+        outlook_id, evidence_json = values(row)
+        try:
+            evidence = json.loads(evidence_json or "{}")
+        except ValueError:
+            continue
+        steps = evidence.get("steps_done") or []
+        if "REACTION" not in steps:
+            continue
+        conn.execute(
+            "UPDATE ai_outlook_handoff SET lifecycle='AUTHORIZATION_PENDING', updated_at=? WHERE outlook_id=?",
+            (stamp, outlook_id),
+        )
+        n += 1
+    return n
 
 
 def lifecycle_for(outlook: dict, monitor_result: dict, now: datetime, expires_at: datetime | None = None, *, m15_confirmed: bool = False) -> str:
@@ -41,6 +80,8 @@ def lifecycle_for(outlook: dict, monitor_result: dict, now: datetime, expires_at
         if m15_confirmed or "BOS" in keys:
             return "CONFIRMATION_PENDING"
     elif h1_ready:
+        return "AUTHORIZATION_PENDING"
+    if _send_on_reaction() and "REACTION" in keys and horizon != "H8":
         return "AUTHORIZATION_PENDING"
     if expires_at is not None and now >= expires_at:
         return "EXPIRED"
