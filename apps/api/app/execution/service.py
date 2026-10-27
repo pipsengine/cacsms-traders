@@ -24,16 +24,17 @@ from .sizing import SizeResult, account_tick_value, size_position
 from .symbols import canonical_symbol
 
 
-def _outlook_min_lot_ceiling_pct(profile: dict | None) -> float:
-    raw = os.getenv("OUTLOOK_MIN_LOT_MAX_RISK_PCT", "").strip()
+def _min_lot_max_risk_pct(profile: dict | None) -> float:
+    """Ceiling for broker minimum-lot stop risk (Mode 1 and Mode 2, all symbols)."""
+    raw = (os.getenv("MIN_LOT_MAX_RISK_PCT", "") or os.getenv("OUTLOOK_MIN_LOT_MAX_RISK_PCT", "")).strip()
     ceiling = float(raw) if raw else 13.0
     if profile and profile.get("max_trade_risk_pct") is not None:
         ceiling = max(ceiling, float(profile["max_trade_risk_pct"]))
     return ceiling
 
 
-def _outlook_min_lot_size(sized: SizeResult, *, equity, volume_min, ceiling_pct: float) -> tuple[SizeResult, bool]:
-    """MODE_2 only: send broker minimum when projected stop loss fits the outlook ceiling (default 5% equity)."""
+def _apply_min_lot_fallback(sized: SizeResult, *, equity, volume_min, ceiling_pct: float) -> tuple[SizeResult, bool]:
+    """Use volume_min when 1% (or profile) sizing is below broker minimum but loss fits the ceiling."""
     if sized.ok or sized.reason != "MINIMUM_EXCEEDS_BUDGET" or sized.projected_loss is None:
         return sized, False
     projected = D(sized.projected_loss)
@@ -41,6 +42,11 @@ def _outlook_min_lot_size(sized: SizeResult, *, equity, volume_min, ceiling_pct:
     if projected > cap:
         return sized, False
     return SizeResult(True, D(volume_min), sized.risk_amount, money(projected), None), True
+
+
+# Backward-compatible aliases for scripts and tests
+_outlook_min_lot_ceiling_pct = _min_lot_max_risk_pct
+_outlook_min_lot_size = _apply_min_lot_fallback
 
 
 def _row(conn, sql, params=()):
@@ -200,15 +206,21 @@ def execute_candidate(conn, *, tenant_id: str, account_id: str, mode: str, idemp
         tick_value=tick_value, volume_min=spec["volume_min"], volume_max=spec["volume_max"], volume_step=spec["volume_step"],
         commission_per_lot=spec.get("commission_per_lot") or 0, spread_cost_per_lot=spread_cost, stops_distance=stops,
     )
-    outlook_min_lot = False
-    if not sized.ok and mode == "MODE_2":
-        ceiling = _outlook_min_lot_ceiling_pct(profile)
-        sized, outlook_min_lot = _outlook_min_lot_size(
+    min_lot_fallback = False
+    if not sized.ok:
+        ceiling = _min_lot_max_risk_pct(profile)
+        sized, min_lot_fallback = _apply_min_lot_fallback(
             sized, equity=equity, volume_min=spec["volume_min"], ceiling_pct=ceiling,
         )
     _audit(
         conn, tenant_id, account_id, None, "RISK_CALCULATED",
-        {"risk_amount": str(sized.risk_amount), "reason": sized.reason, "outlook_min_lot": outlook_min_lot},
+        {
+            "risk_amount": str(sized.risk_amount),
+            "reason": sized.reason,
+            "min_lot_fallback": min_lot_fallback,
+            "mode": mode,
+            "symbol": symbol,
+        },
         now,
     )
     if not sized.ok:
@@ -219,8 +231,8 @@ def execute_candidate(conn, *, tenant_id: str, account_id: str, mode: str, idemp
     margin_per_lot = spec.get("margin_per_lot")
     margin_required = None if margin_per_lot is None else D(margin_per_lot) * sized.volume
     risk_policy = policy
-    if outlook_min_lot:
-        ceiling = _outlook_min_lot_ceiling_pct(profile)
+    if min_lot_fallback:
+        ceiling = _min_lot_max_risk_pct(profile)
         aggregate = policy.max_aggregate_pct
         aggregate_f = float(aggregate) if aggregate is not None else ceiling
         risk_policy = replace(

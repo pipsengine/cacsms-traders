@@ -91,15 +91,15 @@ def test_ngn_volume_uses_account_currency_tick_value_and_rounds_down():
     assert sized.projected_loss == D("900.00")
 
 
-def test_mode2_outlook_allows_minimum_lot_within_ceiling():
-    from apps.api.app.execution.service import _outlook_min_lot_size
+def test_min_lot_fallback_allows_broker_minimum_within_ceiling_for_any_mode():
+    from apps.api.app.execution.service import _apply_min_lot_fallback
 
     sized = size_position(
         equity=50_000, risk_pct=1, price="175.95", stop="176.66", tick_size="0.001", tick_value="843.74",
         volume_min="0.01", volume_max="60", volume_step="0.01",
     )
     assert not sized.ok and sized.reason == "MINIMUM_EXCEEDS_BUDGET"
-    retry, ok = _outlook_min_lot_size(sized, equity=50_000, volume_min="0.01", ceiling_pct=13.0)
+    retry, ok = _apply_min_lot_fallback(sized, equity=50_000, volume_min="0.01", ceiling_pct=13.0)
     assert ok and retry.ok and retry.volume == D("0.01")
 
 
