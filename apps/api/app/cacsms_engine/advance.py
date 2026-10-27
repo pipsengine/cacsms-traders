@@ -267,6 +267,7 @@ def advance_authorised_outlooks(conn, tenant: str, account: str, mode: str, now:
             held += 1
             continue
         result = {"ok": False, "error": "ACCOUNT_UNKNOWN"}
+        stamp = now.isoformat()
         if account_row:
             result = execute_candidate(
                 conn, tenant_id=tenant, account_id=account_row["id"], mode="MODE_2",
@@ -274,9 +275,36 @@ def advance_authorised_outlooks(conn, tenant: str, account: str, mode: str, now:
                 stop=float(order["stop"]), target=float(order["target"]), price=price, spec=spec, system_mode=mode,
                 terminal_mode=terminal_trade_mode(), open_position_count=count, account=account_row, profile=profile,
                 connected=(account_row.get("connection_status") == "CONNECTED") or bool(context.get("ok")),
-                outlook_horizon=horizon, send=send,
+                outlook_horizon=horizon, outlook_payload=payload, send=send,
             )
-        stamp = now.isoformat()
+        err = str(result.get("error") or "")
+        if err.startswith("PRICE_OUTSIDE_ERZ"):
+            store.save_handoff(
+                outlook, run, "AUTHORIZATION_PENDING",
+                {
+                    "risk_note": "Waiting for price at the outlook entry zone before sizing a live order.",
+                    "broker_error": None,
+                    "attempted_at": stamp,
+                },
+                None,
+            )
+            held += 1
+            continue
+        if err == "MINIMUM_EXCEEDS_BUDGET":
+            store.save_handoff(
+                outlook, run, "AUTHORIZATION_PENDING",
+                {
+                    "risk_note": (
+                        "Minimum broker lot at this stop exceeds the account risk ceiling "
+                        f"(₦{int(float(account_row.get('equity') or 0) * 0.13):,} max at 13% on this equity)."
+                    ),
+                    "broker_error": None,
+                    "attempted_at": stamp,
+                },
+                None,
+            )
+            held += 1
+            continue
         if result.get("ok") and result.get("ticket"):
             store.save_handoff(
                 outlook, run, "ORDER_SUBMITTED",
@@ -289,10 +317,10 @@ def advance_authorised_outlooks(conn, tenant: str, account: str, mode: str, now:
             if max_exposure is not None:
                 open_risk = round(open_risk + risk_pct, 4)
                 room = 1 if open_risk + risk_pct <= max_exposure else 0
-        else:
+        elif err:
             store.save_handoff(
                 outlook, run, "AUTHORIZATION_PENDING",
-                {"broker_error": result.get("error") or "Broker did not accept the order", "attempted_at": stamp, "risk_note": None},
+                {"broker_error": err or "Broker did not accept the order", "attempted_at": stamp, "risk_note": None},
                 None,
             )
             held += 1

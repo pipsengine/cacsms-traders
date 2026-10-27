@@ -74,8 +74,9 @@ def _outlook(raw: dict | None) -> dict:
     }
 
 
-def _workflow(stages: list[dict]) -> dict:
+def _workflow(stages: list[dict], *, mode: str = "SHADOW", orders_submitted: int = 0, broker_open: int = 0) -> dict:
     by = {s.get("key"): s for s in stages}
+    broker_mode = (mode or "").upper() in ("DEMO_AUTONOMOUS", "LIVE_AUTONOMOUS")
 
     def group_of(index: int) -> list[dict]:
         return [by[m] for m in WORKFLOW[index][2] if by.get(m)]
@@ -83,19 +84,64 @@ def _workflow(stages: list[dict]) -> dict:
     def is_open(index: int) -> bool:
         return any(g.get("status") in LIVE_STAGE for g in group_of(index))
 
-    # Earlier groups stay RUNNING after the pipeline has moved on. The current step is the
-    # furthest of Scan → Validate that is still working. Execute counts only when it is not
-    # the standing analysis-only block, and Manage counts when nothing ahead of it is open.
+    def work(index: int) -> int:
+        return sum(int(g.get("waiting") or 0) + int(g.get("active") or 0) for g in group_of(index))
+
+    def group_blocked(index: int) -> bool:
+        return any(g.get("status") == "BLOCKED" for g in group_of(index))
+
+    # Scan and analyse stay RUNNING while the worker cycles; progress follows queued work downstream.
+    mgmt = by.get("MANAGEMENT") or {}
+    managing_broker = broker_open > 0 or int(mgmt.get("active") or 0) > 0
     current = 0
-    for index in range(4):
-        if is_open(index):
+    for index in range(len(WORKFLOW) - 1, 1, -1):
+        if index == 5:
+            # LEARNING stays RUNNING whenever closed outcomes exist; that is not an open broker book.
+            if managing_broker:
+                current = index
+                break
+            continue
+        if index == 4 and broker_mode and not group_blocked(4):
+            exec_stage = by.get("EXECUTION") or {}
+            exec_queue = work(4) or int(exec_stage.get("waiting") or 0) + int(exec_stage.get("active") or 0)
+            if exec_queue > 0 or is_open(4) or orders_submitted > 0:
+                current = index
+                break
+        if work(index) > 0:
             current = index
-    if not any(is_open(index) for index in range(4)):
-        execute = group_of(4)
-        if is_open(4) and not any(g.get("status") == "BLOCKED" for g in execute):
-            current = 4
-        elif is_open(5):
-            current = 5
+            break
+    else:
+        if is_open(2) or work(2) > 0:
+            current = 2
+        elif is_open(1):
+            current = 1
+
+    position_basis = "Workflow step from queued confirmation, risk, and execution work — not how long scan/analyse have been running."
+    position_pct = round(100 * (current + 1) / len(WORKFLOW))
+    if current == 3:
+        conf = by.get("CONFIRMATION") or {}
+        risk = by.get("RISK") or {}
+        awaiting = int(conf.get("waiting") or 0)
+        reacted = int(conf.get("active") or 0)
+        risk_queue = int(risk.get("waiting") or 0) + int(risk.get("active") or 0)
+        pipeline = awaiting + reacted + risk_queue
+        if pipeline > 0:
+            done_units = reacted + int(risk.get("processed") or 0)
+            intra = min(0.95, max(0.05, done_units / pipeline))
+            position_pct = round(100 * (3 + intra) / len(WORKFLOW))
+            position_basis = (
+                f"Validate sub-progress: {reacted} past reaction, {awaiting} awaiting reaction, "
+                f"{risk_queue} in risk — updates as handoffs move."
+            )
+    elif current == 4:
+        exec_stage = by.get("EXECUTION") or {}
+        waiting = int(exec_stage.get("waiting") or 0)
+        active = int(exec_stage.get("active") or 0)
+        if waiting + active > 0:
+            intra = active / (waiting + active)
+            position_pct = round(100 * (4 + intra) / len(WORKFLOW))
+            position_basis = f"Execute sub-progress: {active} at broker, {waiting} still submitting."
+
     steps = []
     for index, (key, label, _members) in enumerate(WORKFLOW):
         group = group_of(index)
@@ -115,19 +161,18 @@ def _workflow(stages: list[dict]) -> dict:
         operation = operation or stage.get("current_operation")
         nxt = nxt or stage.get("next_operation")
         focus = focus or (stage.get("metrics") or {}).get("focus")
-    done = current
     return {
         "steps": steps,
         "current_index": current,
         "current_label": WORKFLOW[current][1],
         "step_of": current + 1,
         "step_count": len(WORKFLOW),
-        "position_pct": round(100 * (current + 1) / len(WORKFLOW)),
-        "position_basis": "Share of the six workflow groups reached by the latest persisted stage status. Not a task-completion percentage.",
+        "position_pct": position_pct,
+        "position_basis": position_basis,
         "operation": operation,
         "next_action": nxt,
         "focus_symbol": focus,
-        "completed_groups": done,
+        "completed_groups": current,
         "errors": steps[current]["errors"] if steps else 0,
         "blockers": steps[current]["blockers"] if steps else [],
     }
@@ -297,7 +342,12 @@ def assemble(*, now: datetime, mode: str, market_open: bool | None, safety: dict
     shadow = exe.get("shadow") or {}
     outcomes = port.get("outcomes") or {}
     safety_blockers = list(safety.get("blockers") or [])
-    flow = _workflow(stages)
+    flow = _workflow(
+        stages,
+        mode=mode,
+        orders_submitted=int(broker.get("orders_submitted") or 0),
+        broker_open=int(broker.get("open_positions") or 0),
+    )
     flow["blockers"] = (safety_blockers + flow["blockers"])[:6]
     if mode == "DEMO_AUTONOMOUS":
         execution_state, execution_note = "DEMO", "Demo orders can be sent after confirmation and risk. Shadow plans are not broker fills."

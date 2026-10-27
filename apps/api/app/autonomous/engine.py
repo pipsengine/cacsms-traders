@@ -981,16 +981,73 @@ class AutonomousEngine:
                      "exposure": {k: v for k, v in exposure.items() if v}, "max_concurrent": ae.max_concurrent,
                      "min_reward_risk": ae.min_reward_risk, "max_currency_exposure": ae.max_currency_exposure},
             blockers=blockers + (["Operating mode halts risk authorisation"] if report["halted"] else []))
-        out["EXECUTION"] = self._base(
-            "BLOCKED", "EXECUTION_BLOCKED_ANALYSIS_ONLY — no broker orders are submitted",
-            "Execution stays disabled while the operating mode is ANALYSIS ONLY", processed=today.get("EXECUTION_BLOCKED_ANALYSIS_ONLY", 0),
-            active=0, waiting=len(execution), errors=0,
-            metrics={"orders_submitted": 0, "blocked_today": today.get("EXECUTION_BLOCKED_ANALYSIS_ONLY", 0), "operating_mode": mode,
-                     "execution_state": "EXECUTION_BLOCKED_ANALYSIS_ONLY", "shadow_plans": len(execution)},
-            blockers=["Operating mode ANALYSIS ONLY — broker execution disabled"])
-        out["MANAGEMENT"] = self._base(
-            "IDLE", "No broker positions — execution is disabled", "Manages positions only when execution is enabled",
-            processed=0, active=0, waiting=0, errors=0, metrics={"open_positions": 0, "broker_orders": 0, "shadow_plans_tracked": len(execution)})
+        mode_upper = (mode or "").upper()
+        broker_mode = mode_upper in ("DEMO_AUTONOMOUS", "LIVE_AUTONOMOUS")
+        order_accepted = [o for o in execution if o.get("state") == "ORDER_ACCEPTED"]
+        exec_blocked = [o for o in execution if o.get("state") == "EXECUTION_BLOCKED_ANALYSIS_ONLY"]
+        orders_today = today.get("ORDER_ACCEPTED", 0)
+        if not broker_mode or blocked:
+            out["EXECUTION"] = self._base(
+                "BLOCKED", "EXECUTION_BLOCKED_ANALYSIS_ONLY — no broker orders are submitted",
+                "Execution stays disabled while the operating mode is ANALYSIS ONLY",
+                processed=today.get("EXECUTION_BLOCKED_ANALYSIS_ONLY", 0), active=0, waiting=len(execution), errors=0,
+                metrics={"orders_submitted": 0, "blocked_today": today.get("EXECUTION_BLOCKED_ANALYSIS_ONLY", 0), "operating_mode": mode,
+                         "execution_state": "EXECUTION_BLOCKED_ANALYSIS_ONLY", "shadow_plans": len(execution)},
+                blockers=blockers + ["Operating mode ANALYSIS ONLY — broker execution disabled"])
+        else:
+            from ..domain.mt5_execution import execution_allowed, terminal_trade_mode
+
+            terminal_ok = execution_allowed(mode, terminal_trade_mode())
+            exec_blockers = list(blockers)
+            if report["halted"]:
+                exec_blockers.append("Operating mode halts broker execution")
+            elif not terminal_ok:
+                exec_blockers.append("Terminal is not accepting this operating mode")
+            waiting_send = len(exec_blocked) + len([o for o in deferred if o.get("state") == "RISK_APPROVED"])
+            if exec_blockers:
+                exec_status = "BLOCKED"
+                exec_op = exec_blockers[0]
+            elif order_accepted or orders_today:
+                exec_status = "RUNNING"
+                exec_op = f"{orders_today} order(s) submitted today — {len(order_accepted)} at broker"
+            elif waiting_send or exec_blocked:
+                exec_status = "RUNNING"
+                exec_op = f"{waiting_send} authorised plan(s) awaiting broker fill"
+            else:
+                exec_status = "WAITING"
+                exec_op = "No authorised entry waiting for broker submission"
+            out["EXECUTION"] = self._base(
+                exec_status, exec_op, "Submit market order after risk approval",
+                processed=orders_today + today.get("EXECUTION_BLOCKED_ANALYSIS_ONLY", 0),
+                active=len(order_accepted), waiting=waiting_send, errors=0,
+                metrics={"orders_submitted": orders_today, "blocked_today": today.get("EXECUTION_BLOCKED_ANALYSIS_ONLY", 0),
+                         "operating_mode": mode, "execution_state": "LIVE" if mode_upper == "LIVE_AUTONOMOUS" else "DEMO",
+                         "shadow_plans": len(exec_blocked), "terminal_ok": terminal_ok},
+                blockers=exec_blockers)
+        open_positions = 0
+        if broker_mode and not blocked:
+            try:
+                from ..domain.mt5_terminal_positions import read_terminal_positions
+
+                live_positions, _basis = read_terminal_positions()
+                open_positions = len(live_positions or [])
+            except Exception:
+                log.exception("Management stage could not read terminal positions")
+        if broker_mode and open_positions:
+            out["MANAGEMENT"] = self._base(
+                "RUNNING", f"{open_positions} open broker position(s)", "Trail stops and reconcile fills",
+                processed=open_positions, active=open_positions, waiting=0, errors=0,
+                metrics={"open_positions": open_positions, "broker_orders": len(order_accepted), "shadow_plans_tracked": len(exec_blocked)})
+        elif broker_mode:
+            out["MANAGEMENT"] = self._base(
+                "WAITING", "No open broker positions", "Manages live positions when execution fills",
+                processed=0, active=0, waiting=0, errors=0,
+                metrics={"open_positions": 0, "broker_orders": len(order_accepted), "shadow_plans_tracked": len(exec_blocked)})
+        else:
+            out["MANAGEMENT"] = self._base(
+                "IDLE", "No broker positions — execution is disabled", "Manages positions only when execution is enabled",
+                processed=0, active=0, waiting=0, errors=0,
+                metrics={"open_positions": 0, "broker_orders": 0, "shadow_plans_tracked": len(execution)})
         since = (now - timedelta(days=30)).isoformat()
         closed = repo.closed_opportunities(since)
         outcomes: dict[str, int] = {}

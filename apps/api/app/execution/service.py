@@ -76,6 +76,29 @@ def _baselines(row: dict | None) -> Baselines | None:
     return Baselines(row["peak_equity"], row["day_start_equity"], row["week_start_equity"])
 
 
+def resolve_spec_tick_value(conn, tenant_id: str, account_currency: str, spec: dict) -> tuple[object, str | None, object]:
+    """Tick value in account currency plus spread cost per lot for sizing."""
+    currency = (account_currency or "USD").upper()
+    profit_currency = spec.get("currency_profit")
+    conversion = None
+    if profit_currency and profit_currency.upper() != currency:
+        conversion = latest_conversion(conn, tenant_id, profit_currency, currency)
+    tick_value, tick_reason = account_tick_value(
+        account_currency=currency,
+        tick_value=spec.get("tick_value"),
+        tick_value_currency=spec.get("tick_value_currency") or currency,
+        profit_tick_value=spec.get("profit_tick_value"),
+        profit_currency=profit_currency,
+        conversion_rate=None if not conversion else conversion["rate"],
+        conversion_from=None if not conversion else conversion["from_currency"],
+        conversion_to=None if not conversion else conversion["to_currency"],
+    )
+    point = D(spec.get("point") or spec.get("tick_size"))
+    spread_points = D(spec.get("spread_points") or 0)
+    spread_cost = (spread_points * point / D(spec["tick_size"])) * tick_value if tick_value and spread_points else 0
+    return tick_value, tick_reason, spread_cost
+
+
 def load_spec(conn, account_id: str, symbol: str) -> dict | None:
     return _row(
         conn,
@@ -136,6 +159,7 @@ def execute_candidate(conn, *, tenant_id: str, account_id: str, mode: str, idemp
                       terminal_mode: str | None, open_position_count: int = 0, account: dict | None = None,
                       profile: dict | None = None,                       connected: bool = True, stale: bool = False, send=None, dry_run: bool = False,
                       parent_tf: str | None = None, trigger_tf: str | None = None, outlook_horizon: str | None = None,
+                      outlook_payload: dict | None = None, size_price: float | None = None,
                       now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     if now.tzinfo is None:
@@ -180,29 +204,37 @@ def execute_candidate(conn, *, tenant_id: str, account_id: str, mode: str, idemp
     if not spec or price is None:
         return _refuse(conn, tenant_id=tenant_id, account_id=account_id, key=idempotency_key, mode=mode, symbol=symbol,
                        direction=direction, currency=currency, reason="NO_CONTRACT" if not spec else "NO_QUOTE", now=now, holder=holder)
-    conversion = None
-    profit_currency = spec.get("currency_profit")
-    if profit_currency and profit_currency.upper() != currency:
-        conversion = latest_conversion(conn, tenant_id, profit_currency, currency)
-    tick_value, tick_reason = account_tick_value(
-        account_currency=currency,
-        tick_value=spec.get("tick_value"),
-        tick_value_currency=spec.get("tick_value_currency") or currency,
-        profit_tick_value=spec.get("profit_tick_value"),
-        profit_currency=profit_currency,
-        conversion_rate=None if not conversion else conversion["rate"],
-        conversion_from=None if not conversion else conversion["from_currency"],
-        conversion_to=None if not conversion else conversion["to_currency"],
-    )
+    tick_value, tick_reason, spread_cost = resolve_spec_tick_value(conn, tenant_id, currency, spec)
     if tick_reason:
         return _refuse(conn, tenant_id=tenant_id, account_id=account_id, key=idempotency_key, mode=mode, symbol=symbol,
                        direction=direction, currency=currency, reason=tick_reason, now=now, holder=holder)
     point = D(spec.get("point") or spec.get("tick_size"))
     spread_points = D(spec.get("spread_points") or 0)
-    spread_cost = (spread_points * point / D(spec["tick_size"])) * tick_value if spread_points else 0
     stops = D(spec.get("stops_level_points") or 0) * point
+    if mode == "MODE_2" and outlook_payload:
+        from .outlook_entry import outlook_size_reference, outlook_volume_plan
+
+        ok, _volume, plan_err = outlook_volume_plan(
+            payload=outlook_payload,
+            direction=direction,
+            live_price=float(price),
+            stop=stop,
+            equity=equity,
+            risk_pct=float(policy.per_trade_pct),
+            spec=spec,
+            tick_value=tick_value,
+            profile=profile,
+            spread_cost_per_lot=spread_cost,
+        )
+        if not ok:
+            return _refuse(
+                conn, tenant_id=tenant_id, account_id=account_id, key=idempotency_key, mode=mode, symbol=symbol,
+                direction=direction, currency=currency, reason=plan_err or "OUTLOOK_ENTRY", now=now, holder=holder,
+            )
+        size_price = outlook_size_reference(outlook_payload, direction) or size_price
+    price_for_size = size_price if size_price is not None else price
     sized = size_position(
-        equity=equity, risk_pct=policy.per_trade_pct, price=price, stop=stop, tick_size=spec["tick_size"],
+        equity=equity, risk_pct=policy.per_trade_pct, price=price_for_size, stop=stop, tick_size=spec["tick_size"],
         tick_value=tick_value, volume_min=spec["volume_min"], volume_max=spec["volume_max"], volume_step=spec["volume_step"],
         commission_per_lot=spec.get("commission_per_lot") or 0, spread_cost_per_lot=spread_cost, stops_distance=stops,
     )

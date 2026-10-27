@@ -94,7 +94,11 @@ def overview(repo: AERepository, now: datetime, ctx: dict, mode: str, engine_run
             "system_status": _system_status(last, last_ok, ws, now),
             "safety_status": safety.get("status") or "UNKNOWN",
             "operating_mode": mode,
-            "execution": "EXECUTION_BLOCKED_ANALYSIS_ONLY",
+            "execution": (
+                "LIVE_AUTONOMOUS" if (mode or "").upper() == "LIVE_AUTONOMOUS"
+                else "DEMO_AUTONOMOUS" if (mode or "").upper() == "DEMO_AUTONOMOUS"
+                else "EXECUTION_BLOCKED_ANALYSIS_ONLY"
+            ),
             "provider": active_provider,
             "provider_label": {"mt5": "MT5", "ctrader": "cTrader"}.get(active_provider or "", active_provider),
             "provider_connection": platform.get("provider_phase") or ("CONNECTED" if ctx.get("market_data_ready") else "OFFLINE"),

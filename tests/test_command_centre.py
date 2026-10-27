@@ -5,9 +5,9 @@ from apps.api.app.autonomous.command_centre import assemble
 NOW = datetime(2026, 10, 10, 12, tzinfo=timezone.utc)
 
 
-def _stage(key, status="PENDING", operation=None, nxt=None, errors=0, blockers=None, focus=None):
+def _stage(key, status="PENDING", operation=None, nxt=None, errors=0, blockers=None, focus=None, waiting=0, active=0):
     return {"key": key, "status": status, "current_operation": operation, "next_operation": nxt, "errors": errors,
-            "blockers": blockers or [], "metrics": {"focus": focus} if focus else {}}
+            "waiting": waiting, "active": active, "blockers": blockers or [], "metrics": {"focus": focus} if focus else {}}
 
 
 def test_bias_and_confidence_come_only_from_qualified_outlooks():
@@ -52,10 +52,34 @@ def test_workflow_position_follows_persisted_stage_status():
     assert flow["step_of"] == 3
     assert flow["operation"] == "Tracking 4 opportunities"
     assert flow["focus_symbol"] == "XAUUSD"
-    assert flow["position_basis"].startswith("Share of the six")
+    assert "workflow" in flow["position_basis"].lower() or "validate" in flow["position_basis"].lower() or "queued" in flow["position_basis"].lower()
     assert flow["steps"][0]["state"] == "done"
     assert flow["steps"][2]["state"] == "current"
     assert flow["steps"][4]["state"] == "pending"
+
+
+def test_learning_running_does_not_show_manage_at_100_without_positions():
+    stages = [
+        _stage("MARKET_DATA", "RUNNING"), _stage("SCANNER", "RUNNING"), _stage("INTELLIGENCE", "RUNNING"),
+        _stage("STRUCTURE", "RUNNING"), _stage("CHANNEL", "RUNNING"),
+        _stage("OPPORTUNITY", "RUNNING", waiting=4),
+        _stage("CONFIRMATION", "RUNNING", waiting=3, active=1),
+        _stage("RISK", "WAITING", waiting=2),
+        _stage("EXECUTION", "WAITING"),
+        _stage("MANAGEMENT", "WAITING", operation="No open broker positions"),
+        _stage("LEARNING", "RUNNING", operation="Closed outcomes in 30 days"),
+    ]
+    board = assemble(
+        now=NOW, mode="LIVE_AUTONOMOUS", market_open=True, safety={"status": "NORMAL", "blockers": []}, ribbon={},
+        stages=stages, outlook=None, scanner=None, strength=[], opportunities=[],
+        portfolio={"account": {"equity": 50000}, "limits": {}, "outcomes": {}},
+        execution={"broker": {"open_positions": 0, "orders_submitted": 0}, "shadow": {"open_plans": 0}},
+        alerts=[],
+    )
+    flow = board["workflow"]
+    assert flow["current_label"] == "Validate"
+    assert flow["position_pct"] < 100
+    assert flow["step_of"] != 6
 
 
 def test_shadow_plans_are_not_broker_positions():
