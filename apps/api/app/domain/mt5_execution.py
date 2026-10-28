@@ -82,8 +82,16 @@ def _round_price(info, price: float) -> float:
 
 
 def _broker_name(mt5, symbol: str, mapped: str | None = None) -> str | None:
+    from ..execution.symbols import choose_account_symbol
+
     names = [item.name for item in (mt5.symbols_get() or ())]
-    return resolve_broker_symbol(symbol, names, mapped)
+    if mapped:
+        return resolve_broker_symbol(symbol, names, mapped)
+    return choose_account_symbol(
+        symbol, names,
+        lambda name: bool(mt5.symbol_select(name, True)),
+        lambda name: mt5.symbol_info_tick(name),
+    )
 
 
 def terminal_order_context(symbol: str, direction: str) -> dict[str, Any]:

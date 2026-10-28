@@ -77,9 +77,13 @@ class WindowsBridge:
             self.frame += 1
         quotes, candles, contracts = [], [], []
         names = [s.name for s in (self.sdk.symbols_get() or ())]
-        from ..execution.symbols import resolve_broker_symbol
+        from ..execution.symbols import choose_account_symbol
         for symbol in (*FX_PAIRS_28,'XAUUSD'):
-            broker = resolve_broker_symbol(symbol, names)
+            broker = choose_account_symbol(
+                symbol, names,
+                lambda name: bool(self.sdk.symbol_select(name, True)),
+                lambda name: self.sdk.symbol_info_tick(name),
+            )
             if not broker or not self.sdk.symbol_select(broker,True):
                 continue
             metadata = self.sdk.symbol_info(broker)

@@ -1,1 +1,9 @@
-restarted
+restart started 2026-10-28T01:18:57.0053727+01:00
+2026-10-28T01:18:57.0083965+01:00 Cacsms-Traders IIS + API restart
+2026-10-28T01:18:57.0329615+01:00 Stopping listeners on port 8000...
+2026-10-28T01:19:00.6752685+01:00 Recycling IIS app pool / site (Cacsms-Traders)...
+2026-10-28T01:19:00.8351267+01:00 "Cacsms-Traders" successfully recycled
+2026-10-28T01:19:00.8972716+01:00 "Cacsms-Traders" successfully started.
+2026-10-28T01:19:00.9133329+01:00 Starting FastAPI on 127.0.0.1:8000...
+2026-10-28T01:19:09.0872185+01:00 API health HTTP 200: {"status":"ok","api":"reachable","environment":"development","time":"2026-10-28T00:19:09.067869+00:00"}
+2026-10-28T01:19:09.0932641+01:00 Done. You can close this window.

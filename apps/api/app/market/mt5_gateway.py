@@ -48,7 +48,7 @@ def symbol_candidates(pair: str) -> list[str]:
     prefix = os.getenv("MT5_SYMBOL_PREFIX", "")
     suffix = os.getenv("MT5_SYMBOL_SUFFIX", "")
     out: list[str] = []
-    for s in (suffix, "", ".a", ".A", ".m", "m", ".raw", ".pro"):
+    for s in (suffix, "", "b", ".b", ".a", ".A", ".m", "m", ".raw", ".pro"):
         cand = f"{prefix}{p}{s}"
         if cand not in out:
             out.append(cand)
@@ -86,13 +86,27 @@ def _discover_symbol(mt5, pair: str) -> str | None:
     return str(matched[0].name)
 
 
+def _has_quote(mt5, name: str) -> bool:
+    tick = mt5.symbol_info_tick(name)
+    return bool(tick and (getattr(tick, "bid", 0) or getattr(tick, "ask", 0)))
+
+
 def _select_symbol(mt5, pair: str) -> str:
+    """Use the broker name that has a price, with or without a suffix, and select it in Market Watch."""
+    from ..execution.symbols import choose_account_symbol
+
     key = pair.upper().replace("/", "")
     cached = _DISCOVERED.get(key)
-    if cached and mt5.symbol_select(cached, True):
+    if cached and mt5.symbol_select(cached, True) and _has_quote(mt5, cached):
         return cached
+    _DISCOVERED.pop(key, None)
+    names = [getattr(row, "name", "") for row in (mt5.symbols_get() or [])]
+    chosen = choose_account_symbol(pair, names, lambda name: bool(mt5.symbol_select(name, True)), lambda name: mt5.symbol_info_tick(name))
+    if chosen:
+        _DISCOVERED[key] = chosen
+        return chosen
     for sym in symbol_candidates(pair):
-        if mt5.symbol_select(sym, True):
+        if mt5.symbol_select(sym, True) and _has_quote(mt5, sym):
             _DISCOVERED[key] = sym
             return sym
     found = _discover_symbol(mt5, pair)

@@ -6,7 +6,7 @@ from apps.api.app.execution.money import D
 from apps.api.app.execution.pipeline import acquire_lock, classify_broker_result, reconcile_account, release_lock
 from apps.api.app.execution.service import execute_candidate
 from apps.api.app.execution.sizing import account_tick_value, size_position
-from apps.api.app.execution.symbols import resolve_broker_symbol
+from apps.api.app.execution.symbols import choose_account_symbol, resolve_broker_symbol
 
 ROOT = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 10, 19, 12, 0, tzinfo=timezone.utc)
@@ -128,6 +128,29 @@ def test_symbol_resolution_uses_the_account_symbol_and_refuses_an_ambiguous_suff
     assert resolve_broker_symbol("EURJPY", ["EURJPY", "EURJPYb"]) == "EURJPY"
     assert resolve_broker_symbol("EURUSD", ["EURUSD", "EURUSD.a"], mapped="EURUSD.a") == "EURUSD.a"
     assert resolve_broker_symbol("EURUSD", ["GBPUSD"], mapped="EURUSDm") is None
+
+
+def _quote(name, book):
+    return book.get(name)
+
+
+def test_quoted_suffix_is_used_when_the_plain_name_has_no_price():
+    names = ["EURUSD", "EURUSDb", "EURUSDCAD"]
+    book = {"EURUSDb": (1.1, 1.1002)}
+    assert choose_account_symbol("EURUSD", names, lambda name: True, lambda name: _quote(name, book)) == "EURUSDb"
+
+
+def test_plain_name_is_used_when_that_is_the_quoted_symbol():
+    names = ["NZDJPY", "USDJPYb"]
+    book = {"NZDJPY": (89.7, 89.74)}
+    assert choose_account_symbol("NZDJPY", names, lambda name: True, lambda name: _quote(name, book)) == "NZDJPY"
+    assert choose_account_symbol("USDJPY", names, lambda name: True, lambda name: {"USDJPYb": (157.1, 157.2)}.get) == "USDJPYb"
+
+
+def test_two_quoted_decorations_are_not_guessed():
+    names = ["EURUSD", "EURUSD.a"]
+    book = {"EURUSD": (1.1, 1.2), "EURUSD.a": (1.1, 1.2)}
+    assert choose_account_symbol("EURUSD", names, lambda name: True, lambda name: _quote(name, book)) is None
 
 
 def test_live_account_does_not_send_until_the_owner_enables_it():
