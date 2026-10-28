@@ -20,16 +20,22 @@
 .PARAMETER ApiPort
   Port for uvicorn (default: 8000).
 
+.PARAMETER BindAddresses
+  IPv4 addresses to bind. When set, the site listens only on these addresses
+  (for example the LAN address and the public NIC address). Empty = all addresses.
+
 .EXAMPLE
   .\scripts\setup-iis.ps1
   .\scripts\setup-iis.ps1 -Port 80 -HostHeader cacsms-traders.local
+  .\scripts\setup-iis.ps1 -Port 80 -BindAddresses 192.168.5.5,129.18.144.134
 #>
 [CmdletBinding()]
 param(
   [string] $SiteName = 'Cacsms-Traders',
   [int] $Port = 8080,
   [string] $HostHeader = '',
-  [int] $ApiPort = 8000
+  [int] $ApiPort = 8000,
+  [string[]] $BindAddresses = @()
 )
 
 $ErrorActionPreference = 'Stop'
@@ -37,8 +43,10 @@ $Root = Split-Path -Parent $PSScriptRoot
 $SiteDir = Join-Path $Root 'deploy\iis\site'
 $TaskName = 'CacsmsTradersApi'
 $VenvPy = Join-Path $Root '.venv\Scripts\python.exe'
-$RunApi = Join-Path $Root 'scripts\run_api.py'
-
+$EmbedPy = Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312-embed\python.exe'
+if (-not (Test-Path $VenvPy) -and (Test-Path $EmbedPy)) {
+  $VenvPy = $EmbedPy
+}
 Import-Module WebAdministration -ErrorAction Stop
 
 if (-not (Test-Path (Join-Path $SiteDir 'index.html'))) {
@@ -67,10 +75,29 @@ if (-not (Test-Path "IIS:\AppPools\$poolName")) {
   Set-ItemProperty "IIS:\AppPools\$poolName" -Name startMode -Value 'AlwaysRunning'
 }
 
-$binding = "*:${Port}:"
-if ($HostHeader) {
-  $binding = "*:${Port}:$HostHeader"
+$addresses = @($BindAddresses | ForEach-Object { $_ -split ',' } | Where-Object { $_ -and $_.Trim() } | ForEach-Object { $_.Trim() })
+if ($addresses.Count -eq 0) { $addresses = @('*') }
+
+function Clear-ConflictingHttpBindings {
+  param([string] $KeepSite, [int] $ListenPort, [string[]] $ListenAddresses)
+  foreach ($site in @(Get-Website)) {
+    if ($site.Name -eq $KeepSite) { continue }
+    foreach ($binding in @(Get-WebBinding -Name $site.Name -Protocol 'http' -ErrorAction SilentlyContinue)) {
+      $parts = $binding.bindingInformation -split ':'
+      if ($parts.Count -lt 2) { continue }
+      $bindIp = $parts[0]
+      $bindPort = 0
+      if (-not [int]::TryParse($parts[1], [ref] $bindPort)) { continue }
+      if ($bindPort -ne $ListenPort) { continue }
+      $overlaps = ($bindIp -eq '*' -or $bindIp -eq '0.0.0.0' -or $bindIp -eq '' -or $ListenAddresses -contains '*' -or $ListenAddresses -contains $bindIp)
+      if (-not $overlaps) { continue }
+      Write-Host "Removing conflicting binding $($binding.bindingInformation) from $($site.Name)"
+      Remove-WebBinding -Name $site.Name -Protocol 'http' -BindingInformation $binding.bindingInformation
+    }
+  }
 }
+
+Clear-ConflictingHttpBindings -KeepSite $SiteName -ListenPort $Port -ListenAddresses $addresses
 
 $existing = Get-Website -Name $SiteName -ErrorAction SilentlyContinue
 if ($existing) {
@@ -78,9 +105,38 @@ if ($existing) {
   Set-ItemProperty "IIS:\Sites\$SiteName" -Name physicalPath -Value $SiteDir
   Set-ItemProperty "IIS:\Sites\$SiteName" -Name applicationPool -Value $poolName
 } else {
-  Write-Host "Creating site $SiteName on $binding ..."
-  New-Website -Name $SiteName -PhysicalPath $SiteDir -Port $Port -HostHeader $HostHeader -ApplicationPool $poolName | Out-Null
+  Write-Host "Creating site $SiteName ..."
+  New-Website -Name $SiteName -PhysicalPath $SiteDir -Port $Port -IPAddress $addresses[0] -HostHeader $HostHeader -ApplicationPool $poolName | Out-Null
 }
+
+Get-WebBinding -Name $SiteName -ErrorAction SilentlyContinue | ForEach-Object {
+  Remove-WebBinding -Name $SiteName -Protocol $_.protocol -BindingInformation $_.bindingInformation
+}
+foreach ($ip in $addresses) {
+  $shown = if ($HostHeader) { "${ip}:${Port}:$HostHeader" } else { "${ip}:${Port}:" }
+  Write-Host "Binding $shown"
+  New-WebBinding -Name $SiteName -Protocol http -IPAddress $ip -Port $Port -HostHeader $HostHeader | Out-Null
+}
+
+Write-Host 'Granting IIS read access to the site folder...'
+& icacls $SiteDir /grant "IIS_IUSRS:(OI)(CI)RX" "IUSR:(OI)(CI)RX" | Out-Null
+
+$dbDir = Join-Path $Root 'database'
+if (Test-Path $dbDir) {
+  Write-Host 'Granting the current user write access to the database folder...'
+  & icacls $dbDir /grant "${env:USERDOMAIN}\${env:USERNAME}:(OI)(CI)M" | Out-Null
+}
+
+$fwName = "Cacsms-Traders HTTP $Port"
+if (-not (Get-NetFirewallRule -DisplayName $fwName -ErrorAction SilentlyContinue)) {
+  Write-Host "Opening Windows Firewall for TCP $Port on all profiles..."
+  New-NetFirewallRule -DisplayName $fwName -Direction Inbound -Action Allow -Protocol TCP -LocalPort $Port -Profile Any | Out-Null
+}
+
+Set-Service W3SVC -StartupType Automatic
+Set-Service WAS -StartupType Automatic
+Start-Service WAS -ErrorAction SilentlyContinue
+Start-Service W3SVC -ErrorAction SilentlyContinue
 
 # Patch API upstream port in web.config if not 8000
 $webConfigPath = Join-Path $SiteDir 'web.config'
@@ -102,16 +158,25 @@ if (-not (Test-Path $VenvPy)) {
 }
 
 Write-Host 'Registering API startup task...'
-$actionArgs = "`"$RunApi`""
-$action = New-ScheduledTaskAction -Execute $VenvPy -Argument $actionArgs -WorkingDirectory $Root
+$hostScript = Join-Path $Root 'scripts\run-api-host.ps1'
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$hostScript`"" -WorkingDirectory $Root
 $trigger = New-ScheduledTaskTrigger -AtStartup
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
-$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+# The settings cmdlet turns StopOnIdleEnd on. That stops the API when someone uses the PC, and IIS then returns Bad Gateway.
+$settings.IdleSettings.StopOnIdleEnd = $false
+$settings.IdleSettings.RestartOnIdle = $false
+# Limited, not Highest: an elevated API creates database journal files the desktop user cannot write.
+$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
 
 $envFile = Join-Path $Root '.env'
 if (-not (Test-Path $envFile)) {
-  $origin = if ($HostHeader) { "http://${HostHeader}:$Port" } else { "http://localhost:$Port" }
+  $origins = foreach ($ip in $addresses) {
+    $hostName = if ($ip -eq '*') { 'localhost' } else { $ip }
+    if ($HostHeader) { $hostName = $HostHeader }
+    if ($Port -eq 80) { "http://$hostName" } else { "http://${hostName}:$Port" }
+  }
+  $origin = ($origins | Select-Object -Unique) -join ','
   @(
     'APP_ENV=development'
     'APP_HOST=127.0.0.1'
@@ -123,18 +188,20 @@ if (-not (Test-Path $envFile)) {
 }
 
 Write-Host 'Starting API (background)...'
-$env:APP_HOST = '127.0.0.1'
-$env:APP_PORT = "$ApiPort"
-Start-Process -FilePath $VenvPy -ArgumentList $RunApi -WorkingDirectory $Root -WindowStyle Hidden
+Start-ScheduledTask -TaskName $TaskName
 
 Start-Website -Name $SiteName
 
-$url = if ($HostHeader) { "http://${HostHeader}:$Port" } else { "http://localhost:$Port" }
 Write-Host ''
 Write-Host 'Cacsms-Traders IIS setup complete.'
-Write-Host "  Site:  $url"
+foreach ($ip in $addresses) {
+  $hostName = if ($ip -eq '*') { 'localhost' } else { $ip }
+  if ($HostHeader) { $hostName = $HostHeader }
+  $url = if ($Port -eq 80) { "http://$hostName" } else { "http://${hostName}:$Port" }
+  Write-Host "  Site:  $url"
+}
 Write-Host "  API:   http://127.0.0.1:${ApiPort}/api/health"
-Write-Host '         Same path through IIS: /api/health on the site URL above.'
+Write-Host '         Same path through IIS: /api/health on the site URLs above.'
 Write-Host "  Task:  Scheduled task $TaskName starts the API at logon."
 Write-Host ''
 Write-Host 'If you use a custom host header, add it to hosts file and set WEB_ORIGINS in .env to match.'

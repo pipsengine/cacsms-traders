@@ -26,13 +26,9 @@ def configuration(conn):
 
 def _attached_mt5_account_id() -> str:
     """Account logged into this process's MT5 session. Does not attach or launch a terminal."""
-    from . import mt5_session
-
-    if not mt5_session.is_initialized():
-        return ""
     from ..domain.mt5_terminal_account import read_terminal_account
 
-    terminal = read_terminal_account() or {}
+    terminal = read_terminal_account(wait=False) or {}
     if not terminal.get("available"):
         return ""
     server = str(terminal.get("server") or "").strip()
@@ -194,6 +190,7 @@ def create_market_data_gateway(conn=None, context=None, verify_scope=True):
                 mt5_tenant = (cfg.get('tenant_id') or cfg.get('mt5_tenant_id') or '').strip()
                 if mt5_tenant:
                     ensure_gateway_session(conn, mt5_tenant)
+                conn.commit()
                 from .mt5_gateway import create_market_data_gateway as mt5_adapter
 
                 adapter = mt5_adapter()
@@ -208,8 +205,11 @@ def create_market_data_gateway(conn=None, context=None, verify_scope=True):
         manager.observe(cfg['provider'],success=False,error='MT5_CONNECTION_FAILED' if cfg['provider']=='mt5' else 'provider_connection_failed')
         conn.commit()
         raise MarketDataUnavailable('provider_connection_failed') from None
-    gateway = NormalizedProvider(adapter, cfg['provider'], adapter.get_account_context(), observer=lambda **status: _observe_request(manager, cfg['provider'], status))
-    gateway.snapshot_id = manager.bind_snapshot(cfg['provider'], (gateway.get_account_context() or {}).get('account_id', ''))
+    account = adapter.get_account_context()
+    conn.commit()
+    gateway = NormalizedProvider(adapter, cfg['provider'], account, observer=lambda **status: _observe_request(manager, cfg['provider'], status))
+    gateway.snapshot_id = manager.bind_snapshot(cfg['provider'], (account or {}).get('account_id', ''))
+    conn.commit()
     return gateway
 
 

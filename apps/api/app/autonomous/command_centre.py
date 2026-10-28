@@ -269,8 +269,8 @@ def read_live_money() -> tuple[dict | None, list | None]:
     try:
         from ..domain.mt5_terminal_account import read_terminal_account
         from ..domain.mt5_terminal_positions import read_terminal_positions
-        positions, _basis = read_terminal_positions()
-        account = read_terminal_account()
+        positions, _basis = read_terminal_positions(wait=False)
+        account = read_terminal_account(wait=False)
     except Exception:
         return None, None
     rows = [

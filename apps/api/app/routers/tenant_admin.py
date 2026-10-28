@@ -15,6 +15,7 @@ from ..market import mt5_session
 from ..domain.mt5_connection import (
     connection_in_progress,
     ensure_autodetected_terminal_path,
+    _snapshot_as_terminal_account,
     ensure_gateway_session,
     read_terminal_account_for_tenant,
     sync_trading_registry_from_terminal,
@@ -68,8 +69,6 @@ def connections(tenant_id:str,user=Depends(current_user)):
   settings=gw_svc.settings(conn=c)
   session=settings.get('session_status')
   reconnect = None
-  if session == 'CONNECTED' and not mt5_session.is_initialized() and not connection_in_progress(tenant_id):
-   reconnect = ensure_gateway_session(c, tenant_id)
   auto_meta=ensure_autodetected_terminal_path(
    c, tenant_id, allow_probe=False, persist=False,
   )
@@ -85,10 +84,10 @@ def connections(tenant_id:str,user=Depends(current_user)):
    settings={**settings,'session_status':'CONNECTED' if bridge['connected'] else 'DISCONNECTED','terminal_path':bridge['terminal_path'],'last_heartbeat_at':bridge['received_at'],'last_error':None if bridge['connected'] else 'Windows bridge heartbeat expired.'}
    execution=account_execution(c,tenant_id,bridge.get('trading_account_id'))
    return {'gateway':bridge_gateway(bridge,tenant_id,execution),'settings':settings,'connections':connection_rows,'diagnostics':{'python_package':'remote','terminal_launch_mode':'WINDOWS_GATEWAY_REQUIRED','terminal_launch_supported':False,'bridge_connected':bridge['connected'],'terminal_account':{**bridge['account'],'available':bridge['connected']}}}
-  live=mt5_session.is_initialized()
-  terminal_account=read_terminal_account_for_tenant(
-   c, tenant_id, force_attach=False, persist_snapshot=live,
-  )
+  live=mt5_session.terminal_info(wait=False) is not None
+  terminal_account=read_terminal_account(wait=False) if live else None
+  if not (terminal_account and terminal_account.get('available')):
+   terminal_account=_snapshot_as_terminal_account(settings)
   gateway=gw_svc.health(conn=c, allow_reconnect=False)
   diag_reconnect = reconnect if reconnect and reconnect.get('restored') else None
   from ..domain.mt5_terminal_launcher import terminal_launch_capability
@@ -133,26 +132,29 @@ def patch_connection_settings(tenant_id:str,x:Mt5SettingsPatch,user=Depends(curr
 def gateway_connect(tenant_id:str,x:Mt5ConnectRequest,user=Depends(current_user)):
  with db() as c:
   require_permission(c,user,tenant_id,'connections.manage')
-  gw=LocalMT5Gateway(tenant_id)
-  result=gw.connect(x.terminal_path, conn=c)
+ gw=LocalMT5Gateway(tenant_id)
+ result=gw.connect(x.terminal_path)
+ with db() as c:
   write_audit(c,tenant_id,user['id'],'MT5_CONNECT','TenantSettings',f'{tenant_id}/mt5.local',after={'ok':result.get('ok'),'error':result.get('error'),'terminal_launch':result.get('terminal_launch')})
-  return result
+ return result
 @router.post('/connections/gateway/disconnect')
 def gateway_disconnect(tenant_id:str,user=Depends(current_user)):
  with db() as c:
   require_permission(c,user,tenant_id,'connections.manage')
-  gw=LocalMT5Gateway(tenant_id)
-  result=gw.disconnect(conn=c)
+ gw=LocalMT5Gateway(tenant_id)
+ result=gw.disconnect()
+ with db() as c:
   write_audit(c,tenant_id,user['id'],'MT5_DISCONNECT','TenantSettings',f'{tenant_id}/mt5.local',after={'ok':True})
-  return result
+ return result
 @router.post('/connections/gateway/restart')
 def gateway_restart(tenant_id:str,user=Depends(current_user)):
  with db() as c:
   require_permission(c,user,tenant_id,'connections.manage')
-  gw=LocalMT5Gateway(tenant_id)
-  result=gw.restart(conn=c)
+ gw=LocalMT5Gateway(tenant_id)
+ result=gw.restart()
+ with db() as c:
   write_audit(c,tenant_id,user['id'],'MT5_RESTART','TenantSettings',f'{tenant_id}/mt5.local',after={'ok':result.get('ok'),'error':result.get('error')})
-  return result
+ return result
 @router.delete('/connections/{connection_id}')
 def delete_connection(tenant_id:str,connection_id:str,delete_account:bool=False,user=Depends(current_user)):
  with db() as c:

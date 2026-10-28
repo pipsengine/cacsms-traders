@@ -107,7 +107,7 @@ def _recent(stamp: object, now: datetime) -> bool:
     return (now - attempted).total_seconds() < _HOLD_SECONDS
 
 
-def advance_authorised_outlooks(conn, tenant: str, account: str, mode: str, now: datetime | None = None) -> dict:
+def advance_authorised_outlooks(conn, tenant: str, account: str, mode: str, now: datetime | None = None, *, wait: bool = True) -> dict:
     """Submit at most the remaining position slots for outlooks whose confirmation sequence is complete."""
     from ..market.outlook.lifecycle import promote_reaction_handoffs
 
@@ -132,14 +132,15 @@ def advance_authorised_outlooks(conn, tenant: str, account: str, mode: str, now:
     ).fetchall()
     if not rows:
         return {"checked": 0, "sent": 0, "held": 0}
-    try:
-        ensure_gateway_session(conn, tenant)
-    except Exception:
-        pass
+    if wait:
+        try:
+            ensure_gateway_session(conn, tenant)
+        except Exception:
+            pass
     autonomous = (mode or "").upper() in ("DEMO_AUTONOMOUS", "LIVE_AUTONOMOUS")
     positions = []
     if autonomous:
-        positions, _basis = read_terminal_positions()
+        positions, _basis = read_terminal_positions(wait=wait)
         positions = positions or []
     open_ids = {str(item.get("ticket")) for item in positions if item.get("ticket") is not None}
     ae = ae_settings()
@@ -167,7 +168,7 @@ def advance_authorised_outlooks(conn, tenant: str, account: str, mode: str, now:
         if profile.get("max_total_risk_pct") is not None:
             max_exposure = float(profile["max_total_risk_pct"])
     exposure = None
-    terminal = read_terminal_account() if autonomous else None
+    terminal = read_terminal_account(wait=wait) if autonomous else None
     if terminal and terminal.get("available"):
         equity = float(terminal.get("equity") or 0)
         margin = terminal.get("margin")

@@ -1,6 +1,6 @@
 """Email rendering: subject, responsive HTML and plain-text fallback for alert events and the SMTP test message.
 
-Alerts describe market structure only — never an executed trade, an order or a position change."""
+Channel alerts describe market structure. An AI outlook alert says when that strategy is confirmed for entry, and again when its order has been placed."""
 from __future__ import annotations
 
 import html
@@ -18,6 +18,8 @@ LAGOS = ZoneInfo("Africa/Lagos")
 BRAND = "Cacsms Traders"
 FOOTER = "This is an automated market intelligence alert."
 SAFETY = "Analysis only — no order has been placed, modified or closed. Operating mode: ANALYSIS ONLY."
+ENTRY_NOTE = "This AI outlook strategy is confirmed for entry. This message does not place, modify or close an order."
+ORDER_NOTE = "The order for this AI outlook strategy has been placed on the terminal. This message does not modify or close it."
 TEST_SUBJECT = "[Cacsms Traders] Email Notification Test"
 TEST_BODY = "Cacsms Traders email notification service is configured successfully."
 TONE = {"BULLISH": "#067647", "BEARISH": "#b42318"}
@@ -74,8 +76,9 @@ def app_link(path: str) -> str | None:
 def subject(e: dict) -> str:
     sym, tf, t, m = e["symbol"], e.get("timeframe") or "", e["event_type"], e.get("metadata") or {}
     if t == "AI_OUTLOOK_EVENT":
-        life = (m.get("lifecycle") or "update").replace("_", " ").title()
-        return f"[{BRAND}] {sym} — Outlook {life}"
+        label = "Order placed" if m.get("kind") == "ORDER_PLACED" else "Entry confirmed"
+        horizon = m.get("horizon_label") or ""
+        return f"[{BRAND}] {sym}{(' ' + horizon) if horizon else ''} — {label}"
     if t == "AI_OUTLOOK_PUBLISHED":
         n = (m.get("counts") or {}).get("qualified", 0)
         return (f"[{BRAND}] {'[Late] ' if m.get('late') else ''}AI Analysis Complete — Outlook for {_day(m.get('outlook_for'))} "
@@ -101,7 +104,7 @@ def _alert_label(e: dict) -> str:
     if t == "TIT_DETECTED":
         return f"Trend-in-Trend {e.get('tit_level') or ''}".strip()
     if e["event_type"] == "AI_OUTLOOK_EVENT":
-        return f"Outlook {(m.get('lifecycle') or 'update').replace('_', ' ').title()}"
+        return "Order placed" if m.get("kind") == "ORDER_PLACED" else "Entry confirmed"
     return f"{_title(e.get('direction'))} Channel Break"
 
 
@@ -163,6 +166,13 @@ def detail_rows(e: dict) -> list[tuple[str, str]]:
                 ("Channel rejoin level", px("rejoin_level")), ("Objective 1 / 2", f"{px('objective_1')} / {px('objective_2')}"),
                 ("Invalidation", px("invalidation")), ("Layers", layers or "—"),
                 ("Detection reason", m.get("reason") or m.get("summary") or "—"), ("Detected", _time(e.get("detected_at")))]
+    if t == "AI_OUTLOOK_EVENT":
+        targets = " / ".join(_px(price, sym) for price in (m.get("targets") or [])) or "—"
+        rows = [("Horizon", m.get("horizon_label") or m.get("horizon") or "—"), ("Entry", px("entry")),
+                ("Stop", px("stop")), ("Targets", targets)]
+        if m.get("ticket"):
+            rows.append(("Ticket", str(m["ticket"])))
+        return rows
     return []
 
 
@@ -185,9 +195,18 @@ def _chart_row(symbol: str, cid: str, caption: str = "D1 chart · channel, expec
     )
 
 
+def _stage_note(e: dict) -> str:
+    kind = (e.get("metadata") or {}).get("kind")
+    if kind == "ORDER_PLACED":
+        return ORDER_NOTE
+    if kind == "ENTRY_CONFIRMED":
+        return ENTRY_NOTE
+    return SAFETY
+
+
 def _html(title: str, tone: str, sections: list[tuple[str, list[tuple[str, str]]]], intro: str | None = None,
           link: tuple[str, str] | None = None, images: dict[str, str] | None = None,
-          lead: tuple[str, str, str] | None = None) -> str:
+          lead: tuple[str, str, str] | None = None, safety: str = SAFETY) -> str:
     images = images or {}
     blocks = []
     for name, rows in sections:
@@ -221,13 +240,13 @@ def _html(title: str, tone: str, sections: list[tuple[str, list[tuple[str, str]]
 {intro_html}
 {body}
 <tr><td style="padding:16px 22px 22px;color:#5b6b82;font-size:12px;line-height:1.6;border-top:1px solid #edf1f7">
-{html.escape(FOOTER)}<br>{html.escape(SAFETY)}
+{html.escape(FOOTER)}<br>{html.escape(safety)}
 </td></tr>
 </table></td></tr></table></body></html>"""
 
 
 def _text(title: str, sections: list[tuple[str, list[tuple[str, str]]]], intro: str | None = None,
-          link: tuple[str, str] | None = None) -> str:
+          link: tuple[str, str] | None = None, safety: str = SAFETY) -> str:
     lines = ["CACSMS TRADERS", "Autonomous Market Intelligence Alert", "", title, ""]
     if intro:
         lines += [intro, ""]
@@ -237,7 +256,7 @@ def _text(title: str, sections: list[tuple[str, list[tuple[str, str]]]], intro: 
         lines += [name.upper(), *[f"{k.upper()}: {v}" for k, v in rows], ""]
     if link:
         lines += [f"{link[0]}: {link[1]}", ""]
-    lines += [FOOTER, SAFETY]
+    lines += [FOOTER, safety]
     return "\n".join(lines)
 
 
@@ -334,6 +353,7 @@ def alert_message(cfg: SmtpConfig, e: dict, to: str) -> EmailMessage:
     title = _alert_label(e) + f" · {e['symbol']}" + (f" {e['timeframe']}" if e.get("timeframe") else "")
     sections = [("Alert summary", summary_rows(e)), ("Event details", detail_rows(e))]
     tone = TONE.get(e.get("direction") or "", "#1765ef")
+    note = _stage_note(e)
     shot = None
     try:
         from .alert_charts import alert_chart
@@ -341,7 +361,7 @@ def alert_message(cfg: SmtpConfig, e: dict, to: str) -> EmailMessage:
         shot = alert_chart(e)
     except Exception:
         logging.getLogger("cacsms.notifications").warning("Alert chart was left out of the email", exc_info=True)
-    text = _text(title, sections)
+    text = _text(title, sections, safety=note)
     lead = None
     images = None
     if shot:
@@ -349,7 +369,7 @@ def alert_message(cfg: SmtpConfig, e: dict, to: str) -> EmailMessage:
         lead = (sym, cid, caption)
         images = [(cid, png)]
         text += f"\n{caption} for {sym} is included in the HTML version of this email.\n"
-    return _message(cfg, to, subject(e), text, _html(title, tone, sections, lead=lead),
+    return _message(cfg, to, subject(e), text, _html(title, tone, sections, lead=lead, safety=note),
                     {"X-Cacsms-Alert-Id": e["id"], "X-Cacsms-Alert-Type": e["event_type"]}, images)
 
 

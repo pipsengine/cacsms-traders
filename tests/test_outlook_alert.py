@@ -164,3 +164,42 @@ def test_alert_failure_never_breaks_the_outlook_run(env, monkeypatch):
     monkeypatch.setattr(outlook_alert, "publish_outlook_published", boom)
     with _db() as conn:
         OutlookService()._notify_published(conn, RUN, OUTLOOKS, COUNTS, ON_TIME, False)
+
+
+def _signal(symbol, outlook_id, horizon, direction="BULLISH"):
+    outlook = _outlook(symbol, 1, direction)
+    outlook["outlook_id"] = outlook_id
+    outlook["horizon"] = horizon
+    run = {"id": f"run-{outlook_id}", "horizon": horizon, "close_at": ON_TIME, "origin": "LIVE", "analysis_date": "2026-10-06"}
+    return outlook, run
+
+
+def test_entry_confirmation_and_placed_order_each_email_once_for_both_outlooks(env):
+    from apps.api.app.market.outlook.store import OutlookRepository
+    from apps.api.app.notifications.worker import alert_scope, dispatch
+
+    _recipient()
+    first = _signal("EURUSD", "out-daily", "DAILY")
+    second = _signal("XAUUSD", "out-h8", "H8", "BEARISH")
+    with _db() as conn:
+        repo = OutlookRepository(conn, alert_scope(conn))
+        for outlook, run in (first, second):
+            repo.save_handoff(outlook, run, "APPROACHING_ZONE", {}, None)
+            repo.save_handoff(outlook, run, "AUTHORIZATION_PENDING", {}, None)
+            repo.save_handoff(outlook, run, "AUTHORIZED", {}, None)
+            repo.save_handoff(outlook, run, "ORDER_SUBMITTED", {"broker_order": {"ticket": "9001" if outlook["symbol"] == "EURUSD" else "9002"}}, "9001" if outlook["symbol"] == "EURUSD" else "9002")
+        replay, replay_run = _signal("GBPUSD", "out-replay", "WEEKLY")
+        repo.save_handoff(replay, {**replay_run, "origin": "REPLAY"}, "AUTHORIZATION_PENDING", {}, None)
+    assert dispatch(datetime.now(timezone.utc))["sent"] == 4
+    subjects = [msg["Subject"] for msg in FakeSMTP.all_sent()]
+    assert "[Cacsms Traders] EURUSD Daily — Entry confirmed" in subjects
+    assert "[Cacsms Traders] EURUSD Daily — Order placed" in subjects
+    assert "[Cacsms Traders] XAUUSD H8 — Entry confirmed" in subjects
+    assert "[Cacsms Traders] XAUUSD H8 — Order placed" in subjects
+    bodies = {msg["Subject"]: _body(msg) for msg in FakeSMTP.all_sent()}
+    assert "1.10050" in bodies["[Cacsms Traders] EURUSD Daily — Entry confirmed"]
+    assert "confirmed for entry" in bodies["[Cacsms Traders] EURUSD Daily — Entry confirmed"]
+    assert "9001" not in bodies["[Cacsms Traders] EURUSD Daily — Entry confirmed"]
+    assert "9001" in bodies["[Cacsms Traders] EURUSD Daily — Order placed"]
+    assert "has been placed" in bodies["[Cacsms Traders] EURUSD Daily — Order placed"]
+    assert not any("GBPUSD" in subject for subject in subjects)

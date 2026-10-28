@@ -36,7 +36,10 @@ class CTraderGateway:
         kwargs.setdefault('symbols', [*FX_PAIRS_28, 'XAUUSD'])
         try:
             environment = (getattr(self, '_context', None) or {}).get('environment', 'demo')
-            result = subprocess.run([sys.executable, ctrader_discovery_worker.__file__],
+            from ..core.database import pause_sqlite_mutex
+
+            with pause_sqlite_mutex():
+                result = subprocess.run([sys.executable, ctrader_discovery_worker.__file__],
                 input=json.dumps(dict(environment=environment, access_token=self._token, account_id=self.account_id, action=action, **kwargs)),
                 capture_output=True, text=True, timeout=22)
             marker = next(line[15:] for line in reversed(result.stdout.splitlines()) if line.startswith('CTRADER_RESULT:'))

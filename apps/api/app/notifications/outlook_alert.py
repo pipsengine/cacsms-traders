@@ -1,10 +1,14 @@
-"""AI Market Outlook → Alert Engine: one "AI Analysis Complete" email per published live analysis day.
+"""AI Market Outlook → Alert Engine.
 
-Replay / backfill runs never alert, and the deduplication key is the analysis date, so a forced re-run of the same day
-cannot send a second email. The alert summarises analysis only — it never authorises or describes a trade.
+A published live analysis day still sends one "AI Analysis Complete" email. Replay and backfill never alert.
+
+A live outlook strategy also sends two signal emails, once each: when it is confirmed for entry, and when its order
+has been placed. Earlier lifecycle steps stay quiet. Each outlook sends its own pair, so both strategies on one symbol
+are notified separately.
 """
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timedelta, timezone
 
 from ..market.channel_events import DomainEvent
@@ -16,6 +20,18 @@ LIFECYCLE_EVENT = "AI_OUTLOOK_EVENT"
 ALL_SYMBOLS = "ALL"
 _SPAN = {"WEEKLY": timedelta(days=7), "MONTHLY": timedelta(days=31), "QUARTERLY": timedelta(days=93), "H8": timedelta(hours=8)}
 _TF = {"DAILY": "D1", "WEEKLY": "W1", "MONTHLY": "MN", "QUARTERLY": "Q", "H8": "H8"}
+_HORIZON_LABEL = {"DAILY": "Daily", "WEEKLY": "Weekly", "MONTHLY": "Monthly", "QUARTERLY": "Quarterly", "H8": "H8", "GOLD_H8": "H8"}
+# Confirmation and a later risk approval share one email. The placed order is the second email.
+_SIGNAL = {
+    "CONFIRMED": "ENTRY_CONFIRMED",
+    "AUTHORIZATION_PENDING": "ENTRY_CONFIRMED",
+    "AUTHORIZED": "ENTRY_CONFIRMED",
+    "ORDER_SUBMITTED": "ORDER_PLACED",
+}
+_SIGNAL_SUMMARY = {
+    "ENTRY_CONFIRMED": "This AI outlook strategy is confirmed for entry.",
+    "ORDER_PLACED": "The order for this AI outlook strategy has been placed.",
+}
 TOP_OPPORTUNITIES = 5
 
 
@@ -116,30 +132,120 @@ def publish_outlook_published(conn, run: dict, outlooks: list[dict], counts: dic
     return AlertEngine(conn, tenant, account).process([event], [], now or datetime.now(timezone.utc))
 
 
+def _live(conn, run: dict) -> bool:
+    origin = run.get("origin")
+    if not origin and run.get("id"):
+        from ..market.provenance import values
+
+        row = conn.execute("SELECT origin FROM ai_outlook_run WHERE id=?", (run["id"],)).fetchone()
+        origin = values(row)[0] if row else None
+    return origin == "LIVE"
+
+
+def _with_levels(conn, outlook: dict) -> dict:
+    """The execution path stores only the id and symbol. The published payload still has the entry plan."""
+    if outlook.get("erz") or outlook.get("targets"):
+        return outlook
+    outlook_id = outlook.get("outlook_id")
+    if not outlook_id:
+        return outlook
+    from ..market.provenance import values
+
+    row = conn.execute("SELECT payload_json FROM ai_outlook_symbol WHERE id=?", (outlook_id,)).fetchone()
+    if not row:
+        return outlook
+    try:
+        payload = json.loads(values(row)[0] or "{}")
+    except ValueError:
+        return outlook
+    if not isinstance(payload, dict):
+        return outlook
+    return {**payload, **outlook}
+
+
+def _signal_levels(outlook: dict) -> tuple[float | None, float | None, list[float]]:
+    erz = outlook.get("erz") or {}
+    invalidation = outlook.get("invalidation") or {}
+    entry = _price(erz.get("mid") if isinstance(erz, dict) else None)
+    if entry is None and isinstance(erz, dict):
+        lo, hi = _price(erz.get("lo")), _price(erz.get("hi"))
+        if lo is not None and hi is not None:
+            entry = (lo + hi) / 2
+    stop = _price(invalidation.get("price") if isinstance(invalidation, dict) else None)
+    targets = []
+    for target in outlook.get("targets") or []:
+        price = _price(target.get("price") if isinstance(target, dict) else target)
+        if price is not None:
+            targets.append(price)
+    return entry, stop, targets
+
+
 def publish_lifecycle(conn, outlook: dict, run: dict, progress: dict, now: datetime | None = None) -> dict:
-    """Deduplicated in-app/email notice for a scenario transition. Replay runs and unchanged states do not alert."""
+    """Email when a live outlook strategy is confirmed for entry, and again when its order is placed.
+
+    Approaching the zone, a reaction, and every other in-progress step stay quiet. The same outlook and stage
+    cannot send a second email. Replay and backfill never alert.
+    """
     from ..market.market_data import market_context
     from .worker import alert_scope, enabled
 
-    if not enabled() or run.get("origin") != "LIVE":
+    if not enabled() or not _live(conn, run):
         return {"skipped": "not_live"}
     life = progress.get("lifecycle")
-    if life in (None, "PUBLISHED", "WATCHING"):
+    kind = _SIGNAL.get(life or "")
+    if not kind:
         return {"skipped": "quiet"}
+    outlook = _with_levels(conn, outlook)
+    horizon = str(run.get("horizon") or outlook.get("horizon") or "DAILY")
+    entry, stop, targets = _signal_levels(outlook)
+    ticket = progress.get("execution_ref") or progress.get("ticket")
     try:
         provider = market_context(conn).get("active_provider")
     except Exception:
         provider = None
     tenant, account = alert_scope(conn)
     event = DomainEvent(
-        LIFECYCLE_EVENT, outlook.get("symbol") or ALL_SYMBOLS, _TF.get(run.get("horizon") or "", "H8"),
-        outlook.get("expected_direction"), provider, progress.get("observed_at") or (now or datetime.now(timezone.utc)).isoformat(),
-        progress.get("price"), None, structure_id=f"AI_OUTLOOK_EVENT|{outlook.get('outlook_id')}|{life}",
-        identity=str(life),
-        metadata={"horizon": run.get("horizon"), "lifecycle": life, "summary": (progress.get("m15") or {}).get("reason") or progress.get("status"),
-                  "execution_ref": progress.get("execution_ref"), "force_trade": False},
+        LIFECYCLE_EVENT, outlook.get("symbol") or ALL_SYMBOLS, _TF.get(horizon, "H8"),
+        outlook.get("expected_direction") or outlook.get("direction"), provider,
+        progress.get("observed_at") or (now or datetime.now(timezone.utc)).isoformat(),
+        progress.get("price") or entry, entry, structure_id=f"AI_OUTLOOK_EVENT|{outlook.get('outlook_id')}|{kind}",
+        identity=kind,
+        metadata={
+            "horizon": horizon,
+            "horizon_label": _HORIZON_LABEL.get(horizon, horizon),
+            "lifecycle": life,
+            "kind": kind,
+            "summary": _SIGNAL_SUMMARY[kind],
+            "entry": entry,
+            "stop": stop,
+            "targets": targets,
+            "ticket": None if not ticket else str(ticket),
+            "execution_ref": None if not ticket else str(ticket),
+            "force_trade": False,
+        },
     )
     return AlertEngine(conn, tenant, account).process([event], [], now or datetime.now(timezone.utc))
+
+
+def publish_handoff(conn, outlook_id: str, lifecycle: str, ticket: str | None = None, now: datetime | None = None) -> dict:
+    """Notify from a handoff row when the writer did not pass the outlook payload."""
+    from ..market.provenance import values
+
+    row = conn.execute(
+        "SELECT h.run_id, h.symbol, h.horizon, h.close_at, r.origin FROM ai_outlook_handoff h "
+        "LEFT JOIN ai_outlook_run r ON r.id = h.run_id WHERE h.outlook_id=?",
+        (outlook_id,),
+    ).fetchone()
+    if not row:
+        return {"skipped": "no_handoff"}
+    run_id, symbol, horizon, close_at, origin = values(row)
+    return publish_lifecycle(
+        conn,
+        {"outlook_id": outlook_id, "symbol": symbol, "horizon": horizon},
+        {"id": run_id, "horizon": horizon, "close_at": close_at, "origin": origin},
+        {"lifecycle": lifecycle, "execution_ref": ticket, "observed_at": (now or datetime.now(timezone.utc)).isoformat()},
+        now,
+    )
 
 
 def flush_outlook_mail() -> dict:

@@ -56,6 +56,14 @@ def promote_reaction_handoffs(conn, tenant: str, account: str) -> int:
             "UPDATE ai_outlook_handoff SET lifecycle='AUTHORIZATION_PENDING', updated_at=? WHERE outlook_id=?",
             (stamp, outlook_id),
         )
+        try:
+            from ...notifications.outlook_alert import publish_handoff
+
+            publish_handoff(conn, outlook_id, "AUTHORIZATION_PENDING")
+        except Exception:
+            import logging
+
+            logging.getLogger("cacsms.ai_outlook").warning("Outlook entry alert could not be queued", exc_info=True)
         n += 1
     return n
 

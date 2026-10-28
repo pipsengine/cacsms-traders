@@ -16,10 +16,37 @@ MT5_LOCK = threading.RLock()
 def _locked(fn):
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        with MT5_LOCK:
-            return fn(*args, **kwargs)
+        from ..core.database import pause_sqlite_mutex
+
+        # Release the database lock before waiting on the terminal. Otherwise every
+        # sign-in sits behind symbol and candle reads.
+        with pause_sqlite_mutex():
+            with MT5_LOCK:
+                return fn(*args, **kwargs)
 
     return wrapper
+
+
+def run_mt5(fn, *, timeout: float | None = None):
+    """Run ``fn`` under the shared terminal lock.
+
+    ``timeout=None`` waits for the current candle read to finish. A short timeout
+    lets a page read give up and use the last saved figures instead of spinning.
+    Returns ``(False, None)`` when the terminal is busy.
+    """
+    from ..core.database import pause_sqlite_mutex
+
+    if timeout is None:
+        acquired = MT5_LOCK.acquire()
+    else:
+        acquired = MT5_LOCK.acquire(timeout=timeout)
+    if not acquired:
+        return False, None
+    try:
+        with pause_sqlite_mutex():
+            return True, fn()
+    finally:
+        MT5_LOCK.release()
 
 _TF_MAP = {
     "M1": "M1",

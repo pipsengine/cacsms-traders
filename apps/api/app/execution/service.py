@@ -378,6 +378,14 @@ def _publish_confirmed_ticket(conn, request: dict, result: dict) -> None:
                 "UPDATE ai_outlook_handoff SET execution_ref=?,lifecycle='ORDER_SUBMITTED',updated_at=? WHERE outlook_id=? AND tenant_id=?",
                 (ticket, stamp, outlook_id, request["tenant_id"]),
             )
+            try:
+                from ..notifications.outlook_alert import publish_handoff
+
+                publish_handoff(conn, outlook_id, "ORDER_SUBMITTED", ticket)
+            except Exception:
+                import logging
+
+                logging.getLogger("cacsms.execution").warning("Outlook order alert could not be queued", exc_info=True)
     except (sqlite3.OperationalError, json.JSONDecodeError, TypeError, ValueError):
         return
 

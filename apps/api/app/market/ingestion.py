@@ -51,6 +51,7 @@ class CandleIngestionService:
     def sync(self, symbol, timeframe, count=400, *, store_as: str | None = None, start=None, end=None):
         store = (store_as or symbol).upper().replace("/", "")
         previous = self.repo.candles(store, timeframe, 1)
+        self.repo.conn.commit()
         candles = self.gateway.get_closed_candles(symbol, timeframe, count=count, start=start, end=end) if start is not None or end is not None else self.gateway.closed_candles(symbol, timeframe, count)
         candles = sorted(candles, key=lambda c:c.open_time)
         offset = broker_offset(self.gateway)
@@ -65,6 +66,8 @@ class CandleIngestionService:
             else:
                 rejected += 1
         self.repo.conn.commit()
+        from ..core.database import yield_sqlite_to_requests
+        yield_sqlite_to_requests()
         last = candles[-1].close_time if candles else None
         bridge_missing = 0
         ordered = candles

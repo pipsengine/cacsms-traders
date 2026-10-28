@@ -86,6 +86,7 @@ export function SystemControlMT5Panel({
     return get<ConnectionsPayload>(`/tenants/${tenantId}/connections`)
       .then((conn) => {
         setData(conn);
+        setError('');
         const s = conn.settings;
         if (s && !silent) {
           setTerminalPath(s.terminal_path ?? conn.diagnostics?.terminal_auto_detect_path ?? '');
@@ -103,6 +104,7 @@ export function SystemControlMT5Panel({
         }
       })
       .catch((e) => {
+        if (silent) return;
         setError(e instanceof Error ? e.message : 'Failed to load MT5 connections.');
       })
       .finally(() => {
@@ -430,6 +432,14 @@ export function SystemControlMT5Panel({
     return (
       <p className="sc-notice sc-notice-warn" role="status">
         Select a tenant in the header to manage MT5 connections.
+      </p>
+    );
+  }
+
+  if (!data) {
+    return (
+      <p className="sc-notice" role={error ? 'alert' : 'status'}>
+        {error || 'Loading the MT5 connection…'}
       </p>
     );
   }

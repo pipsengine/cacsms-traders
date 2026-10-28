@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +29,21 @@ def normalize_terminal_exe(path: str) -> str:
     return ""
 
 
+_fs_cache: tuple[float, list[str]] = (0.0, [])
+
+
 def filesystem_terminal_candidates() -> list[str]:
+    global _fs_cache
+    now = time.monotonic()
+    cached_at, cached = _fs_cache
+    if cached_at and now - cached_at < 60:
+        return list(cached)
+    found = _scan_terminal_candidates()
+    _fs_cache = (now, found)
+    return list(found)
+
+
+def _scan_terminal_candidates() -> list[str]:
     roots: list[Path] = []
     for key in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA", "APPDATA"):
         raw = os.environ.get(key)
@@ -47,7 +63,11 @@ def filesystem_terminal_candidates() -> list[str]:
                     "*MetaTrader*/" + _TERMINAL_EXE,
                 )
             else:
-                patterns = ("**/" + _TERMINAL_EXE,)
+                patterns = (
+                    "MetaTrader 5/" + _TERMINAL_EXE,
+                    "MetaTrader*/" + _TERMINAL_EXE,
+                    "Programs/MetaTrader*/" + _TERMINAL_EXE,
+                )
             for pattern in patterns:
                 for exe in root.glob(pattern):
                     if not exe.is_file():
@@ -93,10 +113,20 @@ def _sort_candidates(paths: list[str]) -> list[str]:
     return sorted(paths, key=rank_terminal_install)
 
 
+_process_cache: tuple[float, list[str]] = (0.0, [])
+_process_cache_lock = threading.Lock()
+
+
 def running_terminal64_processes() -> list[str]:
     """Paths of terminal64.exe currently running (Windows). Matches the taskbar MT5 instance."""
+    global _process_cache
     if os.name != "nt":
         return []
+    now = time.monotonic()
+    with _process_cache_lock:
+        cached_at, cached = _process_cache
+    if cached_at and now - cached_at < 30:
+        return list(cached)
     found: list[str] = []
     try:
         raw = subprocess.check_output(
@@ -108,16 +138,19 @@ def running_terminal64_processes() -> list[str]:
                 "ForEach-Object { $_.Path } | Where-Object { $_ }",
             ],
             stderr=subprocess.DEVNULL,
-            timeout=12,
+            timeout=1.5,
             text=True,
         )
         for line in raw.splitlines():
             exe = normalize_terminal_exe(line.strip())
             if exe and exe not in found:
                 found.append(exe)
+        found = _sort_candidates(found)
     except Exception:
-        pass
-    return _sort_candidates(found)
+        found = list(cached)
+    with _process_cache_lock:
+        _process_cache = (time.monotonic(), found)
+    return found
 
 
 def pick_preferred_terminal_path(saved: str, extra: list[str] | None = None) -> tuple[str, str]:

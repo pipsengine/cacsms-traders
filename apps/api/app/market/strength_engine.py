@@ -355,9 +355,9 @@ class StrengthEngine:
         gw = create_market_data_gateway(repo.conn, context=self._ctx, verify_scope=False)
         repo.provider = gw.provider_id
         repo.snapshot_id = gw.snapshot_id
-        repo.account_id = (gw.get_account_context() or {}).get("account_id", "")
-        # bind_snapshot holds a write lock. Release it before any MT5 call so the scanner can ingest.
+        # bind_snapshot holds a write lock. Release it before any further terminal call.
         repo.conn.commit()
+        repo.account_id = (gw.get_account_context() or {}).get("account_id", "")
         self._refresh_forming_bids(gw)
         self._last_profile["gateway"] = round(time.monotonic() - started, 3)
         self._ctx["snapshot_id"] = gw.snapshot_id
@@ -582,6 +582,7 @@ class StrengthEngine:
             from .provider_manager import ProviderManager
 
             ensure_active_provider_snapshot(conn)
+            conn.commit()
             ProviderManager(conn).refresh_health()
             ctx = market_context(conn)
             for provider, status in ctx.get("providers", {}).items():

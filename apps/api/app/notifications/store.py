@@ -14,7 +14,7 @@ ALERT_TYPES = {
     "BREAK_RETEST_CONTINUATION": "Break & Retest / Trend Continuation",
     "TIT_DETECTED": "Trend-in-Trend (TiT)",
     "AI_OUTLOOK_PUBLISHED": "AI Analysis Complete",
-    "AI_OUTLOOK_EVENT": "AI Outlook Update",
+    "AI_OUTLOOK_EVENT": "AI Outlook Entry",
 }
 # Platform-wide alerts (not tied to one symbol or timeframe): symbol, timeframe and XAUUSD filters do not apply.
 SYSTEM_ALERT_TYPES = frozenset({"AI_OUTLOOK_PUBLISHED", "AI_OUTLOOK_EVENT"})

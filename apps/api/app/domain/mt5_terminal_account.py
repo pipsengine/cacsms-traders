@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..market import mt5_session
-
 
 def _trade_mode_label(trade_mode: int) -> str:
     try:
@@ -21,12 +19,25 @@ def _trade_mode_label(trade_mode: int) -> str:
     return str(trade_mode)
 
 
-def read_terminal_account() -> dict[str, Any] | None:
-    if not mt5_session.is_initialized():
-        return None
-    try:
+_cached_account: dict[str, Any] | None = None
+
+
+def read_terminal_account(*, wait: bool = True) -> dict[str, Any] | None:
+    """Read the logged-in account.
+
+    ``wait=False`` returns the last read and does not call the terminal.
+    ``account_info()`` blocks inside MetaTrader IPC even when the Python lock is free.
+    """
+    global _cached_account
+    if not wait:
+        return _cached_account
+    from ..market.mt5_gateway import run_mt5
+
+    def _read():
         import MetaTrader5 as mt5  # type: ignore
 
+        if mt5.terminal_info() is None:
+            return None
         ai = mt5.account_info()
         if ai is None:
             err = mt5.last_error()
@@ -35,8 +46,10 @@ def read_terminal_account() -> dict[str, Any] | None:
                 "error": str(err) if err else "account_info() returned no data — log into MT5 and retry.",
             }
         login = getattr(ai, "login", None)
+        info = mt5.terminal_info()
         return {
             "available": True,
+            "terminal_connected": bool(info and getattr(info, "connected", False)),
             "login": str(login) if login is not None else "",
             "server": (getattr(ai, "server", None) or "").strip(),
             "name": (getattr(ai, "name", None) or "").strip(),
@@ -50,8 +63,18 @@ def read_terminal_account() -> dict[str, Any] | None:
             "margin": float(getattr(ai, "margin", 0) or 0),
             "free_margin": float(getattr(ai, "margin_free", 0) or 0),
         }
+
+    try:
+        ok, account = run_mt5(_read, timeout=None)
     except Exception as exc:
         return {"available": False, "error": str(exc)}
+    if not ok:
+        return _cached_account
+    if account and account.get("available"):
+        _cached_account = account
+    elif account is None:
+        _cached_account = None
+    return account
 
 
 def environment_from_terminal(trade_mode: str) -> str:

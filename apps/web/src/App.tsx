@@ -70,28 +70,31 @@ export function App() {
       get<Tenant[]>('/tenants'),
       get<AuthUser>('/auth/me'),
     ]);
-    const failed = results.find((r) => r.status === 'rejected') as PromiseRejectedResult | undefined;
-    if (failed) throw failed.reason;
-
-    const [h, s, t, me] = results.map((r) => (r as PromiseFulfilledResult<unknown>).value) as [
-      Health,
-      Summary,
-      Tenant[],
-      AuthUser,
-    ];
-    setHealth(h);
-    setSummary(s);
-    setTenants(t);
-    setUser(me);
-    setTenantId((prev) => {
-      const next = prev || me.memberships?.[0]?.tenant_id || t[0]?.id || '';
-      if (next) localStorage.setItem('ct_tenant_id', next);
-      return next;
-    });
+    const health = results[0].status === 'fulfilled' ? results[0].value : null;
+    const summaryResult = results[1].status === 'fulfilled' ? results[1].value : null;
+    const tenantList = results[2].status === 'fulfilled' ? results[2].value : null;
+    const me = results[3].status === 'fulfilled' ? results[3].value : null;
+    if (!health && !summaryResult && !tenantList && !me) {
+      const failed = results.find((r) => r.status === 'rejected') as PromiseRejectedResult | undefined;
+      throw failed?.reason ?? new Error('Platform data unavailable');
+    }
+    if (health) setHealth(health);
+    if (summaryResult) setSummary(summaryResult);
+    if (me) setUser(me);
+    if (tenantList) {
+      setTenants(tenantList);
+      setTenantId((prev) => {
+        const known = prev && tenantList.some((tenant) => tenant.id === prev) ? prev : '';
+        const next = known || me?.memberships?.[0]?.tenant_id || tenantList[0]?.id || '';
+        if (next) localStorage.setItem('ct_tenant_id', next);
+        return next;
+      });
+    }
+    const h = health;
     marketIntelligenceApi
       .health()
       .then((mi) => setAutonomousStatus(mi.status === 'ready' ? 'Intelligence ready' : 'Awaiting worker'))
-      .catch(() => setAutonomousStatus(h.api === 'HEALTHY' ? 'Foundation online' : 'Degraded'));
+      .catch(() => setAutonomousStatus(h?.api === 'HEALTHY' ? 'Foundation online' : 'Degraded'));
   }, []);
 
   React.useEffect(() => {

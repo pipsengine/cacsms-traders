@@ -68,7 +68,7 @@ def retry_execution(user=Depends(current_user), tenant_id: str | None = Query(de
             require_permission(conn, user, scope[0], "system.manage")
         cleared = reset_execution_retries(conn, scope[0], scope[1])
         mode = _mode(conn)
-        advanced = advance_authorised_outlooks(conn, scope[0], scope[1], mode, _now())
+        advanced = advance_authorised_outlooks(conn, scope[0], scope[1], mode, _now(), wait=False)
         conn.commit()
         return {"cleared": cleared, "advance": advanced}
 

@@ -17,6 +17,9 @@ from .store import ALERT_TYPES, EMAIL_OFF_REASON, SMTP_NOT_READY_REASON, SYSTEM_
 
 def dedup_key(e: DomainEvent) -> str:
     """Deterministic identity: type | symbol | timeframe | channel/structure | direction | qualifier | confirmed bar time."""
+    if e.event_type == "AI_OUTLOOK_EVENT":
+        # One email per outlook and stage. A later pass of the same confirmation or the same ticket must not send again.
+        return "|".join((e.event_type, e.symbol, e.structure_id or "-", e.direction or "-"))
     if e.event_type == "CHANNEL_TOUCH":
         # The live channel is refitted every bar, so a boundary touch is identified by boundary + bar, not by the fit.
         parts = [e.event_type, e.symbol, e.timeframe or "-"]

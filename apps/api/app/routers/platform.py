@@ -72,33 +72,44 @@ def health(request:Request,response:Response):
 
 @router.get('/system/health')
 def system_health(user=Depends(current_user)):
+ """Shell status. Saved session and engine memory only — a page load must not wait on the terminal."""
  with db() as c:
   c.execute('SELECT 1').fetchone()
   active=_active_tenant_id(c)
-  mt5=LocalMT5Gateway(active).health(conn=c, allow_reconnect=False) if active else LocalMT5Gateway().health(conn=c, allow_reconnect=False)
-  from ..market.market_data import market_context
-  from ..market.unified_status import compute_platform_status
-  market_data={**market_context(c), **compute_platform_status(c)}
-  from ..market.strength_engine import get_strength_engine
-  engine=get_strength_engine()
-  meta=engine.engine_meta() or {}
-  if engine.running and meta.get("active_provider")==market_data["active_provider"]:
-   if mt5.get("status") not in ("CONNECTED",):
-    meta = {
-     **meta,
-     "provider_status": "DISCONNECTED",
-     "market_data_ready": False,
-     "provider_connected": False,
-    }
-    if meta.get("engine_state") in ("SYNCING", "INCOMPLETE_BASKET", "STARTING"):
-     meta = {**meta, "engine_state": "WAITING_PROVIDER", "strength_engine_status": "WAITING_PROVIDER"}
-   else:
-    if meta.get("provider_status") == "DEGRADED" and meta.get("engine_state") in ("SYNCING", "INCOMPLETE_BASKET", "STARTING"):
-     meta = {**meta, "provider_status": "CONNECTING"}
-    if meta.get("provider_status") == "DEGRADED":
-     meta = {**meta, "provider_status": "CONNECTING"}
-   market_data.update(meta)
- return {'application':'Cacsms-Traders','api':'HEALTHY','database':'HEALTHY','mt5':mt5,'market_data':market_data}
+  settings=LocalMT5Gateway(active)._load_settings(c) if active else {}
+  mode_row=c.execute("SELECT value_json FROM system_settings WHERE key='system.mode'").fetchone()
+ mode='ANALYSIS_ONLY'
+ if mode_row:
+  try:
+   mode=json.loads(mode_row['value_json'])
+  except (TypeError, ValueError):
+   mode='ANALYSIS_ONLY'
+ session=settings.get('session_status') or 'DISCONNECTED'
+ execution_disabled=mode in ('ANALYSIS_ONLY','PAUSED','EMERGENCY_STOP')
+ from ..market.strength_engine import get_strength_engine
+ meta=get_strength_engine().engine_meta() or {}
+ mt5={
+  'status':session if session in ('CONNECTED','CONNECTING','RECONNECTING','DISCONNECTED') else 'DISCONNECTED',
+  'session_status':session,
+  'adapter':'LOCAL_MT5',
+  'message':settings.get('last_error') or 'Local MT5 adapter foundation installed.',
+  'terminal_configured':bool((settings.get('terminal_path') or '').strip()),
+  'heartbeat_at':settings.get('last_heartbeat_at'),
+  'last_connected_at':settings.get('last_connected_at'),
+  'last_error':settings.get('last_error'),
+  'execution_enabled':not execution_disabled,
+  'execution':'Disabled' if execution_disabled else 'Restricted',
+  'market_data_connected':bool(meta.get('market_data_ready')),
+ }
+ return {
+  'application':'Cacsms-Traders','api':'HEALTHY','database':'HEALTHY','mt5':mt5,
+  'market_data':{
+   'active_provider':meta.get('active_provider'),
+   'provider_status':meta.get('provider_status') or 'UNKNOWN',
+   'market_data_ready':meta.get('market_data_ready'),
+   'engine_state':meta.get('engine_state'),
+  },
+ }
 @router.get('/dashboard/summary')
 def summary(user=Depends(current_user)):
  with db() as c:

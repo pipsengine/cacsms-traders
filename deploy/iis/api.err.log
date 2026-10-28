@@ -1,0 +1,33 @@
+INFO:     Started server process [20768]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+Closed-bar catch-up failed for W1 (5 bars): missing_candles
+2026-10-28 08:02:05 API host starting C:\Users\useradmin\AppData\Local\Programs\Python\Python312-embed\python.exe
+INFO:     Started server process [22176]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+2026-10-28 08:03:22 API host starting C:\Users\useradmin\AppData\Local\Programs\Python\Python312-embed\python.exe
+INFO:     Started server process [20600]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+2026-10-28 08:05:15 API host exited -1
+2026-10-28 08:05:18 API host starting C:\Users\useradmin\AppData\Local\Programs\Python\Python312-embed\python.exe
+INFO:     Started server process [22128]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+2026-10-28 08:33:59 API host exited -1
+2026-10-28 08:34:02 API host starting C:\Users\useradmin\AppData\Local\Programs\Python\Python312-embed\python.exe
+INFO:     Started server process [19240]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+2026-10-28 08:43:23 API host exited -1
+2026-10-28 08:43:26 API host starting C:\Users\useradmin\AppData\Local\Programs\Python\Python312-embed\python.exe
+INFO:     Started server process [18048]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)

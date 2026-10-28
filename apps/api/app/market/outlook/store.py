@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -321,6 +322,18 @@ class OutlookRepository:
              run["close_at"], lifecycle, kept_ref, json.dumps(merged, default=str), stamp, stamp),
         )
         self.conn.commit()
+        if lifecycle in ("CONFIRMED", "AUTHORIZATION_PENDING", "AUTHORIZED", "ORDER_SUBMITTED"):
+            try:
+                from ...notifications.outlook_alert import publish_lifecycle
+
+                publish_lifecycle(self.conn, outlook, run, {"lifecycle": lifecycle, "execution_ref": kept_ref, "observed_at": stamp})
+                self.conn.commit()
+            except Exception:
+                logging.getLogger("cacsms.ai_outlook").warning("Outlook signal alert could not be queued", exc_info=True)
+                try:
+                    self.conn.rollback()
+                except Exception:
+                    pass
 
     def save_calibration(self, run_id: str, table: dict, samples: int) -> None:
         self.conn.execute(

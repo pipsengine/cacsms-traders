@@ -1,0 +1,55 @@
+﻿**********************
+Windows PowerShell transcript start
+Start time: 20261028023819
+Username: X3ADMIN\useradmin
+RunAs User: X3ADMIN\useradmin
+Machine: X3ADMIN (Microsoft Windows NT 10.0.14393.0)
+Host Application: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Users\USERAD~1\AppData\Local\Temp\2\cacsms-iis-setup.ps1
+Process ID: 18088
+PSVersion: 5.1.14393.9611
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.14393.9611
+BuildVersion: 10.0.14393.9611
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Enabling ARR reverse proxy...
+Creating app pool Cacsms-Traders ...
+Creating site Cacsms-Traders ...
+Binding 192.168.5.5:80:
+Binding 129.18.144.134:80:
+Granting IIS read access to the site folder...
+Opening Windows Firewall for TCP 80 on all profiles...
+Registering API startup task...
+Created G:\Next-generation\cacsms-traders\.env - review credentials before production use.
+Starting API (background)...
+
+Cacsms-Traders IIS setup complete.
+  Site:  http://192.168.5.5
+  Site:  http://129.18.144.134
+  API:   http://127.0.0.1:8000/api/health
+         Same path through IIS: /api/health on the site URLs above.
+  Task:  Scheduled task CacsmsTradersApi starts the API at logon.
+
+If you use a custom host header, add it to hosts file and set WEB_ORIGINS in .env to match.
+Add-Content : The process cannot access the file 'G:\Next-generation\cacsms-traders\deploy\iis\setup-run.log' because 
+it is being used by another process.
+At C:\Users\useradmin\AppData\Local\Temp\2\cacsms-iis-setup.ps1:10 char:20
++   "SETUP_EXIT=0" | Add-Content $log
++                    ~~~~~~~~~~~~~~~~
+    + CategoryInfo          : WriteError: (G:\Next-generat...s\setup-run.log:String) [Add-Content], IOException
+    + FullyQualifiedErrorId : GetContentWriterIOError,Microsoft.PowerShell.Commands.AddContentCommand
+Add-Content : The process cannot access the file 'G:\Next-generation\cacsms-traders\deploy\iis\setup-run.log' because
+it is being used by another process.
+At C:\Users\useradmin\AppData\Local\Temp\2\cacsms-iis-setup.ps1:10 char:20
++   "SETUP_EXIT=0" | Add-Content $log
++                    ~~~~~~~~~~~~~~~~
+    + CategoryInfo          : WriteError: (G:\Next-generat...s\setup-run.log:String) [Add-Content], IOException
+    + FullyQualifiedErrorId : GetContentWriterIOError,Microsoft.PowerShell.Commands.AddContentCommand
+
+**********************
+Windows PowerShell transcript end
+End time: 20261028023825
+**********************

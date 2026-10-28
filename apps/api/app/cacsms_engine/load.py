@@ -162,9 +162,9 @@ def _terminal_book(snapshot: dict) -> tuple[list[dict] | None, str, float | None
     from ..domain.mt5_terminal_account import read_terminal_account
     from ..domain.mt5_terminal_positions import read_terminal_positions
 
-    positions, basis = read_terminal_positions()
+    positions, basis = read_terminal_positions(wait=False)
     exposure = snapshot["exposure_percent"]
-    account = read_terminal_account()
+    account = read_terminal_account(wait=False)
     if account and account.get("available"):
         equity = _num(account.get("equity"))
         margin = _num(account.get("margin"))

@@ -8,15 +8,25 @@ Set-Location $Root
 
 Write-Host 'Installing web dependencies...'
 Push-Location (Join-Path $Root 'apps\web')
-npm ci 2>$null
+# npm writes warnings to stderr. PowerShell treats that as a terminating error when ErrorAction is Stop.
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+cmd /c "npm ci"
 if ($LASTEXITCODE -ne 0) {
-  npm install
+  cmd /c "npm install"
 }
-npm run build
 if ($LASTEXITCODE -ne 0) {
+  $ErrorActionPreference = $prevEap
+  Pop-Location
+  throw "npm install failed (exit $LASTEXITCODE)."
+}
+cmd /c "npm run build"
+if ($LASTEXITCODE -ne 0) {
+  $ErrorActionPreference = $prevEap
   Pop-Location
   throw "Frontend build failed (exit $LASTEXITCODE)."
 }
+$ErrorActionPreference = $prevEap
 Pop-Location
 
 if (-not (Test-Path (Join-Path $Root 'apps\web\dist\index.html'))) {

@@ -73,6 +73,7 @@ class ProviderManager:
         try:
             from .ctrader_gateway import CTraderGateway
             from .quality import assess
+            self.conn.commit()
             adapter = CTraderGateway(self.conn, self.cfg)
             bars = sorted(adapter.get_closed_candles('EURUSD', 'H1', count=2), key=lambda c:c.open_time)
             available = bool(bars and assess('EURUSD', 'H1', bars[-1].close_time).state != 'STALE')

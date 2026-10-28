@@ -285,6 +285,9 @@ class CurrencyStrengthMatrixService:
                             "UPDATE mi_strength_snapshot SET score=? WHERE as_of=? AND currency=? AND timeframe=? AND score IS NULL",
                             (score, as_of, currency, name),
                         ).rowcount
+            conn.commit()
+            from ..core.database import yield_sqlite_to_requests
+            yield_sqlite_to_requests()
         conn.commit()
         return updated
 

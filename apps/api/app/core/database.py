@@ -22,6 +22,114 @@ log = logging.getLogger(__name__)
 
 # Single-process SQLite: serialize writers (strength/scanner/API) to avoid "database is locked".
 _SQLITE_MUTEX = threading.RLock()
+_sqlite_pause = threading.local()
+_HTTP_WAITERS = 0
+_HTTP_WAITERS_GUARD = threading.Lock()
+# These loops retake the database lock immediately, which starves sign-in.
+_BACKGROUND_DB_THREADS = frozenset({
+    "strength-engine",
+    "market-scanner",
+    "ai-outlook-scheduler",
+    "notification-worker",
+    "mt5-session-keeper",
+    "mt5-startup-reconnect",
+    "mt5-registry-sync",
+    "autonomous-engine",
+    "cacsms-optional-services",
+})
+
+
+def _background_db_thread() -> bool:
+    return threading.current_thread().name in _BACKGROUND_DB_THREADS
+
+
+# Connections this thread has open inside db(). A sign-in must commit every one of
+# them; releasing only the Python lock still leaves SQLite's write lock held.
+_open_sqlite = threading.local()
+
+
+def _push_open_sqlite(raw: sqlite3.Connection) -> None:
+    stack = getattr(_open_sqlite, "stack", None)
+    if stack is None:
+        stack = []
+        _open_sqlite.stack = stack
+    stack.append(raw)
+
+
+def _pop_open_sqlite(raw: sqlite3.Connection) -> None:
+    stack = getattr(_open_sqlite, "stack", None)
+    if not stack:
+        return
+    if stack[-1] is raw:
+        stack.pop()
+        return
+    try:
+        stack.remove(raw)
+    except ValueError:
+        return
+
+
+def _commit_open_writes() -> None:
+    """End background write transactions while a request is waiting to sign in."""
+    if not _HTTP_WAITERS or not _background_db_thread():
+        return
+    if getattr(_sqlite_pause, "depth", 0):
+        return
+    for raw in list(getattr(_open_sqlite, "stack", None) or ()):
+        try:
+            raw.commit()
+        except sqlite3.Error:
+            pass
+
+
+@contextmanager
+def pause_sqlite_mutex():
+    """Drop this thread's database lock while it waits on MetaTrader or another process.
+
+    Login and other API calls use the same lock. Holding it across terminal IPC leaves
+    the sign-in request spinning until that call returns.
+    """
+    if not _sqlite_backend():
+        yield
+        return
+    _commit_open_writes()
+    if getattr(_sqlite_pause, "depth", 0):
+        _sqlite_pause.depth += 1
+        try:
+            yield
+        finally:
+            _sqlite_pause.depth -= 1
+        return
+    released = 0
+    while True:
+        try:
+            _SQLITE_MUTEX.release()
+        except RuntimeError:
+            break
+        released += 1
+    _sqlite_pause.depth = 1
+    try:
+        yield
+    finally:
+        _sqlite_pause.depth = 0
+        if released:
+            _commit_open_writes()
+            while True:
+                with _HTTP_WAITERS_GUARD:
+                    waiting = _HTTP_WAITERS
+                if not waiting:
+                    break
+                time.sleep(0.02)
+        for _ in range(released):
+            _SQLITE_MUTEX.acquire()
+
+
+def yield_sqlite_to_requests() -> None:
+    """Let a waiting sign-in use the database before this worker takes the lock again."""
+    if not _HTTP_WAITERS or not _sqlite_backend():
+        return
+    with pause_sqlite_mutex():
+        return
 
 
 def _sqlite_backend() -> bool:
@@ -199,6 +307,14 @@ def split_sql_script(sql: str) -> list[str]:
 
 
 def _sqlite_execute(raw: sqlite3.Connection, sql: str, params=(), **kwargs):
+    if _background_db_thread() and _HTTP_WAITERS and not getattr(_sqlite_pause, "depth", 0):
+        _commit_open_writes()
+        while True:
+            with _HTTP_WAITERS_GUARD:
+                waiting = _HTTP_WAITERS
+            if not waiting or getattr(_sqlite_pause, "depth", 0):
+                break
+            time.sleep(0.02)
     for attempt in range(12):
         try:
             return raw.execute(sql, params, **kwargs)
@@ -345,22 +461,53 @@ def execute_values(conn, head: str, rows, tail: str = '', *, key=None, chunk: in
 
 @contextmanager
 def db():
-    guard = _SQLITE_MUTEX if _sqlite_backend() else nullcontext()
-    with guard:
-        conn = connect()
-        try:
-            yield conn
-            for attempt in range(8):
-                try:
-                    conn.commit()
+    global _HTTP_WAITERS
+    use_lock = _sqlite_backend()
+    background = use_lock and _background_db_thread()
+    if use_lock and not background:
+        with _HTTP_WAITERS_GUARD:
+            _HTTP_WAITERS += 1
+    try:
+        if background:
+            while True:
+                with _HTTP_WAITERS_GUARD:
+                    waiting = _HTTP_WAITERS
+                if not waiting:
                     break
-                except Exception as exc:
-                    msg = str(exc).lower()
-                    if ('locked' not in msg and 'timeout' not in msg and 'busy' not in msg) or attempt >= 7:
-                        raise
-                    time.sleep(0.05 * (attempt + 1))
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+                time.sleep(0.02)
+        # Request threads share one lock so a sign-in is not stuck behind a market
+        # cycle. Background cycles stay out of that lock and autocommit each
+        # statement, so a write cannot stay open across terminal or CPU work.
+        guard = _SQLITE_MUTEX if use_lock and not background else nullcontext()
+        with guard:
+            conn = connect()
+            raw = getattr(conn, "_raw", None)
+            track = background and isinstance(raw, sqlite3.Connection)
+            if track:
+                raw.isolation_level = None
+                _push_open_sqlite(raw)
+            try:
+                yield conn
+                for attempt in range(8):
+                    try:
+                        conn.commit()
+                        break
+                    except Exception as exc:
+                        msg = str(exc).lower()
+                        if ('locked' not in msg and 'timeout' not in msg and 'busy' not in msg) or attempt >= 7:
+                            raise
+                        time.sleep(0.05 * (attempt + 1))
+            except Exception:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+                raise
+            finally:
+                if track:
+                    _pop_open_sqlite(raw)
+                conn.close()
+    finally:
+        if use_lock and not background:
+            with _HTTP_WAITERS_GUARD:
+                _HTTP_WAITERS -= 1

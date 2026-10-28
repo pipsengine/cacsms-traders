@@ -7,24 +7,51 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from ..market import mt5_session
+
+_cached_positions: list[dict[str, Any]] | None = None
+_cached_basis = "Open positions were last read from the MT5 terminal."
 
 
-def read_terminal_positions() -> tuple[list[dict[str, Any]] | None, str]:
-    """Return (positions, basis). None means the terminal could not be read."""
-    if not mt5_session.is_initialized():
-        return None, "MT5 terminal is not attached. Open positions stay hidden until the terminal is connected."
-    try:
+def read_terminal_positions(*, wait: bool = True) -> tuple[list[dict[str, Any]] | None, str]:
+    """Return (positions, basis). None means the terminal could not be read.
+
+    ``wait=False`` returns the last book and does not call the terminal, so a
+    page load is not stuck inside MetaTrader IPC.
+    """
+    global _cached_positions, _cached_basis
+    if not wait:
+        if _cached_positions is not None:
+            return _cached_positions, _cached_basis
+        return None, "MT5 terminal is busy. Open positions refresh when the current read finishes."
+    from ..market.mt5_gateway import run_mt5
+
+    def _read():
         import MetaTrader5 as mt5  # type: ignore
-    except Exception as exc:
-        return None, f"MT5 positions could not be read: {exc}"
+
+        if mt5.terminal_info() is None:
+            return None, "MT5 terminal is not attached. Open positions stay hidden until the terminal is connected."
+        try:
+            rows = mt5.positions_get()
+        except Exception as exc:
+            return None, f"MT5 positions could not be read: {exc}"
+        return rows, None
+
     try:
-        rows = mt5.positions_get()
+        ok, payload = run_mt5(_read, timeout=None)
     except Exception as exc:
         return None, f"MT5 positions could not be read: {exc}"
+    if not ok:
+        if _cached_positions is not None:
+            return _cached_positions, _cached_basis
+        return None, "MT5 terminal is busy. Open positions refresh when the current read finishes."
+    rows, early = payload
+    if early:
+        return None, early
     if rows is None:
+        import MetaTrader5 as mt5  # type: ignore
         err = mt5.last_error()
         return None, f"MT5 positions_get failed: {err}"
+    import MetaTrader5 as mt5  # type: ignore
     positions = []
     for row in rows:
         ticket = getattr(row, "ticket", None)
@@ -53,4 +80,7 @@ def read_terminal_positions() -> tuple[list[dict[str, Any]] | None, str]:
         })
     count = len(positions)
     noun = "position" if count == 1 else "positions"
-    return positions, f"{count} open {noun} read from the MT5 terminal."
+    basis = f"{count} open {noun} read from the MT5 terminal."
+    _cached_positions = positions
+    _cached_basis = basis
+    return positions, basis
