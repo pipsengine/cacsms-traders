@@ -14,6 +14,8 @@ _RETRIABLE = frozenset(
         "MARGIN",
         "PER_TRADE_RISK",
         "ACCOUNT_UNKNOWN",
+        "PROFIT_CURRENCY_UNCONVERTED",
+        "LIVE_TRADING_DISABLED",
         "Trade disabled",
     }
 )

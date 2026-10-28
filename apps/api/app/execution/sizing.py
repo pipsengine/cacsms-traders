@@ -20,6 +20,17 @@ class SizeResult:
     reason: str | None
 
 
+def tick_value_from_move(profit, steps: int):
+    """One-tick value in account currency, from the profit of several ticks on one lot."""
+    if profit is None or steps <= 0:
+        return None
+    try:
+        value = abs(D(profit) / D(steps))
+    except (ArithmeticError, TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
 def account_tick_value(*, account_currency: str, tick_value, tick_value_currency: str, profit_tick_value=None,
                        profit_currency: str | None = None, conversion_rate=None, conversion_from: str | None = None,
                        conversion_to: str | None = None) -> tuple[object, str | None]:

@@ -8,7 +8,6 @@ from __future__ import annotations
 from typing import Any
 
 from ..execution.pipeline import UNCERTAIN_RETCODES
-from ..execution.symbols import resolve_broker_symbol
 from ..market import mt5_session
 
 _DONE = {10008, 10009, 10010}  # placed, done, partial
@@ -76,21 +75,45 @@ def _filling(mt5, info) -> int:
     return mt5.ORDER_FILLING_RETURN
 
 
+def _deposit_tick_value(mt5, broker: str, tick_size: float, price: float, reported: float) -> float:
+    """Tick value in the deposit currency. A zero terminal figure is calculated from a one-lot move."""
+    if reported > 0:
+        return reported
+    from ..execution.sizing import tick_value_from_move
+
+    if tick_size <= 0 or price <= 0 or not hasattr(mt5, "order_calc_profit"):
+        return 0.0
+    steps = 100
+    try:
+        profit = mt5.order_calc_profit(mt5.ORDER_TYPE_BUY, broker, 1.0, price, price + tick_size * steps)
+    except Exception:
+        return 0.0
+    value = tick_value_from_move(profit, steps)
+    return 0.0 if value is None else float(value)
+
+
 def _round_price(info, price: float) -> float:
     digits = int(getattr(info, "digits", 5) or 5)
     return round(price, digits)
 
 
 def _broker_name(mt5, symbol: str, mapped: str | None = None) -> str | None:
-    from ..execution.symbols import choose_account_symbol
+    from ..execution.symbols import choose_account_symbol, trade_mode_allows_entry
 
     names = [item.name for item in (mt5.symbols_get() or ())]
-    if mapped:
-        return resolve_broker_symbol(symbol, names, mapped)
+
+    def tradable(name: str) -> bool:
+        info = mt5.symbol_info(name)
+        if info is None:
+            return False
+        return trade_mode_allows_entry(getattr(info, "trade_mode", None))
+
     return choose_account_symbol(
         symbol, names,
         lambda name: bool(mt5.symbol_select(name, True)),
         lambda name: mt5.symbol_info_tick(name),
+        tradable=tradable,
+        mapped=mapped,
     )
 
 
@@ -117,6 +140,8 @@ def terminal_order_context(symbol: str, direction: str) -> dict[str, Any]:
     point = float(info.point or 0)
     tick_size = float(getattr(info, "trade_tick_size", 0) or point or 0)
     spread_points = float(getattr(info, "spread", 0) or 0)
+    reported_tick = float(getattr(info, "trade_tick_value", 0) or 0)
+    tick_value = _deposit_tick_value(mt5, broker, tick_size, float(tick.bid or tick.ask or 0), reported_tick)
     return {
         "ok": True,
         "broker_symbol": broker,
@@ -135,7 +160,7 @@ def terminal_order_context(symbol: str, direction: str) -> dict[str, Any]:
             "digits": int(getattr(info, "digits", 5) or 5),
             "point": point,
             "tick_size": tick_size,
-            "tick_value": float(getattr(info, "trade_tick_value", 0) or 0),
+            "tick_value": tick_value,
             "tick_value_currency": str(account.currency or ""),
             "profit_tick_value": float(getattr(info, "trade_tick_value_profit", 0) or 0),
             "volume_min": float(getattr(info, "volume_min", 0) or 0),

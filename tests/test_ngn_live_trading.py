@@ -111,6 +111,29 @@ def test_minimum_lot_above_the_budget_is_rejected_and_not_raised():
     assert not sized.ok and sized.reason == "MINIMUM_EXCEEDS_BUDGET" and sized.volume is None
 
 
+def test_a_zero_terminal_tick_uses_the_profit_of_a_one_lot_move():
+    from apps.api.app.execution.sizing import tick_value_from_move
+
+    assert tick_value_from_move("133100", 100) == D("1331")
+    assert tick_value_from_move(0, 100) is None
+    assert tick_value_from_move(None, 100) is None
+
+
+def test_a_later_zero_tick_does_not_erase_the_naira_value():
+    from apps.api.app.execution.service import preserve_tick_value
+
+    kept = preserve_tick_value(
+        {"tick_value": "1331", "tick_value_currency": "NGN"},
+        {"tick_value": 0, "tick_value_currency": "NGN", "symbol": "EURJPY"},
+    )
+    assert kept["tick_value"] == "1331"
+    fresh = preserve_tick_value(
+        {"tick_value": "1331", "tick_value_currency": "NGN"},
+        {"tick_value": "1400", "tick_value_currency": "NGN"},
+    )
+    assert fresh["tick_value"] == "1400"
+
+
 def test_usd_tick_value_is_not_treated_as_naira_without_a_validated_rate():
     value, reason = account_tick_value(account_currency="NGN", tick_value="1", tick_value_currency="USD", profit_currency="USD")
     assert value is None and reason == "PROFIT_CURRENCY_UNCONVERTED"
@@ -145,6 +168,53 @@ def test_plain_name_is_used_when_that_is_the_quoted_symbol():
     book = {"NZDJPY": (89.7, 89.74)}
     assert choose_account_symbol("NZDJPY", names, lambda name: True, lambda name: _quote(name, book)) == "NZDJPY"
     assert choose_account_symbol("USDJPY", names, lambda name: True, lambda name: {"USDJPYb": (157.1, 157.2)}.get) == "USDJPYb"
+
+
+def test_a_broker_without_the_suffix_keeps_the_plain_name():
+    names = ["EURCAD"]
+    book = {"EURCAD": (1.56, 1.5602)}
+    assert choose_account_symbol(
+        "EURCAD", names, lambda name: True, lambda name: book.get(name),
+        tradable=lambda name: True,
+        mapped="EURCADb",
+    ) == "EURCAD"
+
+
+def test_plain_name_is_used_when_the_suffix_cannot_open_a_trade():
+    names = ["EURUSD", "EURUSDb"]
+    book = {"EURUSD": (1.1, 1.1002), "EURUSDb": (1.1, 1.1002)}
+    assert choose_account_symbol(
+        "EURUSD", names, lambda name: True, lambda name: book.get(name),
+        tradable=lambda name: name == "EURUSD",
+        mapped="EURUSDb",
+    ) == "EURUSD"
+
+
+def test_plain_name_wins_when_both_names_can_open():
+    names = ["GBPUSD", "GBPUSDb"]
+    book = {"GBPUSD": (1.33, 1.3302), "GBPUSDb": (1.33, 1.3302)}
+    assert choose_account_symbol(
+        "GBPUSD", names, lambda name: True, lambda name: book.get(name),
+        tradable=lambda name: True,
+        mapped="GBPUSDb",
+    ) == "GBPUSD"
+
+
+def test_tradable_suffix_is_used_when_the_plain_name_cannot_open_a_trade():
+    names = ["EURCAD", "EURCADb", "XAUUSD", "XAUUSDb"]
+    book = {
+        "EURCAD": (1.56, 1.5602), "EURCADb": (1.56, 1.5602),
+        "XAUUSD": (4054.0, 4054.5), "XAUUSDb": (4054.0, 4054.5),
+    }
+    opens = {"EURCADb", "XAUUSDb"}
+    assert choose_account_symbol(
+        "EURCAD", names, lambda name: True, lambda name: book.get(name),
+        tradable=lambda name: name in opens,
+    ) == "EURCADb"
+    assert choose_account_symbol(
+        "XAUUSD", names, lambda name: True, lambda name: book.get(name),
+        tradable=lambda name: name in opens,
+    ) == "XAUUSDb"
 
 
 def test_two_quoted_decorations_are_not_guessed():

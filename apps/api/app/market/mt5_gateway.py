@@ -120,15 +120,29 @@ def _has_quote(mt5, name: str) -> bool:
 
 def _select_symbol(mt5, pair: str) -> str:
     """Use the broker name that has a price, with or without a suffix, and select it in Market Watch."""
-    from ..execution.symbols import choose_account_symbol
+    from ..execution.symbols import choose_account_symbol, trade_mode_allows_entry
 
     key = pair.upper().replace("/", "")
     cached = _DISCOVERED.get(key)
     if cached and mt5.symbol_select(cached, True) and _has_quote(mt5, cached):
-        return cached
+        info = mt5.symbol_info(cached)
+        if info is not None and trade_mode_allows_entry(getattr(info, "trade_mode", None)):
+            return cached
     _DISCOVERED.pop(key, None)
     names = [getattr(row, "name", "") for row in (mt5.symbols_get() or [])]
-    chosen = choose_account_symbol(pair, names, lambda name: bool(mt5.symbol_select(name, True)), lambda name: mt5.symbol_info_tick(name))
+
+    def tradable(name: str) -> bool:
+        info = mt5.symbol_info(name)
+        if info is None:
+            return False
+        return trade_mode_allows_entry(getattr(info, "trade_mode", None))
+
+    chosen = choose_account_symbol(
+        pair, names,
+        lambda name: bool(mt5.symbol_select(name, True)),
+        lambda name: mt5.symbol_info_tick(name),
+        tradable=tradable,
+    )
     if chosen:
         _DISCOVERED[key] = chosen
         return chosen

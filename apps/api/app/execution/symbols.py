@@ -1,8 +1,10 @@
 """Resolve the symbol name this account actually trades.
 
-A stored broker symbol wins. Otherwise the live name is the one with a price,
-whether the broker prints EURUSD or EURUSDb. Two quoted decorations of the
-same pair stay unresolved instead of guessing.
+Brokers differ. One lists EURUSD, another lists EURUSDb, and some list both.
+The name that can open a position wins. A plain name is kept when that is the
+tradable contract. A suffix is used only when the plain name cannot be traded,
+or when it is the only quoted name. A stored suffix never replaces a tradable
+plain name. Two equally tradable decorations stay unresolved.
 """
 from __future__ import annotations
 
@@ -48,12 +50,26 @@ def symbol_aliases(symbol: str, available) -> list[str]:
     return exact + suffix
 
 
-def choose_account_symbol(symbol: str, available, select, tick) -> str | None:
-    """Enable each alias and keep the one the terminal is quoting.
+def trade_mode_allows_entry(mode) -> bool:
+    """True when a symbol can open a position. Disabled and close-only cannot."""
+    if mode is None:
+        return True
+    try:
+        number = int(mode)
+    except (TypeError, ValueError):
+        return True
+    return number in (1, 2, 4)
+
+
+def choose_account_symbol(symbol: str, available, select, tick, tradable=None, mapped: str | None = None) -> str | None:
+    """Enable each alias and keep the one this terminal can trade.
 
     ``select(name)`` turns the symbol on in Market Watch. ``tick(name)`` returns
-    an object or pair with bid and ask. A suffix is used when it is the name
-    that has a price. A plain name is used when that is the one with a price.
+    an object or pair with bid and ask. ``tradable(name)`` is true when that
+    name can open a position. A single quoted name is used whether it is plain
+    or suffixed. When both are quoted, the one that can open wins. When several
+    can open, the plain name wins. ``mapped`` breaks a tie only between two
+    suffixes, and it does not override a tradable plain name.
     """
     canon = canonical_symbol(symbol)
     aliases = symbol_aliases(symbol, available)
@@ -80,11 +96,31 @@ def choose_account_symbol(symbol: str, available, select, tick) -> str | None:
             ask = getattr(quote, "ask", 0) or 0
         if bid or ask:
             live.append(name)
+    if tradable is not None and len(live) > 1:
+        dealing = []
+        for name in live:
+            try:
+                allowed = bool(tradable(name))
+            except Exception:
+                allowed = False
+            if allowed:
+                dealing.append(name)
+        if len(dealing) == 1:
+            return dealing[0]
+        if dealing:
+            live = dealing
     if len(live) == 1:
         return live[0]
     if len(live) > 1:
-        exact = [name for name in live if _head(name) == canon]
-        return exact[0] if len(exact) == 1 else None
+        exact = [name for name in live if _head(name) == canon or name.upper() == canon]
+        if len(exact) == 1:
+            return exact[0]
+        if mapped:
+            wanted = mapped.strip().upper()
+            for name in live:
+                if name.upper() == wanted:
+                    return name
+        return None
     return aliases[0] if len(aliases) == 1 else None
 
 

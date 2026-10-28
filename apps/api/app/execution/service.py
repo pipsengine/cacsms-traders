@@ -116,10 +116,29 @@ def latest_conversion(conn, tenant_id: str, from_currency: str, to_currency: str
     )
 
 
+def preserve_tick_value(current: dict | None, spec: dict) -> dict:
+    """A later terminal read of 0 must not erase a tick value already converted into the account currency."""
+    if not current:
+        return spec
+    try:
+        incoming = float(spec.get("tick_value") or 0)
+        stored = float(current.get("tick_value") or 0)
+    except (TypeError, ValueError):
+        return spec
+    if incoming > 0 or stored <= 0:
+        return spec
+    return {
+        **spec,
+        "tick_value": current["tick_value"],
+        "tick_value_currency": current.get("tick_value_currency") or spec.get("tick_value_currency"),
+    }
+
+
 def save_spec(conn, tenant_id: str, account_id: str, spec: dict, now: datetime | None = None) -> None:
     now = now or datetime.now(timezone.utc)
     symbol = canonical_symbol(spec["symbol"])
     current = load_spec(conn, account_id, symbol)
+    spec = preserve_tick_value(current, spec)
     values = (
         spec.get("broker_symbol") or symbol, spec.get("currency_profit"), spec.get("currency_margin"), spec.get("digits"),
         text(D(spec["point"])), text(D(spec["tick_size"])), text(D(spec["tick_value"])), spec["tick_value_currency"].upper(),

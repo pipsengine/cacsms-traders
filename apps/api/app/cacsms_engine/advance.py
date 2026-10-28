@@ -118,7 +118,7 @@ def advance_authorised_outlooks(conn, tenant: str, account: str, mode: str, now:
     from ..autonomous.portfolio import _account_row, _profile, open_position_cap
     from ..domain.mt5_connection import ensure_gateway_session
     from ..domain.mt5_execution import execution_allowed, open_market_position, terminal_order_context, terminal_trade_mode
-    from ..execution.service import execute_candidate, save_spec
+    from ..execution.service import execute_candidate, load_spec, preserve_tick_value, save_spec
     from ..domain.mt5_terminal_account import read_terminal_account
     from ..domain.mt5_terminal_positions import read_terminal_positions
 
@@ -203,7 +203,8 @@ def advance_authorised_outlooks(conn, tenant: str, account: str, mode: str, now:
         last_err = str(evidence.get("broker_error") or "")
         retriable = last_err in (
             "NO_CONTRACT", "NO_QUOTE", "MINIMUM_EXCEEDS_BUDGET", "MARGIN", "PER_TRADE_RISK",
-            "MT5 terminal is not attached", "ACCOUNT_UNKNOWN",
+            "MT5 terminal is not attached", "ACCOUNT_UNKNOWN", "PROFIT_CURRENCY_UNCONVERTED",
+            "LIVE_TRADING_DISABLED",
         ) or last_err.startswith("Symbol ")
         if _recent(evidence.get("attempted_at"), now) and not retriable:
             held += 1
@@ -251,7 +252,13 @@ def advance_authorised_outlooks(conn, tenant: str, account: str, mode: str, now:
             count = max(count, int(context.get("open_positions") or 0))
             broker_symbol = context["broker_symbol"]
             if account_row and spec:
+                spec = preserve_tick_value(load_spec(conn, account_row["id"], order["symbol"]), spec)
                 save_spec(conn, tenant, account_row["id"], spec)
+            if account_row is not None and context.get("equity"):
+                account_row = dict(account_row)
+                account_row["equity"] = context["equity"]
+                if context.get("free_margin") is not None:
+                    account_row["free_margin"] = context["free_margin"]
 
             def send(volume, _order=order, _broker=broker_symbol):
                 return open_market_position(
